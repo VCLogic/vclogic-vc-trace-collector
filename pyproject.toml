@@ -19,6 +19,11 @@ av = [
     "scipy>=1.12,<2",
     "soundfile>=0.12,<1",
 ]
+av-local = [
+    "openai-whisper>=20250625",
+    "pyannote-audio>=3.3,<5",
+    "torch>=2.4",
+]
 
 [project.scripts]
 vc-trace-collector = "vc_trace_collector.cli:app"
