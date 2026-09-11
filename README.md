@@ -1,0 +1,232 @@
+# vc-trace-collector
+
+`vc-trace-collector` builds a clean, auditable, source-linked collection of a
+venture investor's public traces. It resolves an identity, proposes a source
+plan, pauses for review, collects approved public material, normalizes and
+deduplicates it, applies leakage rules, and exports a canonical corpus plus the
+legacy `blog.jsonl`, `talks.jsonl`, and `_manifest.json` files.
+
+This repository does **not** generate an Investment Memory, score pitches,
+predict investment decisions, or run founder rehearsals.
+
+## Status
+
+The MVP is a modular Python package with:
+
+- deterministic known-profile parsing, query generation, identity evidence,
+  and explicit namesake hypotheses;
+- optional SearXNG search and optional structured LLM refinement;
+- human review or confidence-gated automatic approval;
+- safe, rate-limited web/feed collection, supplied-file ingestion, optional
+  YouTube metadata/caption collection, and bounded podcast-enclosure downloads;
+- configurable exclusion rules with a built-in The Pitch leakage firewall;
+- content-addressed raw artifacts, resumable SQLite operation state, sanitized
+  audit events, canonical documents, deterministic manifests, and verification;
+- provider-neutral transcription, diarization, voice embedding, and target
+  speaker matching primitives.
+
+The first vertical slice supports web pages, feeds, supplied files, YouTube,
+and podcast pages/enclosures.
+LinkedIn and X should be provided as user-approved exports unless the operator
+configures an authorized collector. AV provider adapters exist, while unattended AV
+orchestration is intentionally opt-in because it can be costly and attribution
+must be reviewed.
+
+## Install
+
+Python 3.11–3.13 and [`uv`](https://docs.astral.sh/uv/) are required.
+
+```bash
+uv sync
+uv run vc-trace-collector --help
+```
+
+Install only the optional capabilities you need:
+
+```bash
+uv sync --extra youtube
+uv sync --extra av
+uv sync --extra av-local
+uv sync --extra browser
+```
+
+The core web workflow does not install GPU frameworks, browser binaries, or
+paid-provider SDKs.
+
+## Quick start
+
+Discovery always creates a reviewable plan before collection:
+
+```bash
+uv run vc-trace-collector discover \
+  --name "Michael Hyatt" \
+  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --source-url "https://podcasts.apple.com/..."
+
+uv run vc-trace-collector status --investor michael-hyatt
+uv run vc-trace-collector review --investor michael-hyatt
+
+uv run vc-trace-collector collect \
+  --name "Michael Hyatt" \
+  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --resume latest
+```
+
+The supplied Michael Hyatt profile is retained as identity evidence and
+rejected from corpus collection because it is on `thepitch.show`. This is the
+generalized evaluation-leakage firewall working as intended.
+
+`--source-url` is repeatable. It seeds an independently discovered page or
+recording into the same identity validation and review workflow; it never
+bypasses confidence checks or exclusion rules.
+
+For a non-interactive run, `--auto-approve-discovery` accepts only candidates
+above the configured confidence thresholds. Ambiguous identities still stop
+cleanly for review.
+
+```bash
+uv run vc-trace-collector collect \
+  --name "Investor Name" \
+  --firm "Firm Name" \
+  --auto-approve-discovery \
+  --max-cost-usd 5.00 \
+  --max-search-operations 20 \
+  --max-media-minutes 60
+```
+
+Stage commands are available independently:
+
+```bash
+uv run vc-trace-collector discover --help
+uv run vc-trace-collector review --help
+uv run vc-trace-collector collect --help
+uv run vc-trace-collector process --help
+uv run vc-trace-collector export --help
+uv run vc-trace-collector status --help
+uv run vc-trace-collector verify --help
+```
+
+`collect` also accepts `--collection-only`, `--processing-only`, and
+`--export-only`. Only one may be selected at a time.
+
+## Discovery providers
+
+Without provider configuration, discovery deterministically evaluates a known
+profile and produces targeted queries for human or external execution. To run
+search automatically, configure an operator-controlled SearXNG JSON endpoint:
+
+```bash
+export VC_TRACE_SEARCH_ENDPOINT="https://search.example/api"
+```
+
+Structured LLM refinement is enabled only when all three variables are set:
+
+```bash
+export VC_TRACE_LLM_ENDPOINT="https://provider.example/v1/chat/completions"
+export VC_TRACE_LLM_API_KEY="..."
+export VC_TRACE_DISCOVERY_MODEL="provider-model-name"
+```
+
+The LLM receives structured public evidence and returns schema-validated JSON.
+The audit stores the model/provider operation and concise output, never private
+chain-of-thought. Search, fetching, approval, hashing, policy evaluation,
+normalization, deduplication, export, and verification remain deterministic.
+
+Do not commit these variables. Copy `.env.example` only as a list of supported
+names and load credentials through your normal secret manager or shell.
+
+## Reference voice and speaker attribution
+
+Discovery generates interview, podcast, and YouTube queries and records likely
+single-identity voice sources in
+`identity/reference_voice_candidates.jsonl`. A usable voice reference should:
+
+- have strong independent identity evidence;
+- contain a clean interval dominated by the target investor;
+- avoid music, crosstalk, or unidentified panel speech;
+- be human-reviewed before it becomes a reference profile.
+
+The AV layer supports FFmpeg audio extraction, existing timed transcripts or a
+configurable speech-to-text provider, diarization, voice embeddings, cosine
+matching, minimum-score and runner-up-margin gates, and transcript-to-speaker
+alignment. A low score or narrow margin produces `uncertain`, not verified
+speech. Models, device selection, and access tokens are supplied by the
+operator; none are hard-coded.
+
+## Exclusions and source review
+
+`config/exclusions.example.toml` demonstrates domain, channel, programme,
+company, keyword, and URL-pattern controls. Rules are evaluated at discovery,
+processing, and export. Items that are excluded, third-party, unknown, or have
+uncertain speaker attribution cannot enter the corpus.
+
+Additional run-level exclusions are available from the CLI:
+
+```bash
+uv run vc-trace-collector collect \
+  --name "Investor Name" \
+  --exclude-domain example.com \
+  --exclude-channel "Prohibited Show"
+```
+
+## Output contract
+
+Each investor has an isolated workspace:
+
+```text
+outputs/<investor-slug>/
+├── identity/
+│   ├── resolved_identity.json
+│   ├── identity_evidence.jsonl
+│   └── reference_voice_candidates.jsonl
+├── discovery/
+│   ├── source_plan.json
+│   ├── source_candidates.jsonl
+│   ├── approved_sources.jsonl
+│   └── rejected_sources.jsonl
+├── raw/{web,social,video,podcast,supplied}/
+├── processed/
+│   ├── documents.jsonl
+│   ├── target_speech.jsonl
+│   └── excluded_documents.jsonl
+├── corpus/
+│   ├── blog.jsonl
+│   ├── talks.jsonl
+│   └── all_documents.jsonl
+├── audit/
+├── state/state.sqlite
+├── collection_manifest.json
+├── quality_report.json
+└── run_summary.json
+```
+
+Raw bytes are immutable and addressed by SHA-256. Canonical JSON serialization,
+stable identifiers, file hashes, extraction metadata, source URLs, identity
+confidence, inclusion decisions, and model attribution make every exported
+record traceable back to source artifacts. The compatibility export is written
+both under `corpus/` and at the investor workspace root as required by the
+existing downstream consumer.
+
+## Tests
+
+The default suite is local and requires no paid API or network:
+
+```bash
+uv run pytest -q
+```
+
+Run the explicit public-network contract separately:
+
+```bash
+uv run pytest -m live tests/live/test_michael_hyatt.py -q
+```
+
+## Development principles
+
+- Never treat matching names as sufficient identity proof.
+- Never silently promote an uncertain speaker match.
+- Preserve raw evidence and decisions; derived files are reproducible.
+- Fail one source independently and keep successful source results.
+- Reserve provider budget before paid work and stop before exceeding it.
+- Respect robots, site terms, authentication boundaries, rate limits, and
+  applicable law. Prefer official feeds and user-provided exports.
