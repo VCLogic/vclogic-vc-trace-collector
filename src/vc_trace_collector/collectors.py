@@ -6,6 +6,7 @@ import json
 import mimetypes
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -16,7 +17,7 @@ from uuid import uuid4
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field
 
-from .audit import AuditLog, BudgetLedger
+from .audit import AuditLog, BudgetLedger, redact
 from .extract import extract_feed
 from .fetch import Fetcher
 from .models import (
@@ -52,6 +53,7 @@ class CollectionContext:
     audit: AuditLog | None = None
     budget: BudgetLedger | None = None
     approved_source_types: set[SourceType] | None = None
+    maximum_media_seconds: float | None = None
 
 
 class CollectionResult(BaseModel):
@@ -98,6 +100,14 @@ def apply_decisions(plan: SourcePlan, decisions: list[SourceDecision]) -> Source
         candidate = by_id[decision.candidate_id]
         candidate.approval_status = decision.status
         candidate.decision_reason = decision.reason
+        if decision.material_role is not None:
+            candidate.material_role = decision.material_role
+        if decision.speaker_verified:
+            if candidate.material_role != "spoken_by_target":
+                raise ValueError(
+                    "Speaker verification requires spoken_by_target material"
+                )
+            candidate.speaker_verified_by = decision.decided_by
     return updated
 
 
@@ -313,12 +323,15 @@ class SuppliedFileCollector:
 class YouTubeCollector:
     source_types: ClassVar[set[SourceType]] = {SourceType.YOUTUBE}
 
+    def __init__(self, *, runner=subprocess.run):
+        self.runner = runner
+
     def collect(
         self, source: SourceCandidate, context: CollectionContext
     ) -> list[RawArtifact]:
         command = ["yt-dlp", "--dump-single-json", "--skip-download", source.url]
         try:
-            completed = subprocess.run(
+            completed = self.runner(
                 command,
                 check=True,
                 capture_output=True,
@@ -371,6 +384,68 @@ class YouTubeCollector:
                     original_metadata={
                         "candidate_id": source.candidate_id,
                         "video_id": video_id,
+                    },
+                    parent_artifact_ids=[records[0].artifact_id],
+                ).record
+            )
+        duration = float(metadata.get("duration") or 0)
+        if (
+            context.maximum_media_seconds is not None
+            and duration > context.maximum_media_seconds
+        ):
+            raise RuntimeError(
+                f"Media duration {duration:.1f}s exceeds remaining limit "
+                f"{context.maximum_media_seconds:.1f}s"
+            )
+        with tempfile.TemporaryDirectory(prefix="vc-trace-youtube-") as directory:
+            output_template = str(Path(directory) / "audio.%(ext)s")
+            download = [
+                "yt-dlp",
+                "--no-playlist",
+                "--max-filesize",
+                "512M",
+                "-f",
+                "bestaudio/best",
+                "-o",
+                output_template,
+                "--print",
+                "after_move:filepath",
+                source.url,
+            ]
+            try:
+                downloaded = self.runner(
+                    download,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=1800,
+                )
+            except FileNotFoundError as error:
+                raise CollectorUnavailable(
+                    "Install the youtube extra to download YouTube audio"
+                ) from error
+            output_lines = [
+                line.strip() for line in downloaded.stdout.splitlines() if line.strip()
+            ]
+            if not output_lines:
+                raise RuntimeError("yt-dlp did not report a downloaded audio path")
+            media_path = Path(output_lines[-1]).resolve()
+            directory_path = Path(directory).resolve()
+            if directory_path not in media_path.parents or not media_path.is_file():
+                raise RuntimeError("yt-dlp reported an invalid audio path")
+            mime, _encoding = mimetypes.guess_type(media_path.name)
+            records.append(
+                context.artifacts.put_bytes(
+                    media_path.read_bytes(),
+                    category="video",
+                    suffix=media_path.suffix or ".bin",
+                    source_url=source.canonical_url,
+                    mime_type=mime or "application/octet-stream",
+                    collection_method="yt_dlp_audio",
+                    original_metadata={
+                        "candidate_id": source.candidate_id,
+                        "video_id": video_id,
+                        "duration_seconds": duration,
                     },
                     parent_artifact_ids=[records[0].artifact_id],
                 ).record
@@ -490,12 +565,16 @@ def collect_approved_sources(
         except Exception as error:
             if context.budget:
                 context.budget.release(operation_id)
-            context.state.fail_operation(operation_id, input_hash, str(error))
-            failure = {
-                "candidate_id": candidate.candidate_id,
-                "error_type": type(error).__name__,
-                "message": str(error),
-            }
+            failure = redact(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "error_type": type(error).__name__,
+                    "message": str(error),
+                }
+            )
+            context.state.fail_operation(
+                operation_id, input_hash, str(failure["message"])
+            )
             result.failed += 1
             result.failures.append(failure)
             append_jsonl(context.workspace / "audit/failures.jsonl", failure)

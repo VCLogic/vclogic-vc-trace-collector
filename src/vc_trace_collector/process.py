@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from pathlib import Path
 
+from .av import TargetSpeechResult
 from .extract import extract_feed, extract_page
 from .models import (
     CanonicalDocument,
@@ -16,6 +17,7 @@ from .models import (
     MaterialRole,
     RawArtifact,
     SourceCandidate,
+    SourceType,
     SpeakerAttribution,
     SpeakerStatus,
     TranscriptInfo,
@@ -128,6 +130,7 @@ def _make_document(
         ),
         published_at=published_at,
         publication_date_precision="timestamp" if published_at else None,
+        collected_at=artifact.collected_at,
         text=normalized,
         original_metadata=original_metadata,
         extraction_method=extraction_method,
@@ -155,11 +158,39 @@ def process_artifact(
 
     def create(**kwargs):
         normalized_text = normalize_text(kwargs["text"])
-        policy = rules.evaluate(
-            url=kwargs.get("url"),
-            title=kwargs.get("title"),
-            text=normalized_text,
-            stage="post_extraction",
+        provenance_urls = {
+            value
+            for value in (
+                kwargs.get("url"),
+                artifact.source_url,
+                candidate.url,
+                candidate.canonical_url,
+            )
+            if value
+        }
+        policies = [
+            rules.evaluate(
+                url=url,
+                title=kwargs.get("title"),
+                text=normalized_text,
+                stage="post_extraction",
+            )
+            for url in sorted(provenance_urls)
+        ]
+        policy = next(
+            (
+                decision
+                for decision in policies
+                if decision.status == PolicyInclusionStatus.EXCLUDED
+            ),
+            next(
+                (
+                    decision
+                    for decision in policies
+                    if decision.status == PolicyInclusionStatus.REVIEW_REQUIRED
+                ),
+                policies[0],
+            ),
         )
         document = _make_document(
             investor_slug=investor_slug,
@@ -171,6 +202,17 @@ def process_artifact(
         if document and policy.status != PolicyInclusionStatus.INCLUDED:
             document.inclusion_status = policy.status
             document.exclusion_reason = policy.reason
+        elif (
+            document
+            and candidate.material_role == MaterialRole.AUTHORED_BY_TARGET
+            and candidate.source_type != SourceType.SUPPLIED
+            and target_name.casefold()
+            not in {author.casefold().strip() for author in document.authors}
+        ):
+            document.inclusion_status = InclusionStatus.REVIEW_REQUIRED
+            document.exclusion_reason = (
+                "Extracted author does not exactly match the target investor"
+            )
         if document:
             documents.append(document)
 
@@ -210,6 +252,11 @@ def process_artifact(
             original_metadata=page.metadata,
         )
     elif mime.startswith("text/") or path.suffix in {".txt", ".md"}:
+        verified_supplied_speech = (
+            candidate.source_type == SourceType.SUPPLIED
+            and candidate.material_role == MaterialRole.SPOKEN_BY_TARGET
+            and bool(candidate.speaker_verified_by)
+        )
         create(
             url=artifact.source_url,
             title=Path(artifact.source_path).name
@@ -217,13 +264,78 @@ def process_artifact(
             else candidate.title,
             text=content.decode("utf-8", errors="replace"),
             authors=[target_name]
-            if candidate.material_role == MaterialRole.AUTHORED_BY_TARGET
+            if candidate.material_role
+            in {MaterialRole.AUTHORED_BY_TARGET, MaterialRole.SPOKEN_BY_TARGET}
             else [],
             published_at=None,
             extraction_method="plain_text",
             original_metadata=artifact.original_metadata,
+            speaker_attribution=SpeakerAttribution(
+                status=SpeakerStatus.VERIFIED_HUMAN,
+                speaker_label=target_name,
+            )
+            if verified_supplied_speech
+            else None,
         )
     return documents
+
+
+def target_speech_document(
+    *,
+    investor_slug: str,
+    target_name: str,
+    artifact: RawArtifact,
+    candidate: SourceCandidate,
+    result: TargetSpeechResult,
+    rules: RuleSet,
+) -> CanonicalDocument | None:
+    text = "\n".join(
+        segment.text.strip()
+        for segment in result.target_segments
+        if segment.text.strip()
+    )
+    if not text:
+        return None
+    source_url = (
+        str(artifact.original_metadata.get("episode_url") or "")
+        or artifact.source_url
+        or candidate.canonical_url
+    )
+    document = _make_document(
+        investor_slug=investor_slug,
+        artifact=artifact,
+        candidate=candidate,
+        url=source_url,
+        title=candidate.title,
+        text=text,
+        authors=[target_name],
+        published_at=None,
+        extraction_method="diarized_target_speech",
+        original_metadata={
+            "candidate_metadata": artifact.original_metadata,
+            "media_seconds": result.media_seconds,
+            "target_segments": [
+                item.model_dump(mode="json") for item in result.target_segments
+            ],
+        },
+        rules=rules,
+        speaker_attribution=result.attribution,
+        transcript=result.transcript,
+    )
+    if document is None:
+        return None
+    document.raw_artifact_ids = list(
+        dict.fromkeys(
+            [artifact.artifact_id, *result.attribution.reference_artifact_ids]
+        )
+    )
+    if result.attribution.status not in {
+        SpeakerStatus.ACCEPTED_MODEL,
+        SpeakerStatus.VERIFIED_HUMAN,
+    }:
+        document.inclusion_status = InclusionStatus.REVIEW_REQUIRED
+        document.exclusion_reason = "Target-speaker attribution requires human review"
+    return document
 
 
 def load_artifact_records(workspace: Path) -> list[RawArtifact]:
@@ -267,7 +379,19 @@ def deduplicate(
 ) -> list[CanonicalDocument]:
     canonical: list[CanonicalDocument] = []
     exact: dict[str, CanonicalDocument] = {}
-    for document in documents:
+    preference = {
+        InclusionStatus.INCLUDED: 0,
+        InclusionStatus.PENDING: 1,
+        InclusionStatus.REVIEW_REQUIRED: 2,
+        InclusionStatus.EXCLUDED: 3,
+        InclusionStatus.DUPLICATE: 4,
+    }
+    # Select eligible material before excluded/review copies regardless of
+    # collection order. Return order stays unchanged for stable audit views.
+    for document in sorted(
+        documents,
+        key=lambda item: (preference[item.inclusion_status], item.document_version_id),
+    ):
         duplicate = exact.get(document.content_hash)
         if duplicate is None:
             for prior in canonical:
@@ -279,8 +403,9 @@ def deduplicate(
                     break
         if duplicate is not None:
             document.duplicate_of = duplicate.document_version_id
-            document.inclusion_status = InclusionStatus.DUPLICATE
-            document.exclusion_reason = "Duplicate of preferred canonical document"
+            if document.inclusion_status != InclusionStatus.EXCLUDED:
+                document.inclusion_status = InclusionStatus.DUPLICATE
+                document.exclusion_reason = "Duplicate of preferred canonical document"
         else:
             exact[document.content_hash] = document
             canonical.append(document)

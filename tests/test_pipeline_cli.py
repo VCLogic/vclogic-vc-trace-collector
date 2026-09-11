@@ -5,10 +5,21 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+from vc_trace_collector.av import (
+    DiarizationResult,
+    DiarizedTurn,
+    TimedText,
+    TranscriptResult,
+)
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.collectors import ReviewRequired
 from vc_trace_collector.fetch import Fetcher
-from vc_trace_collector.models import ApprovalStatus, SourceDecision
+from vc_trace_collector.models import (
+    ApprovalStatus,
+    MaterialRole,
+    SourceDecision,
+    TranscriptInfo,
+)
 from vc_trace_collector.pipeline import Pipeline
 from vc_trace_collector.storage import read_json, read_jsonl
 
@@ -55,6 +66,52 @@ def pipeline(tmp_path: Path) -> Pipeline:
         minimum_interval=0,
     )
     return Pipeline(tmp_path, fetcher=fetcher)
+
+
+class FixtureEmbedding:
+    provider_name = "fixture"
+    model_name = "fixture-voice-embedding"
+    model_version = "1"
+
+    def embed(self, audio_path):
+        return [1.0, 0.0]
+
+
+class FixtureTranscript:
+    provider_name = "fixture"
+    model_name = "fixture-transcript"
+
+    def transcribe(self, audio_path):
+        return TranscriptResult(
+            info=TranscriptInfo(
+                method="speech_to_text",
+                provider=self.provider_name,
+                model=self.model_name,
+            ),
+            segments=[
+                TimedText(start_seconds=0, end_seconds=2, text="Host question"),
+                TimedText(
+                    start_seconds=2,
+                    end_seconds=5,
+                    text="I invest in durable customer value.",
+                ),
+            ],
+        )
+
+
+class FixtureDiarization:
+    provider_name = "fixture"
+    model_name = "fixture-diarization"
+
+    def diarize(self, audio_path):
+        return DiarizationResult(
+            model=self.model_name,
+            turns=[
+                DiarizedTurn(start_seconds=0, end_seconds=2, speaker_label="HOST"),
+                DiarizedTurn(start_seconds=2, end_seconds=5, speaker_label="VC"),
+            ],
+            speaker_embeddings={"HOST": [0.0, 1.0], "VC": [1.0, 0.0]},
+        )
 
 
 def test_discover_writes_reviewable_plan_and_raw_identity_evidence(tmp_path) -> None:
@@ -110,7 +167,10 @@ def test_review_confirms_identity_without_approving_rejected_pitch_source(
         known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
     )
     updated = collector.review(
-        "michael-hyatt", decisions=[], reviewer="human@example.test"
+        "michael-hyatt",
+        decisions=[],
+        reviewer="human@example.test",
+        confirm_identity=True,
     )
 
     assert updated.identity.resolution_status == "confirmed"
@@ -181,6 +241,7 @@ def test_collected_voice_audio_is_linked_to_reference_candidate(tmp_path) -> Non
             )
         ],
         reviewer="reviewer",
+        confirm_identity=True,
     )
 
     collector.collect_sources("michael-hyatt")
@@ -191,34 +252,267 @@ def test_collected_voice_audio_is_linked_to_reference_candidate(tmp_path) -> Non
     assert voice["artifact_id"].startswith("sha256:")
 
 
-def test_automatic_review_is_persisted_as_completed_stage(tmp_path) -> None:
+def test_automatic_review_stops_when_namesake_hypothesis_remains(tmp_path) -> None:
     podcast_url = (
         "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"
     )
 
-    pipeline(tmp_path).collect(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
-        source_urls=[podcast_url],
-        auto_approve_discovery=True,
-        collection_only=True,
-    )
-
-    status = pipeline(tmp_path).status("michael-hyatt")
-    assert status["stages"]["review"] == "complete"
+    with pytest.raises(ReviewRequired, match="competing identity"):
+        pipeline(tmp_path).collect(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            source_urls=[podcast_url],
+            auto_approve_discovery=True,
+            collection_only=True,
+        )
 
 
 def test_complete_pipeline_exports_verified_non_pitch_corpus(tmp_path) -> None:
-    result = pipeline(tmp_path).collect(
+    collector = pipeline(tmp_path)
+    discovered = collector.discover(
         name="Michael Hyatt",
         known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
         source_urls=["https://blog.example.test/michael-hyatt-bluecat"],
-        auto_approve_discovery=True,
     )
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=candidate.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human confirmed source",
+                decided_by="reviewer",
+            )
+            for candidate in discovered.source_plan.candidates
+            if candidate.approval_status == ApprovalStatus.PENDING
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    result = collector.collect(name="Michael Hyatt", resume="latest")
 
     assert result.verification is not None
     assert result.verification.passed is True
+    manifest_paths = {item.path for item in result.manifest.files}
+    assert "identity/resolved_identity.json" in manifest_paths
+    assert "discovery/source_plan.json" in manifest_paths
+    assert any(
+        path.startswith("raw/web/") and path.endswith(".html")
+        for path in manifest_paths
+    )
     blogs = read_jsonl(tmp_path / "michael-hyatt/blog.jsonl")
     assert len(blogs) == 1
     assert "durable economics" in blogs[0]["title"]
     assert all("thepitch.show" not in str(row) for row in blogs)
+
+
+def test_cli_discover_accepts_supplied_file_and_role(tmp_path) -> None:
+    supplied = tmp_path / "public-notes.txt"
+    supplied.write_text("Public notes authored by Michael Hyatt.")
+    app = create_app(lambda output_dir: pipeline(Path(output_dir)))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "discover",
+            "--name",
+            "Michael Hyatt",
+            "--known-profile-url",
+            "https://www.thepitch.show/investors/michael-hyatt",
+            "--supplied-file",
+            str(supplied),
+            "--supplied-role",
+            "authored_by_target",
+            "--output-dir",
+            str(tmp_path / "outputs"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    rows = read_jsonl(
+        tmp_path / "outputs/michael-hyatt/discovery/source_candidates.jsonl"
+    )
+    supplied_row = next(row for row in rows if row["source_type"] == "supplied")
+    assert supplied_row["material_role"] == "authored_by_target"
+
+
+def test_supplied_public_text_runs_through_complete_pipeline(tmp_path) -> None:
+    supplied = tmp_path / "michael-hyatt-public-notes.txt"
+    supplied.write_text("I prefer durable businesses with strong customers.")
+
+    collector = pipeline(tmp_path / "outputs")
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[supplied],
+        supplied_role=MaterialRole.AUTHORED_BY_TARGET,
+    )
+    supplied_candidate = next(
+        candidate
+        for candidate in discovered.source_plan.candidates
+        if candidate.source_type == "supplied"
+    )
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=supplied_candidate.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human attested supplied authorship",
+                decided_by="reviewer",
+            )
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    result = collector.collect(name="Michael Hyatt", resume="latest")
+
+    assert result.verification is not None and result.verification.passed
+    rows = read_jsonl(tmp_path / "outputs/michael-hyatt/blog.jsonl")
+    assert [row["full_text"] for row in rows] == [supplied.read_text()]
+
+
+def test_review_requires_explicit_identity_confirmation(tmp_path) -> None:
+    collector = pipeline(tmp_path)
+    collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+    )
+
+    with pytest.raises(ReviewRequired, match="explicit identity confirmation"):
+        collector.review("michael-hyatt", decisions=[], reviewer="reviewer")
+
+
+def test_complete_supplied_video_pipeline_exports_verified_target_speech(
+    tmp_path,
+) -> None:
+    reference_audio = tmp_path / "known-michael-hyatt.wav"
+    reference_audio.write_bytes(b"reference voice fixture")
+    interview_audio = tmp_path / "michael-hyatt-interview.mp4"
+    interview_audio.write_bytes(b"video interview fixture")
+    output = tmp_path / "outputs"
+    base = pipeline(output)
+
+    def fixture_audio_extractor(source, destination, **kwargs):
+        destination.write_bytes(b"extracted audio fixture")
+        return destination
+
+    collector = Pipeline(
+        output,
+        fetcher=base.fetcher,
+        embedding_provider=FixtureEmbedding(),
+        transcript_provider=FixtureTranscript(),
+        diarization_provider=FixtureDiarization(),
+        audio_extractor=fixture_audio_extractor,
+        media_probe=lambda _path: 5.0,
+    )
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[reference_audio, interview_audio],
+    )
+    supplied = [
+        item
+        for item in discovered.source_plan.candidates
+        if item.source_type == "supplied"
+    ]
+    reference = next(item for item in supplied if "known-" in item.url)
+    interview = next(item for item in supplied if "interview" in item.url)
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=reference.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human verified isolated reference voice",
+                decided_by="reviewer",
+                material_role=MaterialRole.REFERENCE_VOICE,
+            ),
+            SourceDecision(
+                candidate_id=interview.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human verified target interview",
+                decided_by="reviewer",
+                material_role=MaterialRole.SPOKEN_BY_TARGET,
+            ),
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    collector.collect_sources("michael-hyatt")
+    voice_candidate = read_jsonl(
+        output / "michael-hyatt/identity/reference_voice_candidates.jsonl"
+    )[0]
+    collector.approve_reference_voice(
+        "michael-hyatt",
+        candidate_id=voice_candidate["candidate_id"],
+        reviewer="reviewer",
+    )
+    documents = collector.process("michael-hyatt")
+    collector.export("michael-hyatt")
+    verified = collector.verify("michael-hyatt")
+
+    assert verified.passed is True
+    speech = [item for item in documents if item.material_role == "spoken_by_target"]
+    assert len(speech) == 1
+    assert speech[0].speaker_attribution.status == "accepted_model"
+    assert any(
+        row["collection_method"] == "ffmpeg_audio_extraction"
+        for path in (output / "michael-hyatt/raw/video").rglob("*.metadata.json")
+        for row in [read_json(path)]
+    )
+    talks = read_jsonl(output / "michael-hyatt/talks.jsonl")
+    assert [item["text"] for item in talks] == ["I invest in durable customer value."]
+
+
+def test_cli_collect_exits_nonzero_when_export_cannot_verify(tmp_path) -> None:
+    collector = pipeline(tmp_path)
+    collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+    )
+    collector.review(
+        "michael-hyatt",
+        decisions=[],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    app = create_app(lambda output_dir: pipeline(Path(output_dir)))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "collect",
+            "--name",
+            "Michael Hyatt",
+            "--resume",
+            "latest",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "verification failed" in result.output.casefold()
+
+
+def test_llm_discovery_requires_an_explicit_cost_reservation(tmp_path) -> None:
+    class DiscoveryProvider:
+        provider_name = "fixture"
+        model_name = "fixture-model"
+
+        def refine(self, **kwargs):
+            raise AssertionError("provider must not run without a budget")
+
+    base = pipeline(tmp_path)
+    collector = Pipeline(
+        tmp_path,
+        fetcher=base.fetcher,
+        discovery_provider=DiscoveryProvider(),
+    )
+
+    with pytest.raises(ValueError, match="discovery_call_budget_usd"):
+        collector.discover(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        )

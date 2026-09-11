@@ -6,6 +6,7 @@ import socket
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Self
 from urllib.parse import urljoin
 
@@ -56,6 +57,7 @@ class Fetcher:
         minimum_interval: float = 1.0,
         maximum_redirects: int = 5,
         maximum_attempts: int = 3,
+        maximum_retry_delay: float = 30,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self.resolver = resolver
@@ -63,6 +65,7 @@ class Fetcher:
         self.minimum_interval = minimum_interval
         self.maximum_redirects = maximum_redirects
         self.maximum_attempts = maximum_attempts
+        self.maximum_retry_delay = maximum_retry_delay
         self.sleep = sleep
         self._last_request: dict[str, float] = {}
         self.client = httpx.Client(
@@ -150,11 +153,19 @@ class Fetcher:
                 and attempts < self.maximum_attempts
             ):
                 retry_after = response.headers.get("retry-after")
-                delay = (
-                    float(retry_after)
-                    if retry_after and retry_after.isdigit()
-                    else min(2 ** (attempts - 1), 4)
-                )
+                delay = min(2 ** (attempts - 1), 4)
+                if retry_after:
+                    try:
+                        delay = float(retry_after)
+                    except ValueError:
+                        try:
+                            retry_at = parsedate_to_datetime(retry_after)
+                            delay = max(
+                                0.0, (retry_at - datetime.now(UTC)).total_seconds()
+                            )
+                        except (TypeError, ValueError, OverflowError):
+                            pass
+                delay = min(delay, self.maximum_retry_delay)
                 self.sleep(delay)
                 continue
 

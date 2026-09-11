@@ -48,3 +48,34 @@ def test_redact_leaves_public_values_intact() -> None:
         "url": "https://example.test",
         "token_count": 12,
     }
+
+
+def test_redact_scrubs_secret_values_embedded_in_error_messages() -> None:
+    cleaned = redact(
+        {"message": "provider rejected Authorization: Bearer top-secret-token-value"}
+    )
+
+    assert "top-secret-token-value" not in cleaned["message"]
+    assert "[REDACTED]" in cleaned["message"]
+
+
+def test_redact_scrubs_common_token_and_url_secret_shapes() -> None:
+    cleaned = redact(
+        "failed sk-abcdefgh123456 "
+        "https://example.test/?api_key=top-secret&token=also-secret"
+    )
+
+    assert "abcdefgh" not in cleaned
+    assert "top-secret" not in cleaned
+    assert "also-secret" not in cleaned
+    assert cleaned.count("[REDACTED]") == 3
+
+
+def test_released_reservation_is_reestablished_before_retry(tmp_path) -> None:
+    ledger = BudgetLedger(tmp_path / "costs.jsonl", maximum=Decimal("1.00"))
+    ledger.reserve("retry", Decimal("0.75"))
+    ledger.release("retry")
+    ledger.reserve("other", Decimal("0.50"))
+
+    with pytest.raises(BudgetExceeded):
+        ledger.reserve("retry", Decimal("0.75"))

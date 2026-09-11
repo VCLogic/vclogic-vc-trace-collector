@@ -6,12 +6,14 @@ from vc_trace_collector.models import (
     Confidence,
     InclusionStatus,
     MaterialRole,
+    SourceCandidate,
     SourceType,
     SpeakerAttribution,
     SpeakerStatus,
 )
-from vc_trace_collector.process import deduplicate, normalize_text
-from vc_trace_collector.storage import read_jsonl
+from vc_trace_collector.policy import RuleSet, eligible_for_corpus
+from vc_trace_collector.process import deduplicate, normalize_text, process_artifact
+from vc_trace_collector.storage import ArtifactStore, read_jsonl
 
 
 def document(
@@ -52,6 +54,46 @@ def test_normalization_is_stable_without_rewriting_words() -> None:
     assert normalize_text("  One\r\n\r\n\r\nTwo\u00a0words  ") == "One\n\nTwo words"
 
 
+def test_human_verified_supplied_transcript_is_eligible_target_speech(tmp_path) -> None:
+    candidate = SourceCandidate(
+        candidate_id="candidate:transcript",
+        url=(tmp_path / "transcript.txt").as_uri(),
+        canonical_url=(tmp_path / "transcript.txt").as_uri(),
+        source_type=SourceType.SUPPLIED,
+        material_role=MaterialRole.SPOKEN_BY_TARGET,
+        discovery_queries=["operator supplied"],
+        identity_confidence=Confidence(score=0.95, method="human", version="1"),
+        source_confidence=Confidence(score=0.95, method="human", version="1"),
+        approval_status="approved",
+        speaker_verified_by="reviewer",
+    )
+    artifact = (
+        ArtifactStore(tmp_path)
+        .put_bytes(
+            b"I focus on capital-efficient companies.",
+            category="supplied",
+            suffix=".txt",
+            source_path=str(tmp_path / "transcript.txt"),
+            mime_type="text/plain",
+            original_metadata={"candidate_id": candidate.candidate_id},
+        )
+        .record
+    )
+
+    result = process_artifact(
+        tmp_path,
+        artifact,
+        candidate,
+        investor_slug="michael-hyatt",
+        target_name="Michael Hyatt",
+        rules=RuleSet.pitch_default(),
+    )
+
+    assert len(result) == 1
+    assert result[0].speaker_attribution.status == SpeakerStatus.VERIFIED_HUMAN
+    assert eligible_for_corpus(result[0])
+
+
 def test_exact_duplicate_retains_relationship() -> None:
     documents = deduplicate(
         [document("one", "same text"), document("two", "same text")]
@@ -70,6 +112,20 @@ def test_near_duplicate_is_detected() -> None:
     )
 
     assert documents[1].duplicate_of == documents[0].document_version_id
+
+
+def test_eligible_duplicate_is_preferred_over_earlier_excluded_copy() -> None:
+    excluded = document(
+        "excluded", "same useful text", inclusion=InclusionStatus.EXCLUDED
+    )
+    included = document("included", "same useful text")
+
+    documents = deduplicate([excluded, included])
+
+    assert documents[1].inclusion_status == InclusionStatus.INCLUDED
+    assert documents[1].duplicate_of is None
+    assert documents[0].inclusion_status == InclusionStatus.EXCLUDED
+    assert documents[0].duplicate_of == documents[1].document_version_id
 
 
 def test_legacy_export_omits_excluded_and_uncertain(tmp_path) -> None:
@@ -127,3 +183,79 @@ def test_workspace_places_legacy_export_at_investor_root(tmp_path) -> None:
     assert read_jsonl(tmp_path / "blog.jsonl")[0]["full_text"] == "public writing"
     assert read_jsonl(tmp_path / "talks.jsonl") == []
     assert (tmp_path / "_manifest.json").is_file()
+
+
+def test_feed_entry_by_different_author_requires_review(tmp_path) -> None:
+    feed = b"""<?xml version='1.0'?><rss version='2.0'><channel><item>
+      <title>Guest post</title><link>https://example.test/guest</link>
+      <author>Other Person</author><description>Not written by the investor.</description>
+    </item></channel></rss>"""
+    stored = ArtifactStore(tmp_path).put_bytes(
+        feed,
+        category="web",
+        suffix=".xml",
+        source_url="https://example.test/feed",
+        mime_type="application/rss+xml",
+        original_metadata={"candidate_id": "candidate:feed"},
+    )
+    candidate = SourceCandidate(
+        candidate_id="candidate:feed",
+        url="https://example.test/feed",
+        canonical_url="https://example.test/feed",
+        source_type=SourceType.RSS_FEED,
+        material_role=MaterialRole.AUTHORED_BY_TARGET,
+        discovery_queries=["query"],
+        identity_confidence=Confidence(score=0.95, method="test", version="1"),
+        source_confidence=Confidence(score=0.95, method="test", version="1"),
+        approval_status="approved",
+    )
+
+    result = process_artifact(
+        tmp_path,
+        stored.record,
+        candidate,
+        investor_slug="michael-hyatt",
+        target_name="Michael Hyatt",
+    )
+
+    assert result[0].inclusion_status == InclusionStatus.REVIEW_REQUIRED
+    assert "author" in (result[0].exclusion_reason or "").casefold()
+
+
+def test_excluded_fetched_url_cannot_be_hidden_by_declared_canonical(tmp_path) -> None:
+    html = b"""<html><head>
+      <link rel='canonical' href='https://example.test/clean'>
+      <meta name='author' content='Michael Hyatt'></head>
+      <body><main><h1>Pitch outcome</h1><p>Target material.</p></main></body></html>"""
+    stored = ArtifactStore(tmp_path).put_bytes(
+        html,
+        category="web",
+        suffix=".html",
+        source_url="https://www.thepitch.show/poisoned",
+        mime_type="text/html",
+        original_metadata={"candidate_id": "candidate:poisoned"},
+    )
+    candidate = SourceCandidate(
+        candidate_id="candidate:poisoned",
+        url="https://www.thepitch.show/poisoned",
+        canonical_url="https://www.thepitch.show/poisoned",
+        source_type=SourceType.WEB_ARTICLE,
+        material_role=MaterialRole.AUTHORED_BY_TARGET,
+        discovery_queries=["query"],
+        identity_confidence=Confidence(score=0.95, method="test", version="1"),
+        source_confidence=Confidence(score=0.95, method="test", version="1"),
+        approval_status="approved",
+    )
+
+    result = process_artifact(
+        tmp_path,
+        stored.record,
+        candidate,
+        investor_slug="michael-hyatt",
+        target_name="Michael Hyatt",
+        rules=RuleSet.pitch_default(),
+    )
+
+    assert result[0].canonical_url == "https://example.test/clean"
+    assert result[0].inclusion_status == InclusionStatus.EXCLUDED
+    assert "pitch" in (result[0].exclusion_reason or "").casefold()

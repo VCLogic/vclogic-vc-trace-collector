@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,23 @@ def redact(value: Any) -> Any:
         return [redact(item) for item in value]
     if isinstance(value, tuple):
         return [redact(item) for item in value]
+    if isinstance(value, str):
+        cleaned = re.sub(
+            r"(?i)(?:authorization\s*:\s*)?bearer\s+[^\s,;]+",
+            "Bearer [REDACTED]",
+            value,
+        )
+        cleaned = re.sub(
+            r"\b(?:sk-[A-Za-z0-9_-]{8,}|(?:hf|ghp)_[A-Za-z0-9._-]{8,})\b",
+            "[REDACTED]",
+            cleaned,
+        )
+        return re.sub(
+            r"(?i)(api[_-]?key|access[_-]?token|token|secret|password)="
+            r"[^&\s]+",
+            r"\1=[REDACTED]",
+            cleaned,
+        )
     return value
 
 
@@ -81,20 +99,15 @@ class BudgetLedger:
 
     @property
     def reserved(self) -> Decimal:
-        reservations: dict[str, Decimal] = {}
-        settled: set[str] = set()
+        reservations: dict[str, Decimal | None] = {}
         for row in self._rows:
             operation = str(row["operation_id"])
             if row["kind"] == "reservation":
                 reservations[operation] = Decimal(str(row["amount_usd"]))
             elif row["kind"] in {"settlement", "release"}:
-                settled.add(operation)
+                reservations[operation] = None
         return sum(
-            (
-                amount
-                for operation, amount in reservations.items()
-                if operation not in settled
-            ),
+            (amount for amount in reservations.values() if amount is not None),
             start=Decimal(0),
         )
 
@@ -104,12 +117,15 @@ class BudgetLedger:
 
     def reserve(self, operation_id: str, amount: Decimal) -> None:
         amount = Decimal(amount)
-        existing = [
-            row
-            for row in self._rows
-            if row["operation_id"] == operation_id and row["kind"] == "reservation"
-        ]
-        if existing:
+        active_reservation = False
+        for row in self._rows:
+            if row["operation_id"] != operation_id:
+                continue
+            if row["kind"] == "reservation":
+                active_reservation = True
+            elif row["kind"] in {"settlement", "release"}:
+                active_reservation = False
+        if active_reservation:
             return
         if amount > self.available:
             raise BudgetExceeded(operation_id)

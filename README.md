@@ -18,19 +18,19 @@ The MVP is a modular Python package with:
 - optional SearXNG search and optional structured LLM refinement;
 - human review or confidence-gated automatic approval;
 - safe, rate-limited web/feed collection, supplied-file ingestion, optional
-  YouTube metadata/caption collection, and bounded podcast-enclosure downloads;
+  YouTube metadata/caption/audio collection, and bounded podcast-enclosure downloads;
 - configurable exclusion rules with a built-in The Pitch leakage firewall;
 - content-addressed raw artifacts, resumable SQLite operation state, sanitized
   audit events, canonical documents, deterministic manifests, and verification;
-- provider-neutral transcription, diarization, voice embedding, and target
-  speaker matching primitives.
+- resumable provider-neutral transcription, diarization, human-approved voice
+  embedding, target-speaker matching, and target-only speech extraction.
 
 The first vertical slice supports web pages, feeds, supplied files, YouTube,
 and podcast pages/enclosures.
 LinkedIn and X should be provided as user-approved exports unless the operator
-configures an authorized collector. AV provider adapters exist, while unattended AV
-orchestration is intentionally opt-in because it can be costly and attribution
-must be reviewed.
+configures an authorized collector. Audiovisual processing is opt-in because it
+can be costly: a reference must be human-approved, and weak model matches are
+routed to review rather than exported as verified speech.
 
 ## Install
 
@@ -58,13 +58,18 @@ paid-provider SDKs.
 Discovery always creates a reviewable plan before collection:
 
 ```bash
-uv run vc-trace-collector discover \
+uv run vc-trace-collector collect \
   --name "Michael Hyatt" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --source-url "https://podcasts.apple.com/..."
+  --source-url "https://podcasters.spotify.com/..." \
+  --transcription-model small.en \
+  --diarization-model "operator-selected-pyannote-pipeline" \
+  --embedding-model "operator-selected-pyannote-embedding"
 
 uv run vc-trace-collector status --investor michael-hyatt
-uv run vc-trace-collector review --investor michael-hyatt
+uv run vc-trace-collector review \
+  --investor michael-hyatt \
+  --confirm-identity
 
 uv run vc-trace-collector collect \
   --name "Michael Hyatt" \
@@ -72,7 +77,8 @@ uv run vc-trace-collector collect \
   --resume latest
 ```
 
-The supplied Michael Hyatt profile is retained as identity evidence and
+The first `collect` command stops with exit code 3 after writing the discovery
+plan. The supplied Michael Hyatt profile is retained as identity evidence and
 rejected from corpus collection because it is on `thepitch.show`. This is the
 generalized evaluation-leakage firewall working as intended.
 
@@ -81,8 +87,8 @@ recording into the same identity validation and review workflow; it never
 bypasses confidence checks or exclusion rules.
 
 For a non-interactive run, `--auto-approve-discovery` accepts only candidates
-above the configured confidence thresholds. Ambiguous identities still stop
-cleanly for review.
+above the configured confidence thresholds. A remaining namesake hypothesis,
+including the Michael S. Hyatt namesake, still stops cleanly for human review.
 
 ```bash
 uv run vc-trace-collector collect \
@@ -94,11 +100,19 @@ uv run vc-trace-collector collect \
   --max-media-minutes 60
 ```
 
+When an LLM discovery provider is enabled, also pass a conservative upper-bound
+reservation for its single refinement call. The call will not start without it:
+
+```bash
+--discovery-call-budget-usd 0.25
+```
+
 Stage commands are available independently:
 
 ```bash
 uv run vc-trace-collector discover --help
 uv run vc-trace-collector review --help
+uv run vc-trace-collector review-voice --help
 uv run vc-trace-collector collect --help
 uv run vc-trace-collector process --help
 uv run vc-trace-collector export --help
@@ -128,8 +142,9 @@ export VC_TRACE_DISCOVERY_MODEL="provider-model-name"
 ```
 
 The LLM receives structured public evidence and returns schema-validated JSON.
-The audit stores the model/provider operation and concise output, never private
-chain-of-thought. Search, fetching, approval, hashing, policy evaluation,
+The audit stores the model/provider operation, token usage when returned, and a
+concise action record, never private chain-of-thought. Search, fetching,
+approval, hashing, policy evaluation,
 normalization, deduplication, export, and verification remain deterministic.
 
 Do not commit these variables. Copy `.env.example` only as a list of supported
@@ -153,12 +168,38 @@ alignment. A low score or narrow margin produces `uncertain`, not verified
 speech. Models, device selection, and access tokens are supplied by the
 operator; none are hard-coded.
 
+After collecting an approved reference source, inspect
+`identity/reference_voice_candidates.jsonl`, select a clean interval, and approve
+it explicitly:
+
+```bash
+uv run vc-trace-collector review-voice \
+  --investor michael-hyatt \
+  --candidate-id 'voice:<id from the JSONL file>' \
+  --reviewer 'analyst@example.com' \
+  --start-seconds 120 \
+  --end-seconds 165
+
+uv run vc-trace-collector process --investor michael-hyatt
+uv run vc-trace-collector export --investor michael-hyatt
+```
+
+Use a decision-file entry with `"material_role": "spoken_by_target"` for an
+appearance that should enter target-speech processing. A separate clean
+reference recording is preferable to the recording being evaluated. Local
+Whisper and pyannote adapters are available in the `av-local` extra; `HF_TOKEN`
+and `VC_TRACE_AV_DEVICE` are optional environment variables consumed only by
+the selected models.
+
 ## Exclusions and source review
 
 `config/exclusions.example.toml` demonstrates domain, channel, programme,
 company, keyword, and URL-pattern controls. Rules are evaluated at discovery,
 processing, and export. Items that are excluded, third-party, unknown, or have
 uncertain speaker attribution cannot enter the corpus.
+
+Pass the file with `--exclusion-file`. Its validated rule contents are frozen
+inside `config_snapshot.json` and fingerprinted in the collection manifest.
 
 Additional run-level exclusions are available from the CLI:
 
@@ -178,7 +219,8 @@ outputs/<investor-slug>/
 ├── identity/
 │   ├── resolved_identity.json
 │   ├── identity_evidence.jsonl
-│   └── reference_voice_candidates.jsonl
+│   ├── reference_voice_candidates.jsonl
+│   └── reference_voice_profile.json
 ├── discovery/
 │   ├── source_plan.json
 │   ├── source_candidates.jsonl
@@ -188,6 +230,7 @@ outputs/<investor-slug>/
 ├── processed/
 │   ├── documents.jsonl
 │   ├── target_speech.jsonl
+│   ├── av_attribution_results.jsonl
 │   └── excluded_documents.jsonl
 ├── corpus/
 │   ├── blog.jsonl
@@ -196,6 +239,7 @@ outputs/<investor-slug>/
 ├── audit/
 ├── state/state.sqlite
 ├── collection_manifest.json
+├── exclusion_rules_snapshot.json
 ├── quality_report.json
 └── run_summary.json
 ```

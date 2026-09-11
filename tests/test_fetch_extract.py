@@ -100,3 +100,52 @@ def test_fetcher_supports_a_bounded_per_request_media_limit() -> None:
     result = fetcher.fetch("https://example.test/media.mp3", maximum_bytes=8)
 
     assert result.content == b"12345"
+
+
+def test_html_extraction_preserves_json_ld_before_removing_scripts() -> None:
+    page = extract_page(
+        b"""<html><head><script type='application/ld+json'>
+        {"@type":"Article","author":{"name":"Michael Hyatt"}}
+        </script></head><body><main><h1>Article</h1><p>Text</p></main></body></html>""",
+        "https://example.test/article",
+    )
+
+    assert page.metadata["json_ld"][0]["@type"] == "Article"
+
+
+def test_empty_heading_falls_back_to_open_graph_title() -> None:
+    page = extract_page(
+        b"<html><head><meta property='og:title' content='Michael Hyatt interview'>"
+        b"</head><body><h1></h1><main>Interview</main></body></html>",
+        "https://example.test/interview",
+    )
+
+    assert page.title == "Michael Hyatt interview"
+
+
+def test_retry_after_is_capped() -> None:
+    responses = 0
+    sleeps = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal responses
+        responses += 1
+        return httpx.Response(
+            429 if responses == 1 else 200,
+            headers={"retry-after": "999999"},
+            content=b"ok",
+            request=request,
+        )
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
+        maximum_retry_delay=2,
+        sleep=sleeps.append,
+    )
+
+    result = fetcher.fetch("https://example.test/retry")
+
+    assert result.content == b"ok"
+    assert sleeps == [2]

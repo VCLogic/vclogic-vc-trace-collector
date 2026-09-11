@@ -9,8 +9,7 @@ from vc_trace_collector.pipeline import Pipeline
 
 PROFILE_URL = "https://www.thepitch.show/investors/michael-hyatt"
 VOICE_SOURCE_URL = (
-    "https://podcasts.apple.com/us/podcast/the-entrepreneurial-journey-with-serial/"
-    "id1448289455?i=1000491433138"
+    "https://tanktalks.substack.com/p/tank-talk-michael-hyatt-hyatt-family"
 )
 
 

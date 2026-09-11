@@ -68,6 +68,7 @@ def _json_ld(soup: BeautifulSoup) -> list[dict[str, object]]:
 
 def extract_page(content: bytes | str, source_url: str) -> ExtractedPage:
     soup = BeautifulSoup(content, "html.parser")
+    json_ld = _json_ld(soup)
     canonical_element = soup.find(
         "link", rel=lambda value: value and "canonical" in value
     )
@@ -79,13 +80,11 @@ def extract_page(content: bytes | str, source_url: str) -> ExtractedPage:
     canonical_url = canonicalize_url(canonical_source)
 
     title_element = soup.find("h1")
+    heading_title = title_element.get_text(" ", strip=True) if title_element else ""
     title = (
-        title_element.get_text(" ", strip=True)
-        if title_element
-        else (
-            _meta(soup, "og:title")
-            or (soup.title.get_text(" ", strip=True) if soup.title else "")
-        )
+        heading_title
+        or _meta(soup, "og:title")
+        or (soup.title.get_text(" ", strip=True) if soup.title else "")
     )
     author = _meta(soup, "author", "article:author")
     published = _meta(soup, "article:published_time", "date", "publish-date")
@@ -119,7 +118,7 @@ def extract_page(content: bytes | str, source_url: str) -> ExtractedPage:
         published_at=published,
         description=_meta(soup, "description", "og:description"),
         links=sorted(links),
-        metadata={"json_ld": _json_ld(soup)},
+        metadata={"json_ld": json_ld},
     )
 
 

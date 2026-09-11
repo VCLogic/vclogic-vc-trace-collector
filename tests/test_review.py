@@ -38,6 +38,45 @@ def test_review_decision_updates_candidate_and_preserves_reason() -> None:
     assert updated.candidates[0].decision_reason == "Confirmed first-person source"
 
 
+def test_review_decision_can_assert_material_role() -> None:
+    source_plan = plan(candidate("pending", status=ApprovalStatus.PENDING))
+
+    updated = apply_decisions(
+        source_plan,
+        [
+            SourceDecision(
+                candidate_id="pending",
+                status=ApprovalStatus.APPROVED,
+                reason="Human verified target appearance",
+                decided_by="reviewer",
+                material_role="spoken_by_target",
+            )
+        ],
+    )
+
+    assert updated.candidates[0].material_role == "spoken_by_target"
+
+
+def test_review_decision_can_attest_supplied_transcript_speaker() -> None:
+    source_plan = plan(candidate("pending", status=ApprovalStatus.PENDING))
+
+    updated = apply_decisions(
+        source_plan,
+        [
+            SourceDecision(
+                candidate_id="pending",
+                status=ApprovalStatus.APPROVED,
+                reason="Human checked the transcript against the recording",
+                decided_by="reviewer",
+                material_role="spoken_by_target",
+                speaker_verified=True,
+            )
+        ],
+    )
+
+    assert updated.candidates[0].speaker_verified_by == "reviewer"
+
+
 def test_review_rejects_unknown_candidate_id() -> None:
     with pytest.raises(KeyError):
         apply_decisions(

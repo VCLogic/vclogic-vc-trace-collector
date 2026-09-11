@@ -7,7 +7,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -69,6 +69,12 @@ class SpeakerStatus(StrEnum):
     UNCERTAIN = "uncertain"
     REJECTED = "rejected"
     UNAVAILABLE = "unavailable"
+
+
+class ReferenceVoiceStatus(StrEnum):
+    HIGH_CONFIDENCE_CANDIDATE = "high_confidence_candidate"
+    VERIFIED_HUMAN = "verified_human"
+    REJECTED = "rejected"
 
 
 class EventStatus(StrEnum):
@@ -142,6 +148,7 @@ class SourceCandidate(StrictModel):
     estimated_media_seconds: float = Field(default=0, ge=0)
     approval_status: ApprovalStatus = ApprovalStatus.PENDING
     decision_reason: str | None = None
+    speaker_verified_by: str | None = None
 
 
 class SourcePlan(StrictModel):
@@ -161,6 +168,8 @@ class SourceDecision(StrictModel):
     status: ApprovalStatus
     reason: str
     decided_by: str
+    material_role: MaterialRole | None = None
+    speaker_verified: bool = False
     decided_at: AwareDatetime = Field(default_factory=utc_now)
 
 
@@ -210,6 +219,12 @@ class SpeechSegment(StrictModel):
     speaker_label: str | None = None
     attribution: SpeakerAttribution = Field(default_factory=SpeakerAttribution)
 
+    @model_validator(mode="after")
+    def valid_interval(self) -> SpeechSegment:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be after start_seconds")
+        return self
+
 
 class CanonicalDocument(StrictModel):
     schema_version: str = "1.0"
@@ -252,7 +267,7 @@ class ReferenceVoiceCandidate(StrictModel):
     overlap_ratio: float | None = Field(default=None, ge=0, le=1)
     audio_quality_score: float | None = Field(default=None, ge=0, le=1)
     identity_confidence: Confidence
-    status: str = "high_confidence_candidate"
+    status: ReferenceVoiceStatus = ReferenceVoiceStatus.HIGH_CONFIDENCE_CANDIDATE
     artifact_id: str | None = None
     reviewed_by: str | None = None
 
@@ -261,7 +276,7 @@ class ReferenceVoiceProfile(StrictModel):
     investor_slug: str
     candidate_ids: list[str] = Field(min_length=1)
     artifact_ids: list[str] = Field(min_length=1)
-    status: str
+    status: ReferenceVoiceStatus
     embedding_model: str
     embedding_model_version: str
     embedding: list[float]

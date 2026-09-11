@@ -9,6 +9,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .models import MaterialRole
+from .policy import ExclusionRule
 from .storage import canonical_json
 
 
@@ -19,15 +21,21 @@ class RunConfig(BaseModel):
     firm: str | None = None
     known_profile_url: str | None = None
     source_urls: list[str] = Field(default_factory=list)
+    supplied_files: list[str] = Field(default_factory=list)
+    supplied_role: MaterialRole = MaterialRole.UNKNOWN
     output_dir: str = "outputs"
     approved_source_types: list[str] = Field(default_factory=list)
     excluded_domains: list[str] = Field(default_factory=list)
     excluded_channels: list[str] = Field(default_factory=list)
+    exclusion_rules: list[ExclusionRule] = Field(default_factory=list)
     discovery_model: str | None = None
     transcription_model: str | None = None
     diarization_model: str | None = None
     embedding_model: str | None = None
+    speaker_minimum_score: float = Field(default=0.75, ge=-1, le=1)
+    speaker_minimum_margin: float = Field(default=0.10, ge=0, le=2)
     maximum_cost_usd: Decimal = Decimal("10.00")
+    discovery_call_budget_usd: Decimal | None = Field(default=None, ge=0)
     maximum_search_operations: int = Field(default=20, ge=0)
     maximum_media_minutes: float = Field(default=120, ge=0)
     automatic_discovery: bool = False

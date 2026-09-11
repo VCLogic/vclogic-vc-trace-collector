@@ -10,9 +10,14 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .models import SpeakerAttribution, SpeakerStatus, TranscriptInfo
+from .models import (
+    ReferenceVoiceProfile,
+    SpeakerAttribution,
+    SpeakerStatus,
+    TranscriptInfo,
+)
 
 
 class TimedText(BaseModel):
@@ -22,6 +27,21 @@ class TimedText(BaseModel):
     end_seconds: float = Field(ge=0)
     text: str
 
+    @model_validator(mode="after")
+    def valid_interval(self) -> TimedText:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be after start_seconds")
+        return self
+
+    @classmethod
+    def from_caption(cls, item: dict) -> TimedText:
+        start = float(item.get("start", item.get("start_seconds", 0)))
+        if "end" in item or "end_seconds" in item:
+            end = float(item.get("end", item.get("end_seconds")))
+        else:
+            end = start + float(item.get("duration", 0))
+        return cls(start_seconds=start, end_seconds=end, text=str(item["text"]))
+
 
 class DiarizedTurn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -29,6 +49,12 @@ class DiarizedTurn(BaseModel):
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(ge=0)
     speaker_label: str
+
+    @model_validator(mode="after")
+    def valid_interval(self) -> DiarizedTurn:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("end_seconds must be after start_seconds")
+        return self
 
 
 class AlignedText(TimedText):
@@ -49,6 +75,16 @@ class DiarizationResult(BaseModel):
     model: str
     turns: list[DiarizedTurn]
     speaker_embeddings: dict[str, list[float]]
+
+
+class TargetSpeechResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transcript: TranscriptInfo
+    attribution: SpeakerAttribution
+    aligned_segments: list[AlignedText]
+    target_segments: list[AlignedText]
+    media_seconds: float = Field(ge=0)
 
 
 class TranscriptProvider(Protocol):
@@ -169,7 +205,80 @@ def align_transcript_to_speakers(
     return aligned
 
 
+def process_target_speech(
+    audio_path: Path,
+    *,
+    reference: ReferenceVoiceProfile,
+    diarization_provider: DiarizationProvider,
+    transcript_provider: TranscriptProvider | None = None,
+    existing_transcript: TranscriptResult | None = None,
+    minimum_score: float = 0.75,
+    minimum_margin: float = 0.10,
+) -> TargetSpeechResult:
+    if existing_transcript is None and transcript_provider is None:
+        raise ValueError("A transcript or transcript provider is required")
+    transcript = existing_transcript or transcript_provider.transcribe(audio_path)
+    diarization = diarization_provider.diarize(audio_path)
+    attribution = match_target_speaker(
+        reference.embedding,
+        diarization.speaker_embeddings,
+        minimum_score,
+        minimum_margin,
+        diarization_model=diarization.model,
+        embedding_model=reference.embedding_model,
+        reference_artifact_ids=reference.artifact_ids,
+    )
+    aligned = align_transcript_to_speakers(transcript.segments, diarization.turns)
+    target = [
+        item
+        for item in aligned
+        if attribution.speaker_label is not None
+        and item.speaker_label == attribution.speaker_label
+    ]
+    media_seconds = max(
+        [item.end_seconds for item in transcript.segments]
+        + [item.end_seconds for item in diarization.turns]
+        + [0.0]
+    )
+    return TargetSpeechResult(
+        transcript=transcript.info,
+        attribution=attribution,
+        aligned_segments=aligned,
+        target_segments=target,
+        media_seconds=media_seconds,
+    )
+
+
 Runner = Callable[..., subprocess.CompletedProcess]
+
+
+def probe_media_duration(
+    source: Path,
+    *,
+    ffprobe: str = "ffprobe",
+    runner: Runner = subprocess.run,
+) -> float | None:
+    try:
+        completed = runner(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(source),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        duration = float(completed.stdout.strip())
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError):
+        return None
+    return duration if math.isfinite(duration) and duration >= 0 else None
 
 
 def extract_audio_segment(
@@ -199,7 +308,10 @@ def extract_audio_segment(
     if start_seconds is not None:
         command.extend(["-ss", str(start_seconds)])
     if end_seconds is not None:
-        command.extend(["-to", str(end_seconds)])
+        duration = end_seconds - (start_seconds or 0)
+        if duration <= 0:
+            raise ValueError("end_seconds must be positive")
+        command.extend(["-t", str(duration)])
     command.extend(
         [
             "-i",
@@ -296,3 +408,28 @@ class PyannoteDiarizationProvider:
             turns=turns,
             speaker_embeddings=by_label,
         )
+
+
+class PyannoteEmbeddingProvider:
+    provider_name = "pyannote"
+
+    def __init__(
+        self, model: str, *, token: str | None = None, device: str | None = None
+    ):
+        self.model_name = model
+        try:
+            from pyannote.audio import Inference
+        except ImportError as error:
+            raise RuntimeError("Install the av-local extra to use pyannote") from error
+        try:
+            self._inference = Inference(model, token=token, window="whole")
+        except TypeError:
+            self._inference = Inference(model, use_auth_token=token, window="whole")
+        if device:
+            import torch
+
+            self._inference.to(torch.device(device))
+
+    def embed(self, audio_path: Path) -> list[float]:
+        values = self._inference(str(audio_path))
+        return [float(value) for value in values]

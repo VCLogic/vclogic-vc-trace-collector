@@ -172,6 +172,43 @@ def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:
     )
 
 
+def test_embedded_audio_page_is_classified_as_podcast_voice_source() -> None:
+    page_url = "https://tanktalks.substack.com/p/michael-hyatt"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
+        if request.url.host == "tanktalks.substack.com":
+            content = (
+                b"<html><head><title>Interview with Michael Hyatt</title></head>"
+                b"<body><main>Michael Hyatt co-founder of BlueCat interview."
+                b"<audio src='https://cdn.example.test/voice.mp3'></audio>"
+                b"</main></body></html>"
+            )
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"content-type": "text/html"},
+            request=request,
+        )
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
+    )
+    result = DiscoveryService(fetcher=fetcher).discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=[page_url],
+    )
+
+    source = next(
+        item for item in result.source_plan.candidates if item.url == page_url
+    )
+    assert source.source_type == SourceType.PODCAST
+    assert source.material_role == MaterialRole.REFERENCE_VOICE
+
+
 def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> None:
     captured: dict = {}
 
@@ -181,6 +218,7 @@ def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> N
 
         def json(self) -> dict:
             return {
+                "usage": {"prompt_tokens": 123, "completion_tokens": 45},
                 "choices": [
                     {
                         "message": {
@@ -195,7 +233,7 @@ def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> N
                             )
                         }
                     }
-                ]
+                ],
             }
 
     def fake_post(*args, **kwargs):
@@ -203,12 +241,14 @@ def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> N
         return Response()
 
     monkeypatch.setattr("vc_trace_collector.discovery.httpx.post", fake_post)
-    OpenAICompatibleDiscoveryProvider(
+    provider = OpenAICompatibleDiscoveryProvider(
         "https://provider.example/v1/chat/completions", "secret", "model"
-    ).refine(name="Michael Hyatt", evidence=[], candidates=[])
+    )
+    provider.refine(name="Michael Hyatt", evidence=[], candidates=[])
 
     user_message = captured["json"]["messages"][1]["content"]
     assert json.loads(user_message)["name"] == "Michael Hyatt"
+    assert provider.last_usage == {"input_tokens": 123, "output_tokens": 45}
 
 
 def test_source_plan_id_changes_when_candidate_set_changes() -> None:
@@ -225,3 +265,24 @@ def test_source_plan_id_changes_when_candidate_set_changes() -> None:
     )
 
     assert first.source_plan.plan_id != second.source_plan.plan_id
+
+
+def test_supplied_file_is_added_to_reviewable_plan(tmp_path) -> None:
+    supplied = tmp_path / "michael-hyatt-notes.txt"
+    supplied.write_text("First-person public notes supplied by the operator.")
+
+    result = DiscoveryService(fetcher=profile_fetcher()).discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[supplied],
+        supplied_role=MaterialRole.AUTHORED_BY_TARGET,
+    )
+
+    candidate = next(
+        item
+        for item in result.source_plan.candidates
+        if item.source_type == SourceType.SUPPLIED
+    )
+    assert candidate.url == supplied.resolve().as_uri()
+    assert candidate.material_role == MaterialRole.AUTHORED_BY_TARGET
+    assert candidate.approval_status == ApprovalStatus.PENDING

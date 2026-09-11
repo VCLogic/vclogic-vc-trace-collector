@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -81,7 +82,11 @@ def export_persona_sources(
             if document.exclusion_reason and "Pitch" in document.exclusion_reason
         ],
         "channel_unknown": [],
-        "no_pitch_sources": True,
+        "no_pitch_sources": all(
+            "thepitch.show"
+            not in json.dumps(document.model_dump(mode="json")).casefold()
+            for document in included
+        ),
     }
     write_json(output / "_manifest.json", manifest)
     return manifest
@@ -162,7 +167,24 @@ def export_workspace(
         workspace / "_manifest.json",
         workspace / "quality_report.json",
     ]
-    files = [_file(path, workspace) for path in sorted(paths)]
+    optional_processed = workspace / "processed/av_attribution_results.jsonl"
+    if optional_processed.exists():
+        paths.append(optional_processed)
+    provenance_paths = [
+        workspace / "config_snapshot.json",
+        workspace / "exclusion_rules_snapshot.json",
+        workspace / "identity/resolved_identity.json",
+        workspace / "identity/identity_evidence.jsonl",
+        workspace / "identity/reference_voice_candidates.jsonl",
+        workspace / "identity/reference_voice_profile.json",
+        workspace / "discovery/source_plan.json",
+        workspace / "discovery/source_candidates.jsonl",
+        workspace / "discovery/approved_sources.jsonl",
+        workspace / "discovery/rejected_sources.jsonl",
+    ]
+    provenance_paths.extend((workspace / "raw").rglob("*"))
+    paths.extend(path for path in provenance_paths if path.is_file())
+    files = [_file(path, workspace) for path in sorted(set(paths))]
     fingerprint_payload = {
         "investor_slug": investor_slug,
         "identity_id": identity_id,

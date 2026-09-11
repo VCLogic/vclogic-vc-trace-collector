@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from hashlib import sha256
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -136,6 +137,7 @@ class OpenAICompatibleDiscoveryProvider:
         self.api_key = api_key
         self.model_name = model
         self.timeout = timeout
+        self.last_usage: dict[str, int] = {}
 
     def refine(
         self,
@@ -182,7 +184,13 @@ class OpenAICompatibleDiscoveryProvider:
             timeout=self.timeout,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        response_data = response.json()
+        usage = response_data.get("usage") or {}
+        self.last_usage = {
+            "input_tokens": int(usage.get("prompt_tokens") or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+        }
+        content = response_data["choices"][0]["message"]["content"]
         return DiscoveryRefinement.model_validate_json(content)
 
 
@@ -230,10 +238,6 @@ def _source_type(url: str, context: str = "") -> SourceType:
     path = urlsplit(url).path.casefold()
     if hostname.endswith("youtube.com") or hostname == "youtu.be":
         return SourceType.YOUTUBE
-    if hostname.endswith("substack.com"):
-        return SourceType.SUBSTACK
-    if hostname.endswith("medium.com"):
-        return SourceType.MEDIUM
     if (
         hostname
         in {"podcasts.apple.com", "podcasters.spotify.com", "creators.spotify.com"}
@@ -241,6 +245,10 @@ def _source_type(url: str, context: str = "") -> SourceType:
         or re.search(r"\b(podcast|episode)\b", context, flags=re.IGNORECASE)
     ):
         return SourceType.PODCAST
+    if hostname.endswith("substack.com"):
+        return SourceType.SUBSTACK
+    if hostname.endswith("medium.com"):
+        return SourceType.MEDIUM
     if path.endswith(("/feed", "/feed/", ".rss", ".xml", ".atom")):
         return SourceType.RSS_FEED
     return SourceType.WEB_ARTICLE
@@ -302,6 +310,8 @@ class DiscoveryService:
         firm: str | None = None,
         known_profile_url: str | None = None,
         source_urls: list[str] | None = None,
+        supplied_files: list[Path] | None = None,
+        supplied_role: MaterialRole = MaterialRole.UNKNOWN,
     ) -> DiscoveryResult:
         slug = slugify(f"{name}-{firm}" if firm else name)
         evidence: list[IdentityEvidence] = []
@@ -401,7 +411,11 @@ class DiscoveryService:
             )
             source_type = _source_type(
                 source_page.canonical_url,
-                f"{source_page.title} {source_page.description or ''} {source_page.text[:500]}",
+                (
+                    f"{source_page.title} {source_page.description or ''} "
+                    f"{source_page.text[:500]} "
+                    f"{'podcast' if b'<audio' in fetched.content.lower() else ''}"
+                ),
             )
             exclusion = self.rules.evaluate(
                 url=source_page.canonical_url,
@@ -436,6 +450,29 @@ class DiscoveryService:
                     else ApprovalStatus.PENDING
                 ),
                 decision_reason=exclusion.reason,
+            )
+        for supplied_file in supplied_files or []:
+            path = Path(supplied_file).expanduser().resolve(strict=True)
+            source_uri = path.as_uri()
+            candidates_by_url[source_uri] = SourceCandidate(
+                candidate_id=stable_id("candidate", source_uri),
+                url=source_uri,
+                canonical_url=source_uri,
+                source_type=SourceType.SUPPLIED,
+                material_role=supplied_role,
+                title=path.name,
+                description="Operator-supplied local public-trace snapshot",
+                discovered_via="user_supplied_file",
+                discovery_queries=[f"operator supplied file for {name}"],
+                identity_confidence=Confidence(
+                    score=0.9,
+                    method="operator_attested_file_identity",
+                    version="1",
+                ),
+                source_confidence=Confidence(
+                    score=0.9, method="operator_supplied_file", version="1"
+                ),
+                approval_status=ApprovalStatus.PENDING,
             )
         firm_names = [item.firm for item in affiliations]
         queries = generate_queries(name, firm_names)
@@ -544,6 +581,7 @@ class DiscoveryService:
                     "provider": self.discovery_provider.provider_name,
                     "model": self.discovery_provider.model_name,
                     "action": "identity_and_source_refinement",
+                    **getattr(self.discovery_provider, "last_usage", {}),
                 }
             )
 

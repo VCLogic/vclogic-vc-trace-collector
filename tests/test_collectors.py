@@ -1,4 +1,6 @@
+import json
 import socket
+import subprocess
 from decimal import Decimal
 from pathlib import Path
 from typing import ClassVar
@@ -12,6 +14,7 @@ from vc_trace_collector.collectors import (
     CollectorRegistry,
     PodcastCollector,
     SuppliedFileCollector,
+    YouTubeCollector,
     collect_approved_sources,
 )
 from vc_trace_collector.fetch import Fetcher
@@ -230,3 +233,71 @@ def test_podcast_collector_preserves_page_and_public_audio(tmp_path) -> None:
     }
     assert result.artifacts[1].parent_artifact_ids == [result.artifacts[0].artifact_id]
     assert result.artifacts[1].relative_path.endswith(".mp3")
+
+
+def test_youtube_collector_preserves_metadata_captions_and_audio(tmp_path) -> None:
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if "--dump-single-json" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"id": "abc123", "duration": 42}),
+                stderr="",
+            )
+        template = Path(command[command.index("-o") + 1])
+        media = template.with_name("audio.m4a")
+        media.write_bytes(b"youtube audio fixture")
+        return subprocess.CompletedProcess(
+            command, 0, stdout=str(media) + "\n", stderr=""
+        )
+
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    source = candidate(
+        "youtube",
+        SourceType.YOUTUBE,
+        url="https://www.youtube.com/watch?v=abc123",
+    )
+
+    result = collect_approved_sources(
+        plan(source),
+        context=run_context,
+        registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
+    )
+
+    assert result.collected == 1
+    assert any(item.collection_method == "yt_dlp_audio" for item in result.artifacts)
+    assert any("--max-filesize" in command for command in calls)
+
+
+def test_youtube_collector_rejects_over_budget_media_before_download(tmp_path) -> None:
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"id": "abc123", "duration": 61}),
+            stderr="",
+        )
+
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    source = candidate(
+        "youtube",
+        SourceType.YOUTUBE,
+        url="https://www.youtube.com/watch?v=abc123",
+    )
+
+    result = collect_approved_sources(
+        plan(source),
+        context=run_context,
+        registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
+    )
+
+    assert result.failed == 1
+    assert len(calls) == 1

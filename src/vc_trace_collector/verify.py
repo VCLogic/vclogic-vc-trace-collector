@@ -4,12 +4,27 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import CanonicalDocument, CollectionManifest, QualityReport
-from .policy import eligible_for_corpus
-from .storage import read_json, read_jsonl
+from .config import RunConfig
+from .models import (
+    ApprovalStatus,
+    CanonicalDocument,
+    CollectionManifest,
+    QualityReport,
+    RawArtifact,
+    ReferenceVoiceProfile,
+    ReferenceVoiceStatus,
+    ResolutionStatus,
+    ResolvedIdentity,
+    SourcePlan,
+    SourceType,
+    SpeakerStatus,
+)
+from .policy import ExclusionRule, RuleSet, eligible_for_corpus
+from .storage import canonical_json, read_json, read_jsonl
 
 
 class VerificationResult(BaseModel):
@@ -21,8 +36,47 @@ class VerificationResult(BaseModel):
     checked_documents: int = 0
 
 
+def _contained_path(root: Path, relative: str) -> Path | None:
+    candidate = (root / relative).resolve()
+    if candidate == root or root in candidate.parents:
+        return candidate
+    return None
+
+
+def _load_model(path: Path, model: type[BaseModel], label: str, errors: list[str]):
+    try:
+        return model.model_validate(read_json(path))
+    except Exception as error:
+        errors.append(f"Invalid {label}: {error}")
+        return None
+
+
+def _validate_model_attribution(document: CanonicalDocument, errors: list[str]) -> None:
+    attribution = document.speaker_attribution
+    if attribution.status != SpeakerStatus.ACCEPTED_MODEL:
+        return
+    if any(
+        value is None
+        for value in (
+            attribution.score,
+            attribution.margin,
+            attribution.minimum_score,
+            attribution.minimum_margin,
+        )
+    ):
+        errors.append(
+            f"Model-accepted speech lacks attribution thresholds: "
+            f"{document.document_version_id}"
+        )
+        return
+    if attribution.score < attribution.minimum_score:
+        errors.append(f"Speaker score below threshold: {document.document_version_id}")
+    if attribution.margin < attribution.minimum_margin:
+        errors.append(f"Speaker margin below threshold: {document.document_version_id}")
+
+
 def verify_workspace(workspace: Path) -> VerificationResult:
-    workspace = Path(workspace)
+    workspace = Path(workspace).resolve()
     errors: list[str] = []
     manifest_path = workspace / "collection_manifest.json"
     if not manifest_path.exists():
@@ -38,7 +92,10 @@ def verify_workspace(workspace: Path) -> VerificationResult:
 
     checked_files = 0
     for item in manifest.files:
-        path = workspace / item.path
+        path = _contained_path(workspace, item.path)
+        if path is None:
+            errors.append(f"Manifest path escapes workspace: {item.path}")
+            continue
         if not path.exists():
             errors.append(f"Missing manifest file: {item.path}")
             continue
@@ -46,6 +103,121 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         digest = sha256(path.read_bytes()).hexdigest()
         if digest != item.sha256:
             errors.append(f"File hash mismatch: {item.path}")
+        if path.stat().st_size != item.size_bytes:
+            errors.append(f"File size mismatch: {item.path}")
+        if item.records is not None:
+            records = sum(1 for line in path.read_bytes().splitlines() if line.strip())
+            if records != item.records:
+                errors.append(f"Record count mismatch: {item.path}")
+
+    fingerprint_payload = {
+        "investor_slug": manifest.investor_slug,
+        "identity_id": manifest.identity_id,
+        "config_hash": manifest.config_hash,
+        "exclusion_rules_hash": manifest.exclusion_rules_hash,
+        "files": [item.model_dump(mode="json") for item in manifest.files],
+    }
+    expected_fingerprint = sha256(
+        canonical_json(fingerprint_payload).encode("utf-8")
+    ).hexdigest()
+    if manifest.fingerprint != expected_fingerprint:
+        errors.append("Collection manifest fingerprint mismatch")
+
+    identity = _load_model(
+        workspace / "identity/resolved_identity.json",
+        ResolvedIdentity,
+        "resolved identity",
+        errors,
+    )
+    if identity is not None:
+        if identity.slug != manifest.investor_slug:
+            errors.append("Resolved identity slug does not match manifest")
+        if identity.resolution_status != ResolutionStatus.CONFIRMED:
+            errors.append("Resolved identity is not confirmed")
+
+    config = _load_model(
+        workspace / "config_snapshot.json", RunConfig, "config snapshot", errors
+    )
+    if config is not None and config.fingerprint != manifest.config_hash:
+        errors.append("Config snapshot hash does not match manifest")
+
+    effective_rules = None
+    try:
+        rules_payload: Any = read_json(workspace / "exclusion_rules_snapshot.json")
+        rules_hash = sha256(canonical_json(rules_payload).encode("utf-8")).hexdigest()
+        if rules_hash != manifest.exclusion_rules_hash:
+            errors.append("Exclusion rules hash does not match manifest")
+        effective_rules = RuleSet(
+            [ExclusionRule.model_validate(item) for item in rules_payload]
+        )
+    except Exception as error:
+        errors.append(f"Invalid exclusion rules snapshot: {error}")
+
+    plan = _load_model(
+        workspace / "discovery/source_plan.json", SourcePlan, "source plan", errors
+    )
+    candidates = {}
+    if plan is not None:
+        if plan.investor_slug != manifest.investor_slug:
+            errors.append("Source plan investor slug does not match manifest")
+        candidates = {item.candidate_id: item for item in plan.candidates}
+
+    artifacts: dict[str, list[RawArtifact]] = {}
+    for metadata_path in sorted((workspace / "raw").rglob("*.metadata.json")):
+        try:
+            artifact = RawArtifact.model_validate(read_json(metadata_path))
+        except Exception as error:
+            errors.append(f"Invalid raw artifact record {metadata_path}: {error}")
+            continue
+        artifacts.setdefault(artifact.artifact_id, []).append(artifact)
+        for parent_id in artifact.parent_artifact_ids:
+            # The complete set is checked after all provenance records are read.
+            if not parent_id.startswith("sha256:"):
+                errors.append(f"Invalid raw parent artifact id: {parent_id}")
+        raw_path = _contained_path(workspace, artifact.relative_path)
+        if raw_path is None:
+            errors.append(
+                f"Raw artifact path escapes workspace: {artifact.relative_path}"
+            )
+            continue
+        if not raw_path.exists():
+            errors.append(f"Missing raw artifact bytes: {artifact.relative_path}")
+            continue
+        raw_bytes = raw_path.read_bytes()
+        if sha256(raw_bytes).hexdigest() != artifact.sha256:
+            errors.append(f"Raw artifact hash mismatch: {artifact.relative_path}")
+        if len(raw_bytes) != artifact.size_bytes:
+            errors.append(f"Raw artifact size mismatch: {artifact.relative_path}")
+    for records in artifacts.values():
+        for artifact in records:
+            for parent_id in artifact.parent_artifact_ids:
+                if parent_id not in artifacts:
+                    errors.append(
+                        f"Raw artifact references missing parent: {artifact.artifact_id}"
+                    )
+
+    profile = None
+    profile_path = workspace / "identity/reference_voice_profile.json"
+    if profile_path.exists():
+        profile = _load_model(
+            profile_path, ReferenceVoiceProfile, "reference voice profile", errors
+        )
+        if profile is not None:
+            if profile.investor_slug != manifest.investor_slug:
+                errors.append(
+                    "Reference voice profile investor does not match manifest"
+                )
+            if profile.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
+                errors.append("Reference voice profile is not human verified")
+            if any(item not in artifacts for item in profile.artifact_ids):
+                errors.append("Reference voice profile has missing raw lineage")
+
+    processed: list[CanonicalDocument] = []
+    for row in read_jsonl(workspace / "processed/documents.jsonl"):
+        try:
+            processed.append(CanonicalDocument.model_validate(row))
+        except Exception as error:
+            errors.append(f"Invalid processed document: {error}")
 
     documents: list[CanonicalDocument] = []
     for row in read_jsonl(workspace / "corpus/all_documents.jsonl"):
@@ -61,10 +233,103 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             )
         if not document.raw_artifact_ids:
             errors.append(f"Document lacks raw lineage: {document.document_version_id}")
+        missing_artifacts = [
+            artifact_id
+            for artifact_id in document.raw_artifact_ids
+            if artifact_id not in artifacts
+        ]
+        if missing_artifacts:
+            errors.append(
+                f"Document references missing raw artifacts: "
+                f"{document.document_version_id}"
+            )
+        elif not any(
+            str(record.original_metadata.get("candidate_id", ""))
+            == document.source_candidate_id
+            for artifact_id in document.raw_artifact_ids
+            for record in artifacts.get(artifact_id, [])
+        ):
+            errors.append(
+                f"Document raw lineage does not support its source candidate: "
+                f"{document.document_version_id}"
+            )
+        candidate = candidates.get(document.source_candidate_id)
+        if candidate is None:
+            errors.append(
+                f"Document references unknown source candidate: "
+                f"{document.document_version_id}"
+            )
+        elif candidate.approval_status not in {
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.AUTO_APPROVED,
+        }:
+            errors.append(
+                f"Corpus document source was not approved: "
+                f"{document.document_version_id}"
+            )
+        _validate_model_attribution(document, errors)
+        if (
+            document.speaker_attribution.status == SpeakerStatus.ACCEPTED_MODEL
+            and profile is None
+        ):
+            errors.append(
+                f"Model-attributed speech lacks a reference profile: "
+                f"{document.document_version_id}"
+            )
+        if (
+            document.material_role == "authored_by_target"
+            and candidate is not None
+            and candidate.source_type != SourceType.SUPPLIED
+            and identity is not None
+            and identity.canonical_name.casefold()
+            not in {author.casefold().strip() for author in document.authors}
+        ):
+            errors.append(
+                f"Authored document does not name the target as author: "
+                f"{document.document_version_id}"
+            )
+        if effective_rules is not None:
+            provenance_urls = (
+                {document.canonical_url} if document.canonical_url else set()
+            )
+            if candidate is not None:
+                provenance_urls.update({candidate.url, candidate.canonical_url})
+            for artifact_id in document.raw_artifact_ids:
+                provenance_urls.update(
+                    record.source_url
+                    for record in artifacts.get(artifact_id, [])
+                    if record.source_url
+                )
+            if any(
+                effective_rules.evaluate(
+                    url=url,
+                    title=document.title,
+                    text=document.text,
+                    stage="verification",
+                ).status
+                != "included"
+                for url in provenance_urls
+            ):
+                errors.append(
+                    f"Corpus document violates effective exclusion rules: "
+                    f"{document.document_version_id}"
+                )
     if len(documents) != manifest.corpus_documents:
         errors.append(
             f"Manifest corpus count {manifest.corpus_documents} does not match {len(documents)}"
         )
+    excluded_count = sum(1 for item in processed if not eligible_for_corpus(item))
+    if excluded_count != manifest.excluded_documents:
+        errors.append(
+            f"Manifest excluded count {manifest.excluded_documents} does not match "
+            f"{excluded_count}"
+        )
+    corpus_versions = {item.document_version_id for item in documents}
+    processed_versions = {
+        item.document_version_id for item in processed if eligible_for_corpus(item)
+    }
+    if corpus_versions != processed_versions:
+        errors.append("Corpus documents do not match eligible processed documents")
     try:
         quality = QualityReport.model_validate(
             read_json(workspace / "quality_report.json")
