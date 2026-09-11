@@ -6,6 +6,8 @@ reason = "Downstream leakage firewall: The Pitch sources are prohibited"
 domains = ["thepitch.show"]
 channels = ["The Pitch Show"]
 programmes = ["The Pitch"]
+authors = []
+speakers = []
 
 [[rules]]
 rule_id = "review-pitch-outcomes"

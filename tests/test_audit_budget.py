@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import pytest
@@ -79,3 +80,30 @@ def test_released_reservation_is_reestablished_before_retry(tmp_path) -> None:
 
     with pytest.raises(BudgetExceeded):
         ledger.reserve("retry", Decimal("0.75"))
+
+
+def test_settlement_preserves_other_active_reservations(tmp_path) -> None:
+    ledger = BudgetLedger(tmp_path / "costs.jsonl", maximum=Decimal("1.00"))
+    ledger.reserve("first", Decimal("0.60"))
+    ledger.reserve("second", Decimal("0.40"))
+
+    with pytest.raises(BudgetExceeded):
+        ledger.settle("first", Decimal("0.70"))
+
+
+def test_concurrent_reservations_cannot_oversubscribe_budget(tmp_path) -> None:
+    path = tmp_path / "costs.jsonl"
+
+    def reserve(operation_id: str) -> bool:
+        try:
+            BudgetLedger(path, maximum=Decimal("1.00")).reserve(
+                operation_id, Decimal("0.75")
+            )
+        except BudgetExceeded:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        accepted = list(executor.map(reserve, ["first", "second"]))
+
+    assert sorted(accepted) == [False, True]

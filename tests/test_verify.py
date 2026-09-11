@@ -8,13 +8,16 @@ from vc_trace_collector.models import (
     ResolutionStatus,
     ResolvedIdentity,
     SourceCandidate,
+    SourceDecision,
     SourcePlan,
+    utc_now,
 )
 from vc_trace_collector.storage import (
     ArtifactStore,
     canonical_json,
     read_json,
     write_json,
+    write_jsonl,
 )
 from vc_trace_collector.verify import verify_workspace
 
@@ -22,16 +25,27 @@ from vc_trace_collector.verify import verify_workspace
 def exported_workspace(tmp_path, *, empty: bool = False):
     config = RunConfig(name="Michael Hyatt")
     write_json(tmp_path / "config_snapshot.json", config)
+    identity = ResolvedIdentity(
+        slug="michael-hyatt",
+        canonical_name="Michael Hyatt",
+        resolution_status=ResolutionStatus.CONFIRMED,
+        identity_confidence=Confidence(score=0.95, method="test", version="1"),
+        reviewed_by="reviewer",
+    )
     write_json(
         tmp_path / "identity/resolved_identity.json",
-        ResolvedIdentity(
-            slug="michael-hyatt",
-            canonical_name="Michael Hyatt",
-            resolution_status=ResolutionStatus.CONFIRMED,
-            identity_confidence=Confidence(score=0.95, method="test", version="1"),
-            reviewed_by="reviewer",
-        ),
+        identity,
     )
+    write_json(
+        tmp_path / "identity/identity_review.json",
+        {
+            "investor_slug": "michael-hyatt",
+            "status": "confirmed",
+            "reviewed_by": "reviewer",
+            "reviewed_at": identity.resolved_at,
+        },
+    )
+    decision_time = utc_now()
     candidate = SourceCandidate(
         candidate_id="candidate:blog",
         url="https://example.test/blog",
@@ -42,6 +56,8 @@ def exported_workspace(tmp_path, *, empty: bool = False):
         identity_confidence=Confidence(score=0.95, method="test", version="1"),
         source_confidence=Confidence(score=0.95, method="test", version="1"),
         approval_status=ApprovalStatus.APPROVED,
+        reviewed_by="reviewer",
+        decision_at=decision_time,
     )
     write_json(
         tmp_path / "discovery/source_plan.json",
@@ -50,6 +66,18 @@ def exported_workspace(tmp_path, *, empty: bool = False):
             investor_slug="michael-hyatt",
             candidates=[candidate],
         ),
+    )
+    write_jsonl(
+        tmp_path / "discovery/source_decisions.jsonl",
+        [
+            SourceDecision(
+                candidate_id=candidate.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="test approval",
+                decided_by="reviewer",
+                decided_at=decision_time,
+            )
+        ],
     )
     artifact = ArtifactStore(tmp_path).put_bytes(
         b"public writing",

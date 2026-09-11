@@ -305,10 +305,12 @@ def test_workspace_places_legacy_export_at_investor_root(tmp_path) -> None:
 def test_quality_report_fails_required_source_failures_unless_partial_is_explicit(
     tmp_path,
 ) -> None:
+    blog = document("blog", "public writing")
+    blog.authors = ["Michael Hyatt"]
     kwargs = {
         "investor_slug": "michael-hyatt",
         "identity_id": "identity:michael",
-        "documents": [document("blog", "public writing")],
+        "documents": [blog],
         "config_hash": "config-hash",
         "exclusion_rules_hash": "rules-hash",
         "run_failures": 1,

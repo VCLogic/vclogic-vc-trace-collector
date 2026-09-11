@@ -14,6 +14,7 @@ from vc_trace_collector.collectors import (
     CollectorRegistry,
     PodcastCollector,
     SuppliedFileCollector,
+    WebCollector,
     YouTubeCollector,
     _podcast_duration_seconds,
     collect_approved_sources,
@@ -193,6 +194,29 @@ def test_collection_stops_before_exceeding_reserved_provider_budget(tmp_path) ->
     assert next((tmp_path / "raw/web").rglob("*.html")).exists()
 
 
+def test_downloaded_byte_limit_is_aggregate_across_web_sources(tmp_path) -> None:
+    def resolver(host: str, port: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"123456", request=request)
+
+    run_context = context(tmp_path)
+    run_context.maximum_download_bytes = 10
+    run_context.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
+    result = collect_approved_sources(
+        plan(candidate("first"), candidate("second")),
+        context=run_context,
+        registry=CollectorRegistry([WebCollector()]),
+    )
+
+    assert result.collected == 1
+    assert result.failed == 1
+    assert result.downloaded_bytes == 6
+
+
 def test_podcast_collector_preserves_page_and_public_audio(tmp_path) -> None:
     page_url = "https://podcast.example.test/episodes/michael-hyatt"
     audio_url = "https://cdn.example.test/michael-hyatt.mp3"
@@ -277,6 +301,37 @@ def test_podcast_refuses_unbounded_media_before_enclosure_download(tmp_path) -> 
 
     assert result.failed == 1
     assert requested == [page_url]
+
+
+def test_direct_podcast_audio_requires_duration_before_get(tmp_path) -> None:
+    audio_url = "https://cdn.example.test/episode.mp3"
+    requested: list[str] = []
+
+    def resolver(host: str, port: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(
+            200,
+            content=b"ID3 audio",
+            headers={"content-type": "audio/mpeg"},
+            request=request,
+        )
+
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    run_context.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
+    result = collect_approved_sources(
+        plan(candidate("podcast", SourceType.PODCAST, url=audio_url)),
+        context=run_context,
+        registry=CollectorRegistry([PodcastCollector()]),
+    )
+
+    assert result.failed == 1
+    assert requested == []
 
 
 def test_youtube_metadata_exclusion_stops_before_captions_or_download(tmp_path) -> None:
@@ -368,6 +423,60 @@ def test_youtube_channel_id_exclusion_stops_before_download(tmp_path) -> None:
     assert result.excluded == 1
     assert len(calls) == 1
     assert result.artifacts[0].original_metadata["channel_id"] == "UC_BLOCKED"
+
+
+def test_post_metadata_review_pauses_media_until_explicit_rule_override(
+    tmp_path,
+) -> None:
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if "--dump-single-json" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {"id": "abc123", "duration": 42, "channel": "Needs Review"}
+                ),
+                stderr="",
+            )
+        template = Path(command[command.index("-o") + 1])
+        media = template.with_name("audio.m4a")
+        media.write_bytes(b"youtube audio fixture")
+        return subprocess.CompletedProcess(command, 0, stdout=f"{media}\n", stderr="")
+
+    run_context = context(tmp_path)
+    run_context.rules = RuleSet(
+        [
+            ExclusionRule(
+                rule_id="review-channel",
+                action="review",
+                reason="human review required",
+                channels=["Needs Review"],
+            )
+        ]
+    )
+    source = candidate(
+        "youtube",
+        SourceType.YOUTUBE,
+        url="https://www.youtube.com/watch?v=abc123",
+    )
+    registry = CollectorRegistry([YouTubeCollector(runner=runner)])
+
+    paused = collect_approved_sources(
+        plan(source), context=run_context, registry=registry
+    )
+    source.override_rule_ids = ["review-channel"]
+    resumed = collect_approved_sources(
+        plan(source), context=run_context, registry=registry
+    )
+
+    assert paused.review_required == 1
+    assert paused.media_seconds == 0
+    assert resumed.collected == 1
+    assert resumed.media_seconds == 42
+    assert sum("--print" in call for call in calls) == 1
 
 
 def test_youtube_collector_preserves_metadata_captions_and_audio(tmp_path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -81,17 +82,75 @@ class BudgetLedger:
     def __init__(self, path: Path, maximum: Decimal):
         self.path = Path(path)
         self.maximum = Decimal(maximum)
+        self.database_path = self.path.with_suffix(".sqlite")
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cost_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    operation_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    amount_usd TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL,
+                    media_seconds REAL NOT NULL,
+                    provider TEXT,
+                    model TEXT,
+                    timestamp TEXT NOT NULL
+                )
+                """
+            )
+            count = connection.execute(
+                "SELECT COUNT(*) AS count FROM cost_events"
+            ).fetchone()["count"]
+            if count == 0:
+                for row in read_jsonl(self.path):
+                    self._insert(connection, CostEntry.model_validate(row))
 
-    @property
-    def _rows(self) -> list[dict[str, Any]]:
-        return read_jsonl(self.path)
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    @staticmethod
+    def _insert(connection: sqlite3.Connection, entry: CostEntry) -> None:
+        connection.execute(
+            """
+            INSERT INTO cost_events(
+                operation_id, kind, amount_usd, input_tokens, output_tokens,
+                media_seconds, provider, model, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.operation_id,
+                entry.kind,
+                str(entry.amount_usd),
+                entry.input_tokens,
+                entry.output_tokens,
+                entry.media_seconds,
+                entry.provider,
+                entry.model,
+                entry.timestamp.isoformat(),
+            ),
+        )
+
+    def _database_rows(self, connection: sqlite3.Connection | None = None):
+        if connection is not None:
+            return connection.execute(
+                "SELECT * FROM cost_events ORDER BY event_id"
+            ).fetchall()
+        with self._connect() as owned:
+            return owned.execute(
+                "SELECT * FROM cost_events ORDER BY event_id"
+            ).fetchall()
 
     @property
     def spent(self) -> Decimal:
         return sum(
             (
                 Decimal(str(row["amount_usd"]))
-                for row in self._rows
+                for row in self._database_rows()
                 if row["kind"] == "settlement"
             ),
             start=Decimal(0),
@@ -100,15 +159,15 @@ class BudgetLedger:
     @property
     def media_seconds(self) -> float:
         return sum(
-            float(row.get("media_seconds", 0))
-            for row in self._rows
+            float(row["media_seconds"])
+            for row in self._database_rows()
             if row["kind"] == "settlement"
         )
 
     @property
     def reserved(self) -> Decimal:
         reservations: dict[str, Decimal | None] = {}
-        for row in self._rows:
+        for row in self._database_rows():
             operation = str(row["operation_id"])
             if row["kind"] == "reservation":
                 reservations[operation] = Decimal(str(row["amount_usd"]))
@@ -123,24 +182,45 @@ class BudgetLedger:
     def available(self) -> Decimal:
         return self.maximum - self.spent - self.reserved
 
-    def reserve(self, operation_id: str, amount: Decimal) -> None:
+    def reserve(
+        self,
+        operation_id: str,
+        amount: Decimal,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> None:
         amount = Decimal(amount)
-        active_reservation = False
-        for row in self._rows:
-            if row["operation_id"] != operation_id:
-                continue
-            if row["kind"] == "reservation":
-                active_reservation = True
-            elif row["kind"] in {"settlement", "release"}:
-                active_reservation = False
-        if active_reservation:
-            return
-        if amount > self.available:
-            raise BudgetExceeded(operation_id)
-        append_jsonl(
-            self.path,
-            CostEntry(operation_id=operation_id, kind="reservation", amount_usd=amount),
-        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = self._database_rows(connection)
+            active: dict[str, Decimal | None] = {}
+            spent = Decimal(0)
+            for row in rows:
+                if row["kind"] == "settlement":
+                    spent += Decimal(str(row["amount_usd"]))
+                    active[str(row["operation_id"])] = None
+                elif row["kind"] == "reservation":
+                    active[str(row["operation_id"])] = Decimal(str(row["amount_usd"]))
+                elif row["kind"] == "release":
+                    active[str(row["operation_id"])] = None
+            if active.get(operation_id) is not None:
+                return
+            reserved = sum(
+                (value for value in active.values() if value is not None),
+                start=Decimal(0),
+            )
+            if spent + reserved + amount > self.maximum:
+                raise BudgetExceeded(operation_id)
+            entry = CostEntry(
+                operation_id=operation_id,
+                kind="reservation",
+                amount_usd=amount,
+                provider=provider,
+                model=model,
+            )
+            self._insert(connection, entry)
+            append_jsonl(self.path, entry)
 
     def settle(
         self,
@@ -154,12 +234,27 @@ class BudgetLedger:
         model: str | None = None,
     ) -> None:
         amount = Decimal(amount)
-        projected = self.spent + amount
-        if projected > self.maximum:
-            raise BudgetExceeded(operation_id)
-        append_jsonl(
-            self.path,
-            CostEntry(
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = self._database_rows(connection)
+            active: dict[str, Decimal | None] = {}
+            spent = Decimal(0)
+            for row in rows:
+                if row["kind"] == "settlement":
+                    spent += Decimal(str(row["amount_usd"]))
+                    active[str(row["operation_id"])] = None
+                elif row["kind"] == "reservation":
+                    active[str(row["operation_id"])] = Decimal(str(row["amount_usd"]))
+                elif row["kind"] == "release":
+                    active[str(row["operation_id"])] = None
+            active[operation_id] = None
+            other_reserved = sum(
+                (value for value in active.values() if value is not None),
+                start=Decimal(0),
+            )
+            if spent + other_reserved + amount > self.maximum:
+                raise BudgetExceeded(operation_id)
+            entry = CostEntry(
                 operation_id=operation_id,
                 kind="settlement",
                 amount_usd=amount,
@@ -168,11 +263,29 @@ class BudgetLedger:
                 media_seconds=media_seconds,
                 provider=provider,
                 model=model,
-            ),
-        )
+            )
+            self._insert(connection, entry)
+            append_jsonl(self.path, entry)
 
     def release(self, operation_id: str) -> None:
-        append_jsonl(
-            self.path,
-            CostEntry(operation_id=operation_id, kind="release", amount_usd=Decimal(0)),
+        entry = CostEntry(
+            operation_id=operation_id, kind="release", amount_usd=Decimal(0)
         )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._insert(connection, entry)
+            append_jsonl(self.path, entry)
+
+    @property
+    def provider_operations(self) -> int:
+        operations: dict[str, str] = {}
+        for row in self._database_rows():
+            if not row["provider"]:
+                continue
+            if row["kind"] == "reservation":
+                operations[str(row["operation_id"])] = "active"
+            elif row["kind"] == "settlement":
+                operations[str(row["operation_id"])] = "settled"
+            elif row["kind"] == "release":
+                operations.pop(str(row["operation_id"]), None)
+        return len(operations)

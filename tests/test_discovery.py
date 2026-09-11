@@ -1,9 +1,12 @@
 import json
 import socket
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
+import pytest
 
+from vc_trace_collector.audit import BudgetExceeded, BudgetLedger
 from vc_trace_collector.discovery import (
     DiscoveryService,
     OpenAICompatibleDiscoveryProvider,
@@ -148,6 +151,25 @@ def test_discovery_caps_total_search_operations() -> None:
     assert len(search.queries) == 2
 
 
+def test_search_provider_reserves_monetary_budget_before_each_call(tmp_path) -> None:
+    search = StaticSearch()
+    ledger = BudgetLedger(tmp_path / "costs.jsonl", Decimal("0.10"))
+
+    with pytest.raises(BudgetExceeded):
+        DiscoveryService(
+            fetcher=profile_fetcher(),
+            search_provider=search,
+            maximum_search_operations=2,
+            budget=ledger,
+            search_operation_cost_usd=Decimal("0.06"),
+        ).discover(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        )
+
+    assert len(search.queries) == 1
+
+
 def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:
     podcast_url = (
         "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"
@@ -170,6 +192,35 @@ def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:
         voice.source_candidate_id == podcast.candidate_id
         for voice in result.reference_voice_candidates
     )
+
+
+def test_direct_media_url_is_planned_without_downloading_during_discovery() -> None:
+    direct_url = "https://cdn.example.test/michael-hyatt.mp3"
+    requested: list[str] = []
+    profile = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        if str(request.url) == direct_url:
+            raise AssertionError("direct media must not be fetched during discovery")
+        return httpx.Response(200, content=profile, request=request)
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
+    )
+    result = DiscoveryService(fetcher=fetcher).discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=[direct_url],
+    )
+
+    media = next(
+        item for item in result.source_plan.candidates if item.url == direct_url
+    )
+    assert media.material_role == "reference_voice"
+    assert requested == ["https://www.thepitch.show/investors/michael-hyatt"]
 
 
 def test_embedded_audio_page_is_classified_as_podcast_voice_source() -> None:

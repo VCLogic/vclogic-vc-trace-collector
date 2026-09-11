@@ -28,6 +28,7 @@ from .av import (
     process_target_speech,
 )
 from .collectors import (
+    NETWORK_COLLECTION_METHODS,
     CollectionContext,
     CollectionResult,
     ReviewRequired,
@@ -117,7 +118,9 @@ class Pipeline:
         media_probe: Callable[[Path], float | None] = probe_media_duration,
     ):
         self.output_dir = Path(output_dir)
-        self.fetcher = fetcher or Fetcher()
+        self.fetcher = fetcher or Fetcher(
+            trust_env=os.environ.get("VC_TRACE_ALLOW_ENV_PROXY") == "1"
+        )
         self.rules = rules or RuleSet.pitch_default()
         search_endpoint = os.environ.get("VC_TRACE_SEARCH_ENDPOINT", "").strip()
         self.search_provider = search_provider or (
@@ -220,8 +223,16 @@ class Pipeline:
                 raise ValueError(
                     "Set discovery_call_budget_usd when enabling an LLM provider"
                 )
+            if (
+                discovery_budget.provider_operations
+                >= config.maximum_provider_operations
+            ):
+                raise RuntimeError("Provider-operation budget exhausted before LLM")
             discovery_budget.reserve(
-                discovery_operation_id, config.discovery_call_budget_usd
+                discovery_operation_id,
+                config.discovery_call_budget_usd,
+                provider=discovery_provider.provider_name,
+                model=discovery_provider.model_name,
             )
         service = DiscoveryService(
             fetcher=self.fetcher,
@@ -229,6 +240,10 @@ class Pipeline:
             discovery_provider=discovery_provider,
             rules=run_rules,
             maximum_search_operations=config.maximum_search_operations,
+            maximum_download_bytes=config.maximum_download_bytes,
+            budget=discovery_budget,
+            search_operation_cost_usd=config.search_operation_cost_usd,
+            maximum_provider_operations=config.maximum_provider_operations,
         )
         try:
             result = service.discover(
@@ -302,6 +317,7 @@ class Pipeline:
             status="review_required",
             started_at=utc_now(),
             stages={"discovery": "complete", "review": "pending"},
+            downloaded_bytes=service.downloaded_bytes,
         )
         write_json(workspace / "run_summary.json", summary)
         write_json(workspace / f"audit/runs/{run_id}.json", summary)
@@ -365,7 +381,19 @@ class Pipeline:
         identity.reviewed_by = reviewer
         identity.resolved_at = utc_now()
         write_json(workspace / "identity/resolved_identity.json", identity)
+        write_json(
+            workspace / "identity/identity_review.json",
+            {
+                "investor_slug": investor_slug,
+                "status": "confirmed",
+                "reviewed_by": reviewer,
+                "reviewed_at": identity.resolved_at,
+            },
+        )
         write_json(workspace / "discovery/source_plan.json", plan)
+        decision_path = workspace / "discovery/source_decisions.jsonl"
+        existing_decisions = read_jsonl(decision_path)
+        write_jsonl(decision_path, [*existing_decisions, *decisions])
         voice_path = workspace / "identity/reference_voice_candidates.jsonl"
         voice_candidates = [
             ReferenceVoiceCandidate.model_validate(row)
@@ -418,10 +446,35 @@ class Pipeline:
             self._load_plan(slug), minimum_identity=0.9, minimum_source=0.85
         )
         identity.resolution_status = ResolutionStatus.CONFIRMED
-        identity.reviewed_by = "automatic_policy"
+        identity.reviewed_by = "automatic-confidence-policy"
         identity.resolved_at = utc_now()
         write_json(workspace / "identity/resolved_identity.json", identity)
+        write_json(
+            workspace / "identity/identity_review.json",
+            {
+                "investor_slug": slug,
+                "status": "confirmed",
+                "reviewed_by": "automatic-confidence-policy",
+                "reviewed_at": identity.resolved_at,
+                "policy": "automatic identity and source confidence thresholds",
+            },
+        )
         write_json(workspace / "discovery/source_plan.json", plan)
+        write_jsonl(
+            workspace / "discovery/source_decisions.jsonl",
+            [
+                SourceDecision(
+                    candidate_id=candidate.candidate_id,
+                    status=candidate.approval_status,
+                    reason=candidate.decision_reason
+                    or "Passed automatic approval policy",
+                    decided_by=candidate.reviewed_by or "automatic-confidence-policy",
+                    decided_at=candidate.decision_at or utc_now(),
+                )
+                for candidate in plan.candidates
+                if candidate.approval_status == ApprovalStatus.AUTO_APPROVED
+            ],
+        )
         self._write_candidate_views(workspace, plan)
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         summary.stages["review"] = "complete"
@@ -451,10 +504,16 @@ class Pipeline:
             raise ReviewRequired("Identity review required before collection")
         config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        existing_artifacts = load_artifact_records(workspace)
         already_collected_media = sum(
             float(artifact.original_metadata.get("duration_seconds") or 0)
-            for artifact in load_artifact_records(workspace)
+            for artifact in existing_artifacts
             if artifact.collection_method in {"podcast_enclosure_http", "yt_dlp_audio"}
+        )
+        already_downloaded_bytes = sum(
+            artifact.size_bytes
+            for artifact in existing_artifacts
+            if artifact.collection_method in NETWORK_COLLECTION_METHODS
         )
         context = CollectionContext(
             workspace=workspace,
@@ -474,6 +533,8 @@ class Pipeline:
             ),
             maximum_media_seconds=config.maximum_media_minutes * 60,
             media_seconds_used=already_collected_media,
+            maximum_download_bytes=config.maximum_download_bytes,
+            downloaded_bytes_used=already_downloaded_bytes,
         )
         result = collect_approved_sources(
             plan, context=context, registry=default_registry()
@@ -501,8 +562,10 @@ class Pipeline:
         summary.status = "collected"
         summary.collected += result.collected
         summary.collection_failures = result.failed
+        summary.collection_review_required = result.review_required
         summary.failures = summary.collection_failures + summary.processing_failures
         summary.excluded += result.excluded
+        summary.downloaded_bytes = context.downloaded_bytes_used
         summary.cost_usd = context.budget.spent
         write_json(workspace / "run_summary.json", summary)
         return result
@@ -565,8 +628,17 @@ class Pipeline:
                 "Run-wide media processing budget exhausted before voice embedding"
             )
         operation_id = f"reference-embedding:{candidate_id}:{artifact.artifact_id}"
-        cost.reserve(operation_id, config.embedding_cost_usd)
         provider = self.embedding_provider
+        if cost.provider_operations >= config.maximum_provider_operations:
+            raise ReviewRequired(
+                "Provider-operation budget exhausted before voice embedding"
+            )
+        cost.reserve(
+            operation_id,
+            config.embedding_cost_usd,
+            provider=provider.provider_name if provider else "pyannote",
+            model=provider.model_name if provider else config.embedding_model,
+        )
         try:
             if provider is None:
                 if not config.embedding_model:
@@ -795,6 +867,17 @@ class Pipeline:
                     str(exclusion.get("reason") or "Excluded by post-metadata rules"),
                     artifact.artifact_id,
                 )
+            elif exclusion.get(
+                "status"
+            ) == InclusionStatus.REVIEW_REQUIRED and not artifact.original_metadata.get(
+                "review_override_applied", False
+            ):
+                mark_outcome(
+                    candidate_id,
+                    "review_required",
+                    str(exclusion.get("reason") or "Post-metadata review required"),
+                    artifact.artifact_id,
+                )
         audio_suffixes = {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac"}
         video_suffixes = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
         av_rows: list[dict] = []
@@ -939,14 +1022,53 @@ class Pipeline:
                     artifact.artifact_id,
                 )
                 continue
+            cost_operation_ids: list[str] = []
             try:
                 if cached:
                     result = TargetSpeechResult.model_validate(read_json(cache_path))
                 else:
-                    model_cost = config.diarization_cost_usd + (
-                        config.transcription_cost_usd if existing is None else 0
+                    required_provider_operations = 1 + int(existing is None)
+                    if (
+                        cost.provider_operations + required_provider_operations
+                        > config.maximum_provider_operations
+                    ):
+                        raise RuntimeError(
+                            "Provider-operation budget exhausted before model calls"
+                        )
+                    diarization_operation = f"{operation_id}:diarization"
+                    cost.reserve(
+                        diarization_operation,
+                        config.diarization_cost_usd,
+                        provider=(
+                            self.diarization_provider.provider_name
+                            if self.diarization_provider
+                            else "pyannote"
+                        ),
+                        model=(
+                            self.diarization_provider.model_name
+                            if self.diarization_provider
+                            else config.diarization_model
+                        ),
                     )
-                    cost.reserve(operation_id, model_cost)
+                    cost_operation_ids.append(diarization_operation)
+                    transcription_operation = None
+                    if existing is None:
+                        transcription_operation = f"{operation_id}:transcription"
+                        cost.reserve(
+                            transcription_operation,
+                            config.transcription_cost_usd,
+                            provider=(
+                                self.transcript_provider.provider_name
+                                if self.transcript_provider
+                                else "local-whisper"
+                            ),
+                            model=(
+                                self.transcript_provider.model_name
+                                if self.transcript_provider
+                                else config.transcription_model
+                            ),
+                        )
+                        cost_operation_ids.append(transcription_operation)
                     transcript_provider, diarization_provider = self._av_providers(
                         config, needs_transcript=existing is None
                     )
@@ -961,16 +1083,24 @@ class Pipeline:
                         minimum_margin=config.speaker_minimum_margin,
                     )
                     write_json(cache_path, result)
+                    if transcription_operation and transcript_provider:
+                        cost.settle(
+                            transcription_operation,
+                            config.transcription_cost_usd,
+                            provider=transcript_provider.provider_name,
+                            model=transcript_provider.model_name,
+                        )
                     cost.settle(
-                        operation_id,
-                        model_cost,
+                        diarization_operation,
+                        config.diarization_cost_usd,
                         media_seconds=probed_seconds,
                         provider=diarization_provider.provider_name,
                         model=diarization_provider.model_name,
                     )
                     state.finish_operation(operation_id, input_hash, str(cache_path))
             except Exception as error:
-                cost.release(operation_id)
+                for cost_operation_id in cost_operation_ids:
+                    cost.release(cost_operation_id)
                 state.fail_operation(operation_id, input_hash, str(redact(str(error))))
                 failure = redact(
                     {
@@ -1082,7 +1212,7 @@ class Pipeline:
         summary.processing_failures = sum(
             item.status in {"failed", "not_collected"} for item in outcomes.values()
         )
-        summary.unresolved = sum(
+        summary.unresolved = summary.collection_review_required + sum(
             item.status == "review_required" for item in outcomes.values()
         )
         summary.failures = summary.collection_failures + summary.processing_failures
@@ -1130,6 +1260,8 @@ class Pipeline:
                     channel=candidate.channel if candidate else None,
                     programme=candidate.programme if candidate else None,
                     company=candidate.company if candidate else None,
+                    authors=document.authors,
+                    speakers=document.speakers,
                     stage="final_export",
                 )
                 for url in sorted(urls)
@@ -1164,6 +1296,8 @@ class Pipeline:
                                     or (candidate.company if candidate else "")
                                 )
                                 or None,
+                                authors=document.authors,
+                                speakers=document.speakers,
                                 stage="final_export_metadata",
                             )
                         )
@@ -1182,7 +1316,14 @@ class Pipeline:
             if excluded:
                 document.inclusion_status = InclusionStatus.EXCLUDED
                 document.exclusion_reason = excluded.reason
-            elif review and document.inclusion_status == InclusionStatus.INCLUDED:
+            elif (
+                review
+                and document.inclusion_status == InclusionStatus.INCLUDED
+                and (
+                    candidate is None
+                    or review.rule_id not in candidate.override_rule_ids
+                )
+            ):
                 document.inclusion_status = InclusionStatus.REVIEW_REQUIRED
                 document.exclusion_reason = review.reason
         rules_payload = [rule.model_dump(mode="json") for rule in rules.rules]
@@ -1201,6 +1342,9 @@ class Pipeline:
             unresolved_sources=summary.unresolved,
             allow_partial_run=config.allow_partial_run,
             maximum_cost_usd=float(config.maximum_cost_usd),
+            maximum_download_bytes=config.maximum_download_bytes,
+            maximum_provider_operations=config.maximum_provider_operations,
+            downloaded_bytes=summary.downloaded_bytes,
         )
         summary.stages["export"] = "complete"
         summary.status = "exported"

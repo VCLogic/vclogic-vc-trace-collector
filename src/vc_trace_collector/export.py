@@ -124,6 +124,9 @@ def export_workspace(
     unresolved_sources: int = 0,
     allow_partial_run: bool = False,
     maximum_cost_usd: float | None = None,
+    maximum_download_bytes: int | None = None,
+    maximum_provider_operations: int | None = None,
+    downloaded_bytes: int = 0,
 ) -> CollectionManifest:
     workspace = Path(workspace)
     ordered = sorted(documents, key=lambda item: item.document_version_id)
@@ -151,6 +154,7 @@ def export_workspace(
     cost_rows = read_jsonl(workspace / "audit/costs.jsonl")
     settlements = [row for row in cost_rows if row.get("kind") == "settlement"]
     provider_cost = sum(float(row.get("amount_usd", 0)) for row in settlements)
+    provider_operations = sum(bool(row.get("provider")) for row in settlements)
     billed_media_seconds = sum(
         float(row.get("media_seconds", 0)) for row in settlements
     )
@@ -166,8 +170,16 @@ def export_workspace(
         for document in ordered
     )
     first_person_count = sum(
-        document.material_role
-        in {MaterialRole.AUTHORED_BY_TARGET, MaterialRole.SPOKEN_BY_TARGET}
+        (
+            document.material_role == MaterialRole.AUTHORED_BY_TARGET
+            and bool(document.authors)
+        )
+        or (
+            document.material_role == MaterialRole.SPOKEN_BY_TARGET
+            and bool(document.speakers)
+            and document.speaker_attribution.status
+            in {"accepted_model", "verified_human"}
+        )
         for document in included
     )
     verified_speech = [
@@ -200,6 +212,10 @@ def export_workspace(
         or provider_cost <= maximum_cost_usd,
         "approved_work_complete": approved_work_complete,
         "partial_run_policy_satisfied": approved_work_complete or allow_partial_run,
+        "download_budget_within_limit": maximum_download_bytes is None
+        or downloaded_bytes <= maximum_download_bytes,
+        "provider_operation_budget_within_limit": maximum_provider_operations is None
+        or provider_operations <= maximum_provider_operations,
     }
     warnings: list[str] = []
     if not included:
@@ -227,6 +243,21 @@ def export_workspace(
             "failures": run_failures,
             "unresolved_sources": unresolved_sources,
             "retries": retry_count,
+            "downloaded_bytes": downloaded_bytes,
+            "provider_operations": provider_operations,
+            "uncertain_attributions": sum(
+                document.speaker_attribution.status == "uncertain"
+                for document in ordered
+            ),
+            "unknown_publication_dates": sum(
+                document.published_at is None for document in included
+            ),
+            "excluded": sum(
+                document.inclusion_status == "excluded" for document in ordered
+            ),
+            "review_required": sum(
+                document.inclusion_status == "review_required" for document in ordered
+            ),
         },
         metrics={
             "metadata_completeness": (
@@ -247,6 +278,20 @@ def export_workspace(
             ),
             "provider_cost_usd": provider_cost,
             "audiovisual_seconds_billed": billed_media_seconds,
+            "verified_target_speech_seconds": sum(
+                float(document.original_metadata.get("media_seconds") or 0)
+                for document in verified_speech
+            ),
+            "extraction_success_ratio": (
+                sum(bool(document.text.strip()) for document in ordered) / len(ordered)
+                if ordered
+                else 0.0
+            ),
+            "average_included_characters": (
+                sum(len(document.text) for document in included) / len(included)
+                if included
+                else 0.0
+            ),
         },
         warnings=warnings,
     )
@@ -275,10 +320,12 @@ def export_workspace(
         workspace / "config_snapshot.json",
         workspace / "exclusion_rules_snapshot.json",
         workspace / "identity/resolved_identity.json",
+        workspace / "identity/identity_review.json",
         workspace / "identity/identity_evidence.jsonl",
         workspace / "identity/reference_voice_candidates.jsonl",
         workspace / "identity/reference_voice_profile.json",
         workspace / "discovery/source_plan.json",
+        workspace / "discovery/source_decisions.jsonl",
         workspace / "discovery/source_candidates.jsonl",
         workspace / "discovery/approved_sources.jsonl",
         workspace / "discovery/rejected_sources.jsonl",

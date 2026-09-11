@@ -151,6 +151,9 @@ class SourceCandidate(StrictModel):
     estimated_media_seconds: float = Field(default=0, ge=0)
     approval_status: ApprovalStatus = ApprovalStatus.PENDING
     decision_reason: str | None = None
+    reviewed_by: str | None = None
+    decision_at: AwareDatetime | None = None
+    override_rule_ids: list[str] = Field(default_factory=list)
     speaker_verified_by: str | None = None
 
 
@@ -176,6 +179,8 @@ class SourceDecision(StrictModel):
     channel: str | None = None
     programme: str | None = None
     company: str | None = None
+    override_rule_ids: list[str] = Field(default_factory=list)
+    estimated_media_seconds: float | None = Field(default=None, gt=0)
     decided_at: AwareDatetime = Field(default_factory=utc_now)
 
 
@@ -390,7 +395,9 @@ class RunSummary(StrictModel):
     excluded: int = 0
     failures: int = 0
     collection_failures: int = 0
+    collection_review_required: int = 0
     processing_failures: int = 0
     unresolved: int = 0
     cost_usd: Decimal = Decimal(0)
     media_seconds: float = 0
+    downloaded_bytes: int = 0

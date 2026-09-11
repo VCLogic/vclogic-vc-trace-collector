@@ -55,12 +55,15 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         transcription_cost_usd: str = typer.Option("0"),
         diarization_cost_usd: str = typer.Option("0"),
         embedding_cost_usd: str = typer.Option("0"),
+        search_operation_cost_usd: str = typer.Option("0"),
         max_cost_usd: str = typer.Option("10.00"),
         discovery_call_budget_usd: str | None = typer.Option(
             None, help="Conservative reserved cost for the discovery LLM call"
         ),
         max_search_operations: int = typer.Option(20),
         max_media_minutes: float = typer.Option(120),
+        max_download_bytes: int = typer.Option(1_000_000_000),
+        max_provider_operations: int = typer.Option(100),
         allow_partial_run: bool = typer.Option(False),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
@@ -82,6 +85,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
             transcription_cost_usd=Decimal(transcription_cost_usd),
             diarization_cost_usd=Decimal(diarization_cost_usd),
             embedding_cost_usd=Decimal(embedding_cost_usd),
+            search_operation_cost_usd=Decimal(search_operation_cost_usd),
             maximum_cost_usd=Decimal(max_cost_usd),
             discovery_call_budget_usd=(
                 Decimal(discovery_call_budget_usd)
@@ -90,6 +94,8 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
             ),
             maximum_search_operations=max_search_operations,
             maximum_media_minutes=max_media_minutes,
+            maximum_download_bytes=max_download_bytes,
+            maximum_provider_operations=max_provider_operations,
             allow_partial_run=allow_partial_run,
         )
         result = pipeline_factory(output_dir).discover(
@@ -197,12 +203,15 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         transcription_cost_usd: str = typer.Option("0"),
         diarization_cost_usd: str = typer.Option("0"),
         embedding_cost_usd: str = typer.Option("0"),
+        search_operation_cost_usd: str = typer.Option("0"),
         max_cost_usd: str = typer.Option("10.00"),
         discovery_call_budget_usd: str | None = typer.Option(
             None, help="Conservative reserved cost for the discovery LLM call"
         ),
         max_search_operations: int = typer.Option(20),
         max_media_minutes: float = typer.Option(120),
+        max_download_bytes: int = typer.Option(1_000_000_000),
+        max_provider_operations: int = typer.Option(100),
         auto_approve_discovery: bool = typer.Option(False),
         resume: str | None = typer.Option(None),
         collection_only: bool = typer.Option(False),
@@ -239,6 +248,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 transcription_cost_usd=Decimal(transcription_cost_usd),
                 diarization_cost_usd=Decimal(diarization_cost_usd),
                 embedding_cost_usd=Decimal(embedding_cost_usd),
+                search_operation_cost_usd=Decimal(search_operation_cost_usd),
                 maximum_cost_usd=Decimal(max_cost_usd),
                 discovery_call_budget_usd=(
                     Decimal(discovery_call_budget_usd)
@@ -247,6 +257,8 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 ),
                 maximum_search_operations=max_search_operations,
                 maximum_media_minutes=max_media_minutes,
+                maximum_download_bytes=max_download_bytes,
+                maximum_provider_operations=max_provider_operations,
                 allow_partial_run=allow_partial_run,
             )
         except ReviewRequired as error:

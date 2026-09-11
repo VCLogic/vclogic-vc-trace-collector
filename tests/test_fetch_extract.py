@@ -72,6 +72,28 @@ def test_fetcher_rejects_redirect_to_private_network() -> None:
         fetcher.fetch("https://example.test/redirect")
 
 
+def test_fetcher_rejects_dns_answer_change_during_request() -> None:
+    calls = 0
+
+    def resolver(host: str, port: int):
+        nonlocal calls
+        calls += 1
+        address = "93.184.216.34" if calls < 3 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"public", request=request)
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=resolver,
+        minimum_interval=0,
+    )
+
+    with pytest.raises(UnsafeUrl, match="non-public|changed"):
+        fetcher.fetch("https://example.test/public")
+
+
 def test_fetcher_rejects_oversized_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"12345", request=request)

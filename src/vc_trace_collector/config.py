@@ -35,12 +35,15 @@ class RunConfig(BaseModel):
     transcription_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
     diarization_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
     embedding_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
+    search_operation_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
     speaker_minimum_score: float = Field(default=0.75, ge=-1, le=1)
     speaker_minimum_margin: float = Field(default=0.10, ge=0, le=2)
     maximum_cost_usd: Decimal = Decimal("10.00")
     discovery_call_budget_usd: Decimal | None = Field(default=None, ge=0)
     maximum_search_operations: int = Field(default=20, ge=0)
     maximum_media_minutes: float = Field(default=120, ge=0)
+    maximum_download_bytes: int = Field(default=1_000_000_000, gt=0)
+    maximum_provider_operations: int = Field(default=100, ge=0)
     automatic_discovery: bool = False
     allow_partial_run: bool = False
     resume: str | None = None

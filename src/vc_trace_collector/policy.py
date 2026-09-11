@@ -110,6 +110,8 @@ class ExclusionRule(BaseModel):
     channels: list[str] = Field(default_factory=list)
     programmes: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
+    speakers: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
 
 
@@ -153,6 +155,8 @@ class RuleSet:
         channel: str | None = None,
         programme: str | None = None,
         company: str | None = None,
+        authors: list[str] | None = None,
+        speakers: list[str] | None = None,
         text: str | None = None,
         stage: str,
     ) -> ExclusionDecision:
@@ -181,6 +185,30 @@ class RuleSet:
                 company.casefold() == item.casefold() for item in rule.companies
             ):
                 matches["company"] = company
+            matched_author = next(
+                (
+                    author
+                    for author in authors or []
+                    if any(
+                        author.casefold() == item.casefold() for item in rule.authors
+                    )
+                ),
+                None,
+            )
+            if matched_author:
+                matches["author"] = matched_author
+            matched_speaker = next(
+                (
+                    speaker
+                    for speaker in speakers or []
+                    if any(
+                        speaker.casefold() == item.casefold() for item in rule.speakers
+                    )
+                ),
+                None,
+            )
+            if matched_speaker:
+                matches["speaker"] = matched_speaker
             matched_keyword = next(
                 (item for item in rule.keywords if item.casefold() in haystack), None
             )

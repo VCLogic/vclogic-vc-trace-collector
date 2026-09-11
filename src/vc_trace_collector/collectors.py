@@ -29,6 +29,7 @@ from .models import (
     SourceDecision,
     SourcePlan,
     SourceType,
+    utc_now,
 )
 from .policy import InclusionStatus, RuleSet
 from .storage import ArtifactStore, StateStore, append_jsonl, canonical_json
@@ -40,6 +41,18 @@ class ReviewRequired(RuntimeError):
 
 class CollectorUnavailable(RuntimeError):
     pass
+
+
+NETWORK_COLLECTION_METHODS = {
+    "http",
+    "rss_atom",
+    "podcast_page_http",
+    "podcast_enclosure_http",
+    "yt_dlp_metadata",
+    "youtube_captions",
+    "yt_dlp_audio",
+    "identity_evidence_http",
+}
 
 
 @dataclass
@@ -55,12 +68,20 @@ class CollectionContext:
     approved_source_types: set[SourceType] | None = None
     maximum_media_seconds: float | None = None
     media_seconds_used: float = 0
+    maximum_download_bytes: int | None = None
+    downloaded_bytes_used: int = 0
 
     @property
     def remaining_media_seconds(self) -> float | None:
         if self.maximum_media_seconds is None:
             return None
         return max(0.0, self.maximum_media_seconds - self.media_seconds_used)
+
+    @property
+    def remaining_download_bytes(self) -> int | None:
+        if self.maximum_download_bytes is None:
+            return None
+        return max(0, self.maximum_download_bytes - self.downloaded_bytes_used)
 
 
 class CollectionResult(BaseModel):
@@ -70,7 +91,9 @@ class CollectionResult(BaseModel):
     failed: int = 0
     skipped: int = 0
     excluded: int = 0
+    review_required: int = 0
     media_seconds: float = 0
+    downloaded_bytes: int = 0
     artifacts: list[RawArtifact] = Field(default_factory=list)
     failures: list[dict[str, str]] = Field(default_factory=list)
 
@@ -108,6 +131,13 @@ def apply_decisions(plan: SourcePlan, decisions: list[SourceDecision]) -> Source
         candidate = by_id[decision.candidate_id]
         candidate.approval_status = decision.status
         candidate.decision_reason = decision.reason
+        candidate.reviewed_by = decision.decided_by
+        candidate.decision_at = decision.decided_at
+        candidate.override_rule_ids = sorted(
+            set(candidate.override_rule_ids + decision.override_rule_ids)
+        )
+        if decision.estimated_media_seconds is not None:
+            candidate.estimated_media_seconds = decision.estimated_media_seconds
         if decision.material_role is not None:
             candidate.material_role = decision.material_role
         if decision.speaker_verified:
@@ -139,6 +169,8 @@ def auto_approve(
         ):
             candidate.approval_status = ApprovalStatus.AUTO_APPROVED
             candidate.decision_reason = "Passed explicit automatic approval thresholds"
+            candidate.reviewed_by = "automatic-confidence-policy"
+            candidate.decision_at = utc_now()
         else:
             candidate.approval_status = ApprovalStatus.PENDING
     return updated
@@ -151,6 +183,13 @@ def _suffix_for_mime(mime_type: str | None, fallback: str = ".bin") -> str:
     if mime == "application/octet-stream":
         return fallback
     return mimetypes.guess_extension(mime) or fallback
+
+
+def _remaining_bytes(context: CollectionContext) -> int | None:
+    remaining = context.remaining_download_bytes
+    if remaining is not None and remaining <= 0:
+        raise RuntimeError("Downloaded-byte budget exhausted")
+    return remaining
 
 
 class WebCollector:
@@ -166,7 +205,9 @@ class WebCollector:
     ) -> list[RawArtifact]:
         if context.fetcher is None:
             raise CollectorUnavailable("Web collector requires an HTTP fetcher")
-        fetched = context.fetcher.fetch(source.url)
+        fetched = context.fetcher.fetch(
+            source.url, maximum_bytes=_remaining_bytes(context)
+        )
         mime = fetched.headers.get("content-type", "text/html")
         stored = context.artifacts.put_bytes(
             fetched.content,
@@ -196,7 +237,9 @@ class FeedCollector:
     ) -> list[RawArtifact]:
         if context.fetcher is None:
             raise CollectorUnavailable("Feed collector requires an HTTP fetcher")
-        fetched = context.fetcher.fetch(source.url)
+        fetched = context.fetcher.fetch(
+            source.url, maximum_bytes=_remaining_bytes(context)
+        )
         feed_artifact = context.artifacts.put_bytes(
             fetched.content,
             category="web",
@@ -275,7 +318,25 @@ class PodcastCollector:
     ) -> list[RawArtifact]:
         if context.fetcher is None:
             raise CollectorUnavailable("Podcast collector requires an HTTP fetcher")
-        fetched = context.fetcher.fetch(source.url)
+        looks_like_direct_audio = Path(urlsplit(source.url).path).suffix.casefold() in {
+            ".mp3",
+            ".m4a",
+            ".opus",
+            ".ogg",
+            ".wav",
+            ".flac",
+        }
+        if (
+            looks_like_direct_audio
+            and context.remaining_media_seconds is not None
+            and source.estimated_media_seconds <= 0
+        ):
+            raise RuntimeError(
+                "Direct podcast audio requires an approved duration estimate before GET"
+            )
+        fetched = context.fetcher.fetch(
+            source.url, maximum_bytes=_remaining_bytes(context)
+        )
         mime = fetched.headers.get("content-type", "text/html")
         soup = BeautifulSoup(fetched.content, "html.parser")
         site_name = soup.find("meta", attrs={"property": "og:site_name"})
@@ -298,6 +359,10 @@ class PodcastCollector:
             company=source.company,
             stage="post_metadata",
         )
+        override_applied = bool(
+            exclusion.status == InclusionStatus.REVIEW_REQUIRED
+            and exclusion.rule_id in source.override_rule_ids
+        )
         duration = source.estimated_media_seconds or _podcast_duration_seconds(
             fetched.content
         )
@@ -318,12 +383,17 @@ class PodcastCollector:
                 "programme": programme,
                 "duration_seconds": duration,
                 "collection_exclusion": exclusion.model_dump(mode="json"),
+                "review_override_applied": override_applied,
             },
         ).record
         records = [page]
-        if exclusion.status == InclusionStatus.EXCLUDED:
+        if exclusion.status == InclusionStatus.EXCLUDED or (
+            exclusion.status == InclusionStatus.REVIEW_REQUIRED and not override_applied
+        ):
             return records
         if mime.split(";", 1)[0].strip().startswith("audio/"):
+            if context.remaining_media_seconds is not None and not duration:
+                raise RuntimeError("Cannot account direct podcast audio duration")
             return records
 
         audio_urls = _podcast_audio_urls(fetched.content, fetched.final_url)
@@ -342,7 +412,17 @@ class PodcastCollector:
         # encodings of the same episode.
         for audio_url in audio_urls[:1]:
             try:
-                audio = context.fetcher.fetch(audio_url, maximum_bytes=512_000_000)
+                remaining_bytes = context.remaining_download_bytes
+                if remaining_bytes is not None:
+                    remaining_bytes -= page.size_bytes
+                    if remaining_bytes <= 0:
+                        raise RuntimeError("Downloaded-byte budget exhausted")
+                audio = context.fetcher.fetch(
+                    audio_url,
+                    maximum_bytes=min(512_000_000, remaining_bytes)
+                    if remaining_bytes is not None
+                    else 512_000_000,
+                )
             except Exception as error:
                 _audit(
                     context,
@@ -479,6 +559,10 @@ class YouTubeCollector:
                 metadata_decisions[0],
             ),
         )
+        override_applied = bool(
+            exclusion.status == InclusionStatus.REVIEW_REQUIRED
+            and exclusion.rule_id in source.override_rule_ids
+        )
         video_id = str(metadata.get("id", ""))
         records = [
             context.artifacts.put_bytes(
@@ -499,10 +583,13 @@ class YouTubeCollector:
                     "programme": programme,
                     "duration_seconds": float(metadata.get("duration") or 0),
                     "collection_exclusion": exclusion.model_dump(mode="json"),
+                    "review_override_applied": override_applied,
                 },
             ).record
         ]
-        if exclusion.status == InclusionStatus.EXCLUDED:
+        if exclusion.status == InclusionStatus.EXCLUDED or (
+            exclusion.status == InclusionStatus.REVIEW_REQUIRED and not override_applied
+        ):
             return records
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
@@ -545,11 +632,20 @@ class YouTubeCollector:
             )
         with tempfile.TemporaryDirectory(prefix="vc-trace-youtube-") as directory:
             output_template = str(Path(directory) / "audio.%(ext)s")
+            remaining_bytes = _remaining_bytes(context)
+            if remaining_bytes is not None:
+                remaining_bytes -= sum(record.size_bytes for record in records)
+                if remaining_bytes <= 0:
+                    raise RuntimeError("Downloaded-byte budget exhausted")
             download = [
                 "yt-dlp",
                 "--no-playlist",
                 "--max-filesize",
-                "512M",
+                str(
+                    min(512_000_000, remaining_bytes)
+                    if remaining_bytes is not None
+                    else 512_000_000
+                ),
                 "-f",
                 "bestaudio/best",
                 "-o",
@@ -745,20 +841,60 @@ def collect_approved_sources(
             (
                 float(record.original_metadata.get("duration_seconds") or 0)
                 for record in records
-                if record.collection_method
-                in {"podcast_enclosure_http", "yt_dlp_audio"}
+                if (record.mime_type or "").casefold().startswith(("audio/", "video/"))
+                or record.collection_method
+                in {"yt_dlp_audio", "podcast_enclosure_http"}
             ),
             default=0.0,
         )
         context.media_seconds_used += media_seconds
         result.media_seconds += media_seconds
+        network_records = [
+            record
+            for record in records
+            if record.collection_method in NETWORK_COLLECTION_METHODS
+        ]
+        downloaded_bytes = sum(record.size_bytes for record in network_records)
+        if (
+            context.remaining_download_bytes is not None
+            and downloaded_bytes > context.remaining_download_bytes
+        ):
+            if context.budget:
+                context.budget.release(operation_id)
+            failure = {
+                "candidate_id": candidate.candidate_id,
+                "error_type": "DownloadedByteBudgetExceeded",
+                "message": "Downloaded-byte budget exceeded",
+            }
+            context.state.fail_operation(operation_id, input_hash, failure["message"])
+            result.failed += 1
+            result.failures.append(failure)
+            append_jsonl(context.workspace / "audit/failures.jsonl", failure)
+            _audit(
+                context,
+                candidate=candidate,
+                status=EventStatus.FAILED,
+                summary="Downloaded-byte budget exceeded",
+                details=failure,
+            )
+            continue
+        context.downloaded_bytes_used += downloaded_bytes
+        result.downloaded_bytes += downloaded_bytes
         post_collection_excluded = any(
             record.original_metadata.get("collection_exclusion", {}).get("status")
             == InclusionStatus.EXCLUDED
             for record in records
         )
+        post_collection_review = any(
+            record.original_metadata.get("collection_exclusion", {}).get("status")
+            == InclusionStatus.REVIEW_REQUIRED
+            and not record.original_metadata.get("review_override_applied", False)
+            for record in records
+        )
         if post_collection_excluded:
             result.excluded += 1
+        if post_collection_review:
+            result.review_required += 1
         if context.budget:
             context.budget.settle(operation_id, candidate.estimated_cost_usd)
         context.state.finish_operation(operation_id, input_hash, ",".join(output_ids))
@@ -771,7 +907,11 @@ def collect_approved_sources(
             summary=(
                 "Source metadata collected; media excluded by post-metadata rules"
                 if post_collection_excluded
-                else "Source collected"
+                else (
+                    "Source metadata collected; human review required before media"
+                    if post_collection_review
+                    else "Source collected"
+                )
             ),
             outputs=output_ids,
         )

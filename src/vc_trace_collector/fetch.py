@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
 import socket
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Self
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from .policy import Resolver, canonicalize_url, validate_public_url
+from .policy import Resolver, UnsafeUrl, canonicalize_url, validate_public_url
 
 
 class FetchTooLarge(RuntimeError):
@@ -59,6 +61,7 @@ class Fetcher:
         maximum_attempts: int = 3,
         maximum_retry_delay: float = 30,
         sleep: Callable[[float], None] = time.sleep,
+        trust_env: bool = False,
     ):
         self.resolver = resolver
         self.maximum_response_bytes = maximum_response_bytes
@@ -67,6 +70,11 @@ class Fetcher:
         self.maximum_attempts = maximum_attempts
         self.maximum_retry_delay = maximum_retry_delay
         self.sleep = sleep
+        self.trust_env = trust_env
+        self.environment_proxy_enabled = trust_env and any(
+            os.environ.get(name)
+            for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
+        )
         self._last_request: dict[str, float] = {}
         self.client = httpx.Client(
             transport=transport,
@@ -76,6 +84,7 @@ class Fetcher:
                 "Accept": "text/html,application/xml;q=0.9,*/*;q=0.5",
             },
             follow_redirects=False,
+            trust_env=trust_env,
         )
 
     def close(self) -> None:
@@ -101,8 +110,10 @@ class Fetcher:
         conditional_headers: dict[str, str],
         maximum_bytes: int,
     ) -> tuple[httpx.Response, bytes]:
+        expected_addresses = self._public_addresses(url)
         self._rate_limit(url)
         with self.client.stream("GET", url, headers=conditional_headers) as response:
+            self._verify_connected_peer(url, response, expected_addresses)
             length = response.headers.get("content-length")
             if length and int(length) > maximum_bytes:
                 raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
@@ -114,6 +125,50 @@ class Fetcher:
                     raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
                 chunks.append(chunk)
             return response, b"".join(chunks)
+
+    def _public_addresses(self, url: str) -> set[str]:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname or ""
+        answers = self.resolver(
+            hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+        )
+        addresses = {
+            str(ipaddress.ip_address(answer[4][0]))
+            for answer in answers
+            if len(answer) > 4 and answer[4]
+        }
+        if not addresses or any(
+            not ipaddress.ip_address(address).is_global for address in addresses
+        ):
+            raise UnsafeUrl(f"Host {hostname} changed to a non-public address")
+        return addresses
+
+    def _verify_connected_peer(
+        self,
+        url: str,
+        response: httpx.Response,
+        expected_addresses: set[str],
+    ) -> None:
+        stream = response.extensions.get("network_stream")
+        peer = None
+        if stream is not None and hasattr(stream, "get_extra_info"):
+            peer = stream.get_extra_info("server_addr") or stream.get_extra_info(
+                "peername"
+            )
+        if peer and not self.environment_proxy_enabled:
+            peer_value = peer[0] if isinstance(peer, tuple) else peer
+            try:
+                address = ipaddress.ip_address(str(peer_value))
+            except ValueError as error:
+                raise UnsafeUrl("Could not validate connected peer address") from error
+            if not address.is_global or str(address) not in expected_addresses:
+                raise UnsafeUrl("Connected peer did not match validated public DNS")
+            return
+        # Mock/custom transports may not expose the socket. Re-resolving does
+        # not replace peer verification for real transports, but prevents a
+        # changed answer from being silently accepted in those environments.
+        if self._public_addresses(url) != expected_addresses:
+            raise UnsafeUrl("DNS answers changed during request")
 
     def fetch(
         self,

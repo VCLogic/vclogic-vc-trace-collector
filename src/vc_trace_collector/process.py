@@ -47,6 +47,8 @@ def _inclusion(
     url: str | None,
     title: str | None,
     text: str,
+    authors: list[str],
+    speakers: list[str],
 ) -> tuple[InclusionStatus, str | None]:
     policy = rules.evaluate(
         url=url,
@@ -55,11 +57,15 @@ def _inclusion(
         channel=candidate.channel,
         programme=candidate.programme,
         company=candidate.company,
+        authors=authors,
+        speakers=speakers,
         stage="post_extraction",
     )
     if policy.status == PolicyInclusionStatus.EXCLUDED:
         return InclusionStatus.EXCLUDED, policy.reason
     if policy.status == PolicyInclusionStatus.REVIEW_REQUIRED:
+        if policy.rule_id in candidate.override_rule_ids:
+            return InclusionStatus.INCLUDED, None
         return InclusionStatus.REVIEW_REQUIRED, policy.reason
     if candidate.material_role == MaterialRole.IDENTITY_EVIDENCE:
         return (
@@ -101,12 +107,17 @@ def _make_document(
     source_key = f"{candidate.source_type.value}:{url or artifact.source_path or artifact.sha256}"
     source_item_id = _identifier("source", source_key)
     version_id = _identifier("version", f"{source_item_id}:{content_hash}")
+    speakers = (
+        authors if candidate.material_role == MaterialRole.SPOKEN_BY_TARGET else []
+    )
     inclusion, reason = _inclusion(
         candidate,
         rules=rules,
         url=url,
         title=title,
         text=normalized,
+        authors=authors,
+        speakers=speakers,
     )
     attribution = speaker_attribution or SpeakerAttribution(
         status=(
@@ -133,9 +144,7 @@ def _make_document(
         material_role=candidate.material_role,
         title=title,
         authors=authors,
-        speakers=(
-            authors if candidate.material_role == MaterialRole.SPOKEN_BY_TARGET else []
-        ),
+        speakers=speakers,
         published_at=published_at,
         publication_date_precision="timestamp" if published_at else None,
         collected_at=artifact.collected_at,
@@ -184,6 +193,12 @@ def process_artifact(
                 channel=candidate.channel,
                 programme=candidate.programme,
                 company=candidate.company,
+                authors=kwargs.get("authors", []),
+                speakers=(
+                    kwargs.get("authors", [])
+                    if candidate.material_role == MaterialRole.SPOKEN_BY_TARGET
+                    else []
+                ),
                 stage="post_extraction",
             )
             for url in sorted(provenance_urls)
@@ -210,7 +225,14 @@ def process_artifact(
             rules=rules,
             **kwargs,
         )
-        if document and policy.status != PolicyInclusionStatus.INCLUDED:
+        if (
+            document
+            and policy.status != PolicyInclusionStatus.INCLUDED
+            and not (
+                policy.status == PolicyInclusionStatus.REVIEW_REQUIRED
+                and policy.rule_id in candidate.override_rule_ids
+            )
+        ):
             document.inclusion_status = policy.status
             document.exclusion_reason = policy.reason
         elif (

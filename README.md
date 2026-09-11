@@ -194,17 +194,27 @@ the selected models.
 
 Set conservative per-operation price estimates with
 `--transcription-cost-usd`, `--diarization-cost-usd`, and
-`--embedding-cost-usd`. They are reserved before providers or models are
-initialized. Media with an unknown duration is rejected before model calls.
+`--embedding-cost-usd`; search calls use `--search-operation-cost-usd`. They
+are reserved transactionally before providers or models are initialized.
+`--max-download-bytes`, `--max-provider-operations`, and
+`--max-media-minutes` are aggregate run ceilings. Media with an unknown
+duration is rejected before model calls.
 By default, any failed or unresolved approved source prevents a verified
 export; `--allow-partial-run` is an explicit, manifest-visible opt-out.
 
 ## Exclusions and source review
 
 `config/exclusions.example.toml` demonstrates domain, channel, programme,
-company, keyword, and URL-pattern controls. Rules are evaluated at discovery,
-processing, and export. Items that are excluded, third-party, unknown, or have
-uncertain speaker attribution cannot enter the corpus.
+company, author, speaker, keyword, and URL-pattern controls. Rules are evaluated
+at discovery, post-metadata collection, processing, export, and verification.
+Items that are excluded, third-party, unknown, or have uncertain speaker
+attribution cannot enter the corpus. A post-metadata `review` rule pauses before
+captions or media; an analyst may record its rule ID in a decision file's
+`override_rule_ids` and rerun review/collection. The decision history is part of
+the signed manifest provenance.
+
+Direct audio URLs are not downloaded during discovery. Their review decision
+must include a positive `estimated_media_seconds` value before collection.
 
 Pass the file with `--exclusion-file`. Its validated rule contents are frozen
 inside `config_snapshot.json` and fingerprinted in the collection manifest.
@@ -259,6 +269,11 @@ confidence, inclusion decisions, and model attribution make every exported
 record traceable back to source artifacts. The compatibility export is written
 both under `corpus/` and at the investor workspace root as required by the
 existing downstream consumer.
+
+Direct network connections verify the connected socket against public DNS to
+mitigate rebinding. Environment proxy use is disabled unless the operator sets
+`VC_TRACE_ALLOW_ENV_PROXY=1`; that explicit opt-in treats the proxy as part of
+the network trust boundary while retaining pre/post DNS validation.
 
 ## Tests
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .audit import BudgetLedger
 from .extract import ExtractedPage, extract_page
 from .fetch import Fetcher
 from .models import (
@@ -298,6 +300,10 @@ class DiscoveryService:
         rules: RuleSet | None = None,
         search_limit_per_query: int = 10,
         maximum_search_operations: int = 20,
+        maximum_download_bytes: int | None = None,
+        budget: BudgetLedger | None = None,
+        search_operation_cost_usd: Decimal = Decimal(0),
+        maximum_provider_operations: int = 100,
     ):
         self.fetcher = fetcher
         self.search_provider = search_provider
@@ -305,7 +311,24 @@ class DiscoveryService:
         self.rules = rules or RuleSet.pitch_default()
         self.search_limit_per_query = search_limit_per_query
         self.maximum_search_operations = max(0, maximum_search_operations)
+        self.maximum_download_bytes = maximum_download_bytes
+        self.downloaded_bytes = 0
+        self.budget = budget
+        self.search_operation_cost_usd = search_operation_cost_usd
+        self.maximum_provider_operations = maximum_provider_operations
         self.retrieved_fetches = []
+
+    def _fetch(self, url: str):
+        remaining = (
+            self.maximum_download_bytes - self.downloaded_bytes
+            if self.maximum_download_bytes is not None
+            else None
+        )
+        if remaining is not None and remaining <= 0:
+            raise RuntimeError("Downloaded-byte budget exhausted during discovery")
+        fetched = self.fetcher.fetch(url, maximum_bytes=remaining)
+        self.downloaded_bytes += len(fetched.content)
+        return fetched
 
     def discover(
         self,
@@ -323,7 +346,7 @@ class DiscoveryService:
         page: ExtractedPage | None = None
 
         if known_profile_url:
-            fetched = self.fetcher.fetch(known_profile_url)
+            fetched = self._fetch(known_profile_url)
             self.retrieved_fetches.append(fetched)
             page = extract_page(fetched.content, fetched.final_url)
             exact_name = name.casefold() in f"{page.title}\n{page.text}".casefold()
@@ -382,7 +405,45 @@ class DiscoveryService:
             else ([Affiliation(firm=firm, current=True)] if firm else [])
         )
         for source_url in source_urls or []:
-            fetched = self.fetcher.fetch(source_url)
+            direct_suffix = Path(urlsplit(source_url).path).suffix.casefold()
+            if direct_suffix in {
+                ".mp3",
+                ".m4a",
+                ".opus",
+                ".ogg",
+                ".wav",
+                ".flac",
+                ".mp4",
+                ".mov",
+                ".mkv",
+                ".webm",
+            }:
+                canonical = canonicalize_url(source_url)
+                candidates_by_url[canonical] = SourceCandidate(
+                    candidate_id=stable_id("candidate", canonical),
+                    url=source_url,
+                    canonical_url=canonical,
+                    source_type=SourceType.PODCAST,
+                    material_role=MaterialRole.REFERENCE_VOICE,
+                    title=Path(urlsplit(source_url).path).name or None,
+                    description=(
+                        "Direct public media supplied by operator; identity and duration "
+                        "require review before collection"
+                    ),
+                    discovered_via="user_supplied_direct_media",
+                    discovery_queries=[f"operator supplied media for {name}"],
+                    identity_confidence=Confidence(
+                        score=0.5,
+                        method="operator_supplied_media_requires_review",
+                        version="1",
+                    ),
+                    source_confidence=Confidence(
+                        score=0.8, method="operator_supplied_url", version="1"
+                    ),
+                    approval_status=ApprovalStatus.PENDING,
+                )
+                continue
+            fetched = self._fetch(source_url)
             self.retrieved_fetches.append(fetched)
             source_page = extract_page(fetched.content, fetched.final_url)
             combined = f"{source_page.title}\n{source_page.description or ''}\n{source_page.text}"
@@ -484,9 +545,34 @@ class DiscoveryService:
 
         if self.search_provider:
             for query in queries[: self.maximum_search_operations]:
-                results = self.search_provider.search(
-                    query, limit=self.search_limit_per_query
-                )
+                operation_id = f"search:{stable_id('query', query)}"
+                if self.budget:
+                    if (
+                        self.budget.provider_operations
+                        >= self.maximum_provider_operations
+                    ):
+                        raise RuntimeError(
+                            "Provider-operation budget exhausted before search"
+                        )
+                    self.budget.reserve(
+                        operation_id,
+                        self.search_operation_cost_usd,
+                        provider=self.search_provider.provider_name,
+                    )
+                try:
+                    results = self.search_provider.search(
+                        query, limit=self.search_limit_per_query
+                    )
+                except Exception:
+                    if self.budget:
+                        self.budget.release(operation_id)
+                    raise
+                if self.budget:
+                    self.budget.settle(
+                        operation_id,
+                        self.search_operation_cost_usd,
+                        provider=self.search_provider.provider_name,
+                    )
                 provider_operations.append(
                     {
                         "provider": self.search_provider.provider_name,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from math import isclose
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from .models import (
     ResolutionStatus,
     ResolvedIdentity,
     RunSummary,
+    SourceDecision,
     SourcePlan,
     SourceType,
     SpeakerStatus,
@@ -52,6 +54,14 @@ def _load_model(path: Path, model: type[BaseModel], label: str, errors: list[str
     except Exception as error:
         errors.append(f"Invalid {label}: {error}")
         return None
+
+
+def _rule_blocks(decision, candidate) -> bool:
+    if decision.status == "excluded":
+        return True
+    return decision.status == "review_required" and (
+        candidate is None or decision.rule_id not in candidate.override_rule_ids
+    )
 
 
 def _validate_model_attribution(
@@ -181,6 +191,14 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append("Resolved identity slug does not match manifest")
         if identity.resolution_status != ResolutionStatus.CONFIRMED:
             errors.append("Resolved identity is not confirmed")
+        if not identity.reviewed_by:
+            errors.append("Confirmed identity lacks reviewer attestation")
+        try:
+            identity_review = read_json(workspace / "identity/identity_review.json")
+            if identity_review.get("reviewed_by") != identity.reviewed_by:
+                errors.append("Identity review record does not match resolved identity")
+        except Exception as error:
+            errors.append(f"Invalid identity review record: {error}")
 
     config = _load_model(
         workspace / "config_snapshot.json", RunConfig, "config snapshot", errors
@@ -208,6 +226,39 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         if plan.investor_slug != manifest.investor_slug:
             errors.append("Source plan investor slug does not match manifest")
         candidates = {item.candidate_id: item for item in plan.candidates}
+        for candidate in plan.candidates:
+            if candidate.approval_status in {
+                ApprovalStatus.APPROVED,
+                ApprovalStatus.AUTO_APPROVED,
+            } and (not candidate.reviewed_by or candidate.decision_at is None):
+                errors.append(
+                    f"Approved source lacks reviewer attestation: {candidate.candidate_id}"
+                )
+
+    source_decisions: list[SourceDecision] = []
+    for row in read_jsonl(workspace / "discovery/source_decisions.jsonl"):
+        try:
+            source_decisions.append(SourceDecision.model_validate(row))
+        except Exception as error:
+            errors.append(f"Invalid source decision: {error}")
+    for candidate in candidates.values():
+        if candidate.approval_status not in {
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.AUTO_APPROVED,
+        }:
+            continue
+        matching = [
+            item
+            for item in source_decisions
+            if item.candidate_id == candidate.candidate_id
+            and item.status == candidate.approval_status
+            and item.decided_by == candidate.reviewed_by
+        ]
+        if not matching:
+            errors.append(
+                f"Approved source lacks a manifest-covered decision: "
+                f"{candidate.candidate_id}"
+            )
 
     reference_candidates: dict[str, ReferenceVoiceCandidate] = {}
     for row in read_jsonl(workspace / "identity/reference_voice_candidates.jsonl"):
@@ -279,6 +330,10 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                     continue
                 if voice.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
                     errors.append("Reference voice candidate is not human verified")
+                if not voice.reviewed_by:
+                    errors.append(
+                        "Reference voice candidate lacks reviewer attestation"
+                    )
                 if voice.artifact_id not in profile.artifact_ids:
                     errors.append(
                         "Reference voice candidate artifact differs from profile"
@@ -394,16 +449,20 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                     if record.source_url
                 )
             if any(
-                effective_rules.evaluate(
-                    url=url,
-                    title=document.title,
-                    text=document.text,
-                    channel=candidate.channel if candidate else None,
-                    programme=candidate.programme if candidate else None,
-                    company=candidate.company if candidate else None,
-                    stage="verification",
-                ).status
-                != "included"
+                _rule_blocks(
+                    effective_rules.evaluate(
+                        url=url,
+                        title=document.title,
+                        text=document.text,
+                        channel=candidate.channel if candidate else None,
+                        programme=candidate.programme if candidate else None,
+                        company=candidate.company if candidate else None,
+                        authors=document.authors,
+                        speakers=document.speakers,
+                        stage="verification",
+                    ),
+                    candidate,
+                )
                 for url in provenance_urls
             ):
                 errors.append(
@@ -422,24 +481,30 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                         ]
                     )
                     if any(
-                        effective_rules.evaluate(
-                            url=record.source_url or document.canonical_url,
-                            title=str(metadata.get("title") or document.title or ""),
-                            text=document.text,
-                            channel=str(value) if value else None,
-                            programme=str(
-                                metadata.get("programme")
-                                or (candidate.programme if candidate else "")
-                            )
-                            or None,
-                            company=str(
-                                metadata.get("company")
-                                or (candidate.company if candidate else "")
-                            )
-                            or None,
-                            stage="verification_metadata",
-                        ).status
-                        != "included"
+                        _rule_blocks(
+                            effective_rules.evaluate(
+                                url=record.source_url or document.canonical_url,
+                                title=str(
+                                    metadata.get("title") or document.title or ""
+                                ),
+                                text=document.text,
+                                channel=str(value) if value else None,
+                                programme=str(
+                                    metadata.get("programme")
+                                    or (candidate.programme if candidate else "")
+                                )
+                                or None,
+                                company=str(
+                                    metadata.get("company")
+                                    or (candidate.company if candidate else "")
+                                )
+                                or None,
+                                authors=document.authors,
+                                speakers=document.speakers,
+                                stage="verification_metadata",
+                            ),
+                            candidate,
+                        )
                         for value in channel_values
                     ):
                         errors.append(
@@ -480,6 +545,8 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             "budget_within_limit",
             "approved_work_complete",
             "partial_run_policy_satisfied",
+            "download_budget_within_limit",
+            "provider_operation_budget_within_limit",
         }
         if not required_checks.issubset(quality.checks):
             errors.append("Quality report is missing required checks")
@@ -541,6 +608,17 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             for row in read_jsonl(workspace / "audit/costs.jsonl")
             if row.get("kind") == "settlement"
         )
+        provider_operations = sum(
+            bool(row.get("provider"))
+            for row in read_jsonl(workspace / "audit/costs.jsonl")
+            if row.get("kind") == "settlement"
+        )
+        downloaded_bytes = summary.downloaded_bytes if summary is not None else 0
+        billed_media_seconds = sum(
+            float(row.get("media_seconds", 0))
+            for row in read_jsonl(workspace / "audit/costs.jsonl")
+            if row.get("kind") == "settlement"
+        )
         actual_complete = failures == 0 and unresolved == 0
         expected_checks = {
             "corpus_nonempty": bool(documents),
@@ -551,7 +629,13 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 for item in documents
             ),
             "first_person_only": all(
-                item.material_role in {"authored_by_target", "spoken_by_target"}
+                (item.material_role == "authored_by_target" and bool(item.authors))
+                or (
+                    item.material_role == "spoken_by_target"
+                    and bool(item.speakers)
+                    and item.speaker_attribution.status
+                    in {SpeakerStatus.ACCEPTED_MODEL, SpeakerStatus.VERIFIED_HUMAN}
+                )
                 for item in documents
             ),
             "speaker_attribution_complete": len(verified_speech) == len(corpus_speech),
@@ -562,6 +646,10 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             "approved_work_complete": actual_complete,
             "partial_run_policy_satisfied": actual_complete
             or bool(config and config.allow_partial_run),
+            "download_budget_within_limit": config is None
+            or downloaded_bytes <= config.maximum_download_bytes,
+            "provider_operation_budget_within_limit": config is None
+            or provider_operations <= config.maximum_provider_operations,
         }
         for name, expected in expected_checks.items():
             if quality.checks.get(name) != expected:
@@ -583,6 +671,19 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             "source_types": len({item.source_type for item in documents}),
             "failures": failures,
             "unresolved_sources": unresolved,
+            "uncertain_attributions": sum(
+                item.speaker_attribution.status == SpeakerStatus.UNCERTAIN
+                for item in processed
+            ),
+            "unknown_publication_dates": sum(
+                item.published_at is None for item in documents
+            ),
+            "excluded": sum(item.inclusion_status == "excluded" for item in processed),
+            "review_required": sum(
+                item.inclusion_status == "review_required" for item in processed
+            ),
+            "downloaded_bytes": downloaded_bytes,
+            "provider_operations": provider_operations,
         }
         expected_retries = sum(
             max(0, int(record.original_metadata.get("attempts", 1)) - 1)
@@ -596,6 +697,56 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         for name, expected in expected_counts.items():
             if quality.counts.get(name) != expected:
                 errors.append(f"Quality count does not match workspace: {name}")
+        first_person_count = sum(
+            (item.material_role == "authored_by_target" and bool(item.authors))
+            or (
+                item.material_role == "spoken_by_target"
+                and bool(item.speakers)
+                and item.speaker_attribution.status
+                in {SpeakerStatus.ACCEPTED_MODEL, SpeakerStatus.VERIFIED_HUMAN}
+            )
+            for item in documents
+        )
+        expected_metrics = {
+            "metadata_completeness": (
+                sum(
+                    bool(item.title)
+                    and bool(item.canonical_url or item.local_source_path)
+                    for item in documents
+                )
+                / len(documents)
+                if documents
+                else 0.0
+            ),
+            "first_person_ratio": (
+                first_person_count / len(documents) if documents else 0.0
+            ),
+            "transcript_coverage": (
+                len(transcribed_speech) / len(corpus_speech) if corpus_speech else 1.0
+            ),
+            "provider_cost_usd": provider_cost,
+            "audiovisual_seconds_billed": billed_media_seconds,
+            "verified_target_speech_seconds": sum(
+                float(item.original_metadata.get("media_seconds") or 0)
+                for item in verified_speech
+            ),
+            "extraction_success_ratio": (
+                sum(bool(item.text.strip()) for item in processed) / len(processed)
+                if processed
+                else 0.0
+            ),
+            "average_included_characters": (
+                sum(len(item.text) for item in documents) / len(documents)
+                if documents
+                else 0.0
+            ),
+        }
+        for name, expected in expected_metrics.items():
+            actual = quality.metrics.get(name)
+            if actual is None or not isclose(
+                actual, expected, rel_tol=1e-9, abs_tol=1e-9
+            ):
+                errors.append(f"Quality metric does not match workspace: {name}")
         expected_passed = all(
             value
             for name, value in expected_checks.items()

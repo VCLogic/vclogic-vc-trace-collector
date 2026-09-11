@@ -12,12 +12,36 @@ from vc_trace_collector.models import (
     SpeakerStatus,
 )
 from vc_trace_collector.policy import (
+    ExclusionRule,
     RuleSet,
     UnsafeUrl,
     canonicalize_url,
     eligible_for_corpus,
     validate_public_url,
 )
+
+
+def test_rules_match_extracted_authors_and_speakers() -> None:
+    rules = RuleSet(
+        [
+            ExclusionRule(
+                rule_id="blocked-person",
+                action="exclude",
+                reason="test",
+                authors=["Other Author"],
+                speakers=["Prohibited Speaker"],
+            )
+        ]
+    )
+
+    assert (
+        rules.evaluate(authors=["Other Author"], stage="post_extraction").status
+        == "excluded"
+    )
+    assert (
+        rules.evaluate(speakers=["Prohibited Speaker"], stage="post_extraction").status
+        == "excluded"
+    )
 
 
 def test_pitch_profile_is_identity_evidence_but_excluded_from_corpus() -> None:
