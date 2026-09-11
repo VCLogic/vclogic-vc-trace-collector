@@ -7,12 +7,15 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .audit import attempted_media_seconds, provider_attempt_count
 from .models import (
+    ApprovalStatus,
     CanonicalDocument,
     CollectionManifest,
     ManifestFile,
     MaterialRole,
     QualityReport,
+    SourcePlan,
 )
 from .policy import eligible_for_corpus
 from .storage import (
@@ -112,6 +115,31 @@ def _file(path: Path, root: Path) -> ManifestFile:
     )
 
 
+def _target_interval_seconds(documents: list[CanonicalDocument]) -> float:
+    intervals: dict[str, list[tuple[float, float]]] = {}
+    for document in documents:
+        for segment in document.original_metadata.get("target_segments", []):
+            try:
+                start = float(segment["start_seconds"])
+                end = float(segment["end_seconds"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if end > start:
+                intervals.setdefault(document.source_candidate_id, []).append(
+                    (start, end)
+                )
+    total = 0.0
+    for source_intervals in intervals.values():
+        merged: list[list[float]] = []
+        for start, end in sorted(source_intervals):
+            if not merged or start > merged[-1][1]:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+        total += sum(end - start for start, end in merged)
+    return total
+
+
 def export_workspace(
     workspace: Path,
     *,
@@ -154,10 +182,8 @@ def export_workspace(
     cost_rows = read_jsonl(workspace / "audit/costs.jsonl")
     settlements = [row for row in cost_rows if row.get("kind") == "settlement"]
     provider_cost = sum(float(row.get("amount_usd", 0)) for row in settlements)
-    provider_operations = sum(bool(row.get("provider")) for row in settlements)
-    billed_media_seconds = sum(
-        float(row.get("media_seconds", 0)) for row in settlements
-    )
+    provider_operations = provider_attempt_count(cost_rows)
+    billed_media_seconds = attempted_media_seconds(cost_rows)
     retry_count = sum(
         max(0, int(row.get("original_metadata", {}).get("attempts", 1)) - 1)
         for row in raw_records
@@ -200,6 +226,29 @@ def export_workspace(
         for document in included
     )
     approved_work_complete = run_failures == 0 and unresolved_sources == 0
+    raw_candidate_ids = {
+        str(row.get("original_metadata", {}).get("candidate_id", ""))
+        for row in raw_records
+    }
+    expected_extraction_ids: set[str] = set()
+    try:
+        plan = SourcePlan.model_validate(
+            read_json(workspace / "discovery/source_plan.json")
+        )
+        expected_extraction_ids = {
+            candidate.candidate_id
+            for candidate in plan.candidates
+            if candidate.approval_status
+            in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+            and candidate.material_role
+            in {MaterialRole.AUTHORED_BY_TARGET, MaterialRole.SPOKEN_BY_TARGET}
+            and candidate.candidate_id in raw_candidate_ids
+        }
+    except (FileNotFoundError, ValueError):
+        expected_extraction_ids = set()
+    successful_extraction_ids = {
+        document.source_candidate_id for document in ordered if document.text.strip()
+    } & expected_extraction_ids
     checks = {
         "corpus_nonempty": bool(included),
         "excluded_absent": all(eligible_for_corpus(item) for item in included),
@@ -245,6 +294,8 @@ def export_workspace(
             "retries": retry_count,
             "downloaded_bytes": downloaded_bytes,
             "provider_operations": provider_operations,
+            "expected_extractions": len(expected_extraction_ids),
+            "extraction_successes": len(successful_extraction_ids),
             "uncertain_attributions": sum(
                 document.speaker_attribution.status == "uncertain"
                 for document in ordered
@@ -278,14 +329,11 @@ def export_workspace(
             ),
             "provider_cost_usd": provider_cost,
             "audiovisual_seconds_billed": billed_media_seconds,
-            "verified_target_speech_seconds": sum(
-                float(document.original_metadata.get("media_seconds") or 0)
-                for document in verified_speech
-            ),
+            "verified_target_speech_seconds": _target_interval_seconds(verified_speech),
             "extraction_success_ratio": (
-                sum(bool(document.text.strip()) for document in ordered) / len(ordered)
-                if ordered
-                else 0.0
+                len(successful_extraction_ids) / len(expected_extraction_ids)
+                if expected_extraction_ids
+                else 1.0
             ),
             "average_included_characters": (
                 sum(len(document.text) for document in included) / len(included)

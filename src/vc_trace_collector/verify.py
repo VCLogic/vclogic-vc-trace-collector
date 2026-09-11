@@ -9,6 +9,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .audit import (
+    BudgetLedger,
+    attempted_media_seconds,
+    provider_attempt_count,
+)
 from .config import RunConfig
 from .models import (
     ApprovalStatus,
@@ -62,6 +67,31 @@ def _rule_blocks(decision, candidate) -> bool:
     return decision.status == "review_required" and (
         candidate is None or decision.rule_id not in candidate.override_rule_ids
     )
+
+
+def _target_interval_seconds(documents: list[CanonicalDocument]) -> float:
+    by_source: dict[str, list[tuple[float, float]]] = {}
+    for document in documents:
+        for segment in document.original_metadata.get("target_segments", []):
+            try:
+                start = float(segment["start_seconds"])
+                end = float(segment["end_seconds"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if end > start:
+                by_source.setdefault(document.source_candidate_id, []).append(
+                    (start, end)
+                )
+    total = 0.0
+    for intervals in by_source.values():
+        merged: list[list[float]] = []
+        for start, end in sorted(intervals):
+            if not merged or start > merged[-1][1]:
+                merged.append([start, end])
+            else:
+                merged[-1][1] = max(merged[-1][1], end)
+        total += sum(end - start for start, end in merged)
+    return total
 
 
 def _validate_model_attribution(
@@ -205,6 +235,19 @@ def verify_workspace(workspace: Path) -> VerificationResult:
     )
     if config is not None and config.fingerprint != manifest.config_hash:
         errors.append("Config snapshot hash does not match manifest")
+    cost_trace_path = workspace / "audit/costs.jsonl"
+    cost_database_path = workspace / "audit/costs.sqlite"
+    if cost_trace_path.exists() and not cost_database_path.exists():
+        errors.append("Transactional cost ledger is missing")
+    if cost_database_path.exists() and config is not None:
+        ledger = BudgetLedger(
+            cost_trace_path,
+            config.maximum_cost_usd,
+            maximum_provider_operations=config.maximum_provider_operations,
+            maximum_media_seconds=config.maximum_media_minutes * 60,
+        )
+        if not ledger.trace_consistent():
+            errors.append("Public cost trace does not match transactional ledger")
 
     effective_rules = None
     try:
@@ -247,16 +290,63 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             ApprovalStatus.AUTO_APPROVED,
         }:
             continue
-        matching = [
+        history = [
             item
             for item in source_decisions
             if item.candidate_id == candidate.candidate_id
-            and item.status == candidate.approval_status
-            and item.decided_by == candidate.reviewed_by
         ]
-        if not matching:
+        if not history:
             errors.append(
                 f"Approved source lacks a manifest-covered decision: "
+                f"{candidate.candidate_id}"
+            )
+            continue
+        latest = history[-1]
+        exact_latest = (
+            latest.status == candidate.approval_status
+            and latest.decided_by == candidate.reviewed_by
+            and latest.decided_at == candidate.decision_at
+            and latest.reason == candidate.decision_reason
+        )
+        if not exact_latest:
+            errors.append(
+                f"Approved source does not match its latest decision: "
+                f"{candidate.candidate_id}"
+            )
+        overrides = sorted(
+            {rule_id for item in history for rule_id in item.override_rule_ids}
+        )
+        if overrides != sorted(candidate.override_rule_ids):
+            errors.append(
+                f"Source exclusion overrides lack exact decision provenance: "
+                f"{candidate.candidate_id}"
+            )
+        for field in ("material_role", "channel", "programme", "company"):
+            values = [
+                getattr(item, field)
+                for item in history
+                if getattr(item, field) is not None
+            ]
+            if values and getattr(candidate, field) != values[-1]:
+                errors.append(
+                    f"Source {field} does not match decision history: "
+                    f"{candidate.candidate_id}"
+                )
+        estimates = [
+            item.estimated_media_seconds
+            for item in history
+            if item.estimated_media_seconds is not None
+        ]
+        if estimates and candidate.estimated_media_seconds != estimates[-1]:
+            errors.append(
+                f"Source duration does not match decision history: {candidate.candidate_id}"
+            )
+        speaker_reviewers = [
+            item.decided_by for item in history if item.speaker_verified
+        ]
+        if speaker_reviewers and candidate.speaker_verified_by != speaker_reviewers[-1]:
+            errors.append(
+                f"Source speaker verification lacks decision provenance: "
                 f"{candidate.candidate_id}"
             )
 
@@ -603,22 +693,31 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         ]
         failures = summary.failures if summary is not None else 0
         unresolved = summary.unresolved if summary is not None else 0
+        cost_rows = read_jsonl(workspace / "audit/costs.jsonl")
         provider_cost = sum(
             float(row.get("amount_usd", 0))
-            for row in read_jsonl(workspace / "audit/costs.jsonl")
+            for row in cost_rows
             if row.get("kind") == "settlement"
         )
-        provider_operations = sum(
-            bool(row.get("provider"))
-            for row in read_jsonl(workspace / "audit/costs.jsonl")
-            if row.get("kind") == "settlement"
-        )
+        provider_operations = provider_attempt_count(cost_rows)
         downloaded_bytes = summary.downloaded_bytes if summary is not None else 0
-        billed_media_seconds = sum(
-            float(row.get("media_seconds", 0))
-            for row in read_jsonl(workspace / "audit/costs.jsonl")
-            if row.get("kind") == "settlement"
-        )
+        billed_media_seconds = attempted_media_seconds(cost_rows)
+        raw_candidate_ids = {
+            str(record.original_metadata.get("candidate_id", ""))
+            for records in artifacts.values()
+            for record in records
+        }
+        expected_extraction_ids = {
+            candidate.candidate_id
+            for candidate in candidates.values()
+            if candidate.approval_status
+            in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+            and candidate.material_role in {"authored_by_target", "spoken_by_target"}
+            and candidate.candidate_id in raw_candidate_ids
+        }
+        successful_extraction_ids = {
+            item.source_candidate_id for item in processed if item.text.strip()
+        } & expected_extraction_ids
         actual_complete = failures == 0 and unresolved == 0
         expected_checks = {
             "corpus_nonempty": bool(documents),
@@ -684,6 +783,8 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             ),
             "downloaded_bytes": downloaded_bytes,
             "provider_operations": provider_operations,
+            "expected_extractions": len(expected_extraction_ids),
+            "extraction_successes": len(successful_extraction_ids),
         }
         expected_retries = sum(
             max(0, int(record.original_metadata.get("attempts", 1)) - 1)
@@ -726,14 +827,11 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             ),
             "provider_cost_usd": provider_cost,
             "audiovisual_seconds_billed": billed_media_seconds,
-            "verified_target_speech_seconds": sum(
-                float(item.original_metadata.get("media_seconds") or 0)
-                for item in verified_speech
-            ),
+            "verified_target_speech_seconds": _target_interval_seconds(verified_speech),
             "extraction_success_ratio": (
-                sum(bool(item.text.strip()) for item in processed) / len(processed)
-                if processed
-                else 0.0
+                len(successful_extraction_ids) / len(expected_extraction_ids)
+                if expected_extraction_ids
+                else 1.0
             ),
             "average_included_characters": (
                 sum(len(item.text) for item in documents) / len(documents)

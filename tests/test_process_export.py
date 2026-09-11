@@ -61,6 +61,37 @@ def test_normalization_is_stable_without_rewriting_words() -> None:
     assert normalize_text("  One\r\n\r\n\r\nTwo\u00a0words  ") == "One\n\nTwo words"
 
 
+def test_quality_counts_merged_target_intervals_not_whole_recording(tmp_path) -> None:
+    item = document(
+        "talk",
+        "Verified target speech",
+        role=MaterialRole.SPOKEN_BY_TARGET,
+        speaker=SpeakerStatus.VERIFIED_HUMAN,
+        source_type=SourceType.PODCAST,
+    )
+    item.speakers = ["Michael Hyatt"]
+    item.transcript = TranscriptInfo(method="existing_transcript")
+    item.original_metadata = {
+        "media_seconds": 100,
+        "target_segments": [
+            {"start_seconds": 0, "end_seconds": 3},
+            {"start_seconds": 2, "end_seconds": 5},
+        ],
+    }
+
+    export_workspace(
+        tmp_path,
+        investor_slug="michael-hyatt",
+        identity_id="identity:michael",
+        documents=[item],
+        config_hash="config",
+        exclusion_rules_hash="rules",
+    )
+
+    quality = read_json(tmp_path / "quality_report.json")
+    assert quality["metrics"]["verified_target_speech_seconds"] == 5
+
+
 def test_human_verified_supplied_transcript_is_eligible_target_speech(tmp_path) -> None:
     candidate = SourceCandidate(
         candidate_id="candidate:transcript",

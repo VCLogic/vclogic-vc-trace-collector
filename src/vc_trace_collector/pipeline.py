@@ -36,6 +36,7 @@ from .collectors import (
     auto_approve,
     collect_approved_sources,
     default_registry,
+    is_acquired_media,
 )
 from .config import RunConfig
 from .discovery import (
@@ -215,24 +216,15 @@ class Pipeline:
         discovery_provider = self._provider_for(config.discovery_model)
         estimated_workspace = self.workspace(re_slug(name, firm))
         discovery_budget = BudgetLedger(
-            estimated_workspace / "audit/costs.jsonl", config.maximum_cost_usd
+            estimated_workspace / "audit/costs.jsonl",
+            config.maximum_cost_usd,
+            maximum_provider_operations=config.maximum_provider_operations,
+            maximum_media_seconds=config.maximum_media_minutes * 60,
         )
         discovery_operation_id = f"discover-llm:{config.fingerprint}"
-        if discovery_provider is not None:
-            if config.discovery_call_budget_usd is None:
-                raise ValueError(
-                    "Set discovery_call_budget_usd when enabling an LLM provider"
-                )
-            if (
-                discovery_budget.provider_operations
-                >= config.maximum_provider_operations
-            ):
-                raise RuntimeError("Provider-operation budget exhausted before LLM")
-            discovery_budget.reserve(
-                discovery_operation_id,
-                config.discovery_call_budget_usd,
-                provider=discovery_provider.provider_name,
-                model=discovery_provider.model_name,
+        if discovery_provider is not None and config.discovery_call_budget_usd is None:
+            raise ValueError(
+                "Set discovery_call_budget_usd when enabling an LLM provider"
             )
         service = DiscoveryService(
             fetcher=self.fetcher,
@@ -243,32 +235,19 @@ class Pipeline:
             maximum_download_bytes=config.maximum_download_bytes,
             budget=discovery_budget,
             search_operation_cost_usd=config.search_operation_cost_usd,
+            discovery_operation_id=discovery_operation_id,
+            discovery_operation_cost_usd=config.discovery_call_budget_usd or 0,
             maximum_provider_operations=config.maximum_provider_operations,
         )
-        try:
-            result = service.discover(
-                name=name,
-                firm=firm,
-                known_profile_url=known_profile_url,
-                source_urls=source_urls or config.source_urls,
-                supplied_files=supplied_files
-                or [Path(path) for path in config.supplied_files],
-                supplied_role=supplied_role or config.supplied_role,
-            )
-        except Exception:
-            if discovery_provider is not None:
-                discovery_budget.release(discovery_operation_id)
-            raise
-        if discovery_provider is not None:
-            usage = getattr(discovery_provider, "last_usage", {})
-            discovery_budget.settle(
-                discovery_operation_id,
-                config.discovery_call_budget_usd or 0,
-                input_tokens=int(usage.get("input_tokens", 0)),
-                output_tokens=int(usage.get("output_tokens", 0)),
-                provider=discovery_provider.provider_name,
-                model=discovery_provider.model_name,
-            )
+        result = service.discover(
+            name=name,
+            firm=firm,
+            known_profile_url=known_profile_url,
+            source_urls=source_urls or config.source_urls,
+            supplied_files=supplied_files
+            or [Path(path) for path in config.supplied_files],
+            supplied_role=supplied_role or config.supplied_role,
+        )
         workspace = self.workspace(result.identity.slug)
         workspace.mkdir(parents=True, exist_ok=True)
         run_id = self._run_id()
@@ -508,12 +487,15 @@ class Pipeline:
         already_collected_media = sum(
             float(artifact.original_metadata.get("duration_seconds") or 0)
             for artifact in existing_artifacts
-            if artifact.collection_method in {"podcast_enclosure_http", "yt_dlp_audio"}
+            if is_acquired_media(artifact)
         )
-        already_downloaded_bytes = sum(
-            artifact.size_bytes
-            for artifact in existing_artifacts
-            if artifact.collection_method in NETWORK_COLLECTION_METHODS
+        already_downloaded_bytes = max(
+            summary.downloaded_bytes,
+            sum(
+                artifact.size_bytes
+                for artifact in existing_artifacts
+                if artifact.collection_method in NETWORK_COLLECTION_METHODS
+            ),
         )
         context = CollectionContext(
             workspace=workspace,
@@ -524,7 +506,10 @@ class Pipeline:
             fetcher=self.fetcher,
             audit=self._audit(workspace),
             budget=BudgetLedger(
-                workspace / "audit/costs.jsonl", config.maximum_cost_usd
+                workspace / "audit/costs.jsonl",
+                config.maximum_cost_usd,
+                maximum_provider_operations=config.maximum_provider_operations,
+                maximum_media_seconds=config.maximum_media_minutes * 60,
             ),
             approved_source_types=(
                 {SourceType(value) for value in config.approved_source_types}
@@ -622,7 +607,12 @@ class Pipeline:
             )
         if source_duration > config.maximum_media_minutes * 60:
             raise ReviewRequired("Reference voice exceeds the media processing budget")
-        cost = BudgetLedger(workspace / "audit/costs.jsonl", config.maximum_cost_usd)
+        cost = BudgetLedger(
+            workspace / "audit/costs.jsonl",
+            config.maximum_cost_usd,
+            maximum_provider_operations=config.maximum_provider_operations,
+            maximum_media_seconds=config.maximum_media_minutes * 60,
+        )
         if cost.media_seconds + source_duration > config.maximum_media_minutes * 60:
             raise ReviewRequired(
                 "Run-wide media processing budget exhausted before voice embedding"
@@ -633,75 +623,73 @@ class Pipeline:
             raise ReviewRequired(
                 "Provider-operation budget exhausted before voice embedding"
             )
+        if provider is None:
+            if not config.embedding_model:
+                raise ReviewRequired(
+                    "Configure an embedding model before voice approval"
+                )
+            provider = PyannoteEmbeddingProvider(
+                config.embedding_model,
+                token=os.environ.get("HF_TOKEN"),
+                device=os.environ.get("VC_TRACE_AV_DEVICE"),
+            )
+        reference_artifact = artifact
+        if start_seconds is not None or end_seconds is not None:
+            assert start_seconds is not None and end_seconds is not None
+            with tempfile.TemporaryDirectory(prefix="vc-trace-reference-") as directory:
+                extracted = self.audio_extractor(
+                    source_path,
+                    Path(directory) / "reference.wav",
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                )
+                reference_artifact = (
+                    ArtifactStore(workspace)
+                    .put_bytes(
+                        extracted.read_bytes(),
+                        category="voice",
+                        suffix=".wav",
+                        source_url=artifact.source_url,
+                        mime_type="audio/wav",
+                        collection_method="human_selected_reference_segment",
+                        original_metadata={
+                            "candidate_id": selected.source_candidate_id,
+                            "reference_candidate_id": selected.candidate_id,
+                            "reviewer": reviewer,
+                            "start_seconds": start_seconds,
+                            "end_seconds": end_seconds,
+                            "duration_seconds": source_duration,
+                        },
+                        parent_artifact_ids=[artifact.artifact_id],
+                    )
+                    .record
+                )
+                embedding_path = workspace / reference_artifact.relative_path
+        else:
+            embedding_path = source_path
         cost.reserve(
             operation_id,
             config.embedding_cost_usd,
-            provider=provider.provider_name if provider else "pyannote",
-            model=provider.model_name if provider else config.embedding_model,
+            provider=provider.provider_name,
+            model=provider.model_name,
+            media_seconds=source_duration,
         )
         try:
-            if provider is None:
-                if not config.embedding_model:
-                    raise ReviewRequired(
-                        "Configure an embedding model before voice approval"
-                    )
-                provider = PyannoteEmbeddingProvider(
-                    config.embedding_model,
-                    token=os.environ.get("HF_TOKEN"),
-                    device=os.environ.get("VC_TRACE_AV_DEVICE"),
-                )
+            embedding = provider.embed(embedding_path)
         except Exception:
-            cost.release(operation_id)
-            raise
-        reference_artifact = artifact
-        try:
-            if start_seconds is not None or end_seconds is not None:
-                assert start_seconds is not None and end_seconds is not None
-                with tempfile.TemporaryDirectory(
-                    prefix="vc-trace-reference-"
-                ) as directory:
-                    extracted = self.audio_extractor(
-                        source_path,
-                        Path(directory) / "reference.wav",
-                        start_seconds=start_seconds,
-                        end_seconds=end_seconds,
-                    )
-                    reference_artifact = (
-                        ArtifactStore(workspace)
-                        .put_bytes(
-                            extracted.read_bytes(),
-                            category="voice",
-                            suffix=".wav",
-                            source_url=artifact.source_url,
-                            mime_type="audio/wav",
-                            collection_method="human_selected_reference_segment",
-                            original_metadata={
-                                "candidate_id": selected.source_candidate_id,
-                                "reference_candidate_id": selected.candidate_id,
-                                "reviewer": reviewer,
-                                "start_seconds": start_seconds,
-                                "end_seconds": end_seconds,
-                                "duration_seconds": source_duration,
-                            },
-                            parent_artifact_ids=[artifact.artifact_id],
-                        )
-                        .record
-                    )
-                    embedding = provider.embed(
-                        workspace / reference_artifact.relative_path
-                    )
-            else:
-                embedding = provider.embed(source_path)
             cost.settle(
                 operation_id,
                 config.embedding_cost_usd,
-                media_seconds=source_duration,
                 provider=provider.provider_name,
                 model=provider.model_name,
             )
-        except Exception:
-            cost.release(operation_id)
             raise
+        cost.settle(
+            operation_id,
+            config.embedding_cost_usd,
+            provider=provider.provider_name,
+            model=provider.model_name,
+        )
         selected.start_seconds = start_seconds
         selected.end_seconds = end_seconds
         selected.status = ReferenceVoiceStatus.VERIFIED_HUMAN
@@ -882,7 +870,12 @@ class Pipeline:
         video_suffixes = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
         av_rows: list[dict] = []
         state = StateStore(workspace / "state/state.sqlite")
-        cost = BudgetLedger(workspace / "audit/costs.jsonl", config.maximum_cost_usd)
+        cost = BudgetLedger(
+            workspace / "audit/costs.jsonl",
+            config.maximum_cost_usd,
+            maximum_provider_operations=config.maximum_provider_operations,
+            maximum_media_seconds=config.maximum_media_minutes * 60,
+        )
         processed_seconds = cost.media_seconds
         for artifact in artifacts:
             candidate_id = str(artifact.original_metadata.get("candidate_id", ""))
@@ -1049,6 +1042,7 @@ class Pipeline:
                             if self.diarization_provider
                             else config.diarization_model
                         ),
+                        media_seconds=probed_seconds,
                     )
                     cost_operation_ids.append(diarization_operation)
                     transcription_operation = None
@@ -1093,14 +1087,44 @@ class Pipeline:
                     cost.settle(
                         diarization_operation,
                         config.diarization_cost_usd,
-                        media_seconds=probed_seconds,
                         provider=diarization_provider.provider_name,
                         model=diarization_provider.model_name,
                     )
                     state.finish_operation(operation_id, input_hash, str(cache_path))
             except Exception as error:
                 for cost_operation_id in cost_operation_ids:
-                    cost.release(cost_operation_id)
+                    row_provider = "unknown-provider"
+                    row_model = None
+                    row_cost = config.diarization_cost_usd
+                    if cost_operation_id.endswith(":transcription"):
+                        row_provider = (
+                            self.transcript_provider.provider_name
+                            if self.transcript_provider
+                            else "local-whisper"
+                        )
+                        row_model = (
+                            self.transcript_provider.model_name
+                            if self.transcript_provider
+                            else config.transcription_model
+                        )
+                        row_cost = config.transcription_cost_usd
+                    else:
+                        row_provider = (
+                            self.diarization_provider.provider_name
+                            if self.diarization_provider
+                            else "pyannote"
+                        )
+                        row_model = (
+                            self.diarization_provider.model_name
+                            if self.diarization_provider
+                            else config.diarization_model
+                        )
+                    cost.settle(
+                        cost_operation_id,
+                        row_cost,
+                        provider=row_provider,
+                        model=row_model,
+                    )
                 state.fail_operation(operation_id, input_hash, str(redact(str(error))))
                 failure = redact(
                     {

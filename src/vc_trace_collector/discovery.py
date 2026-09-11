@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .audit import BudgetLedger
 from .extract import ExtractedPage, extract_page
-from .fetch import Fetcher
+from .fetch import Fetcher, FetchTooLarge
 from .models import (
     Affiliation,
     ApprovalStatus,
@@ -303,6 +303,8 @@ class DiscoveryService:
         maximum_download_bytes: int | None = None,
         budget: BudgetLedger | None = None,
         search_operation_cost_usd: Decimal = Decimal(0),
+        discovery_operation_id: str | None = None,
+        discovery_operation_cost_usd: Decimal = Decimal(0),
         maximum_provider_operations: int = 100,
     ):
         self.fetcher = fetcher
@@ -315,6 +317,8 @@ class DiscoveryService:
         self.downloaded_bytes = 0
         self.budget = budget
         self.search_operation_cost_usd = search_operation_cost_usd
+        self.discovery_operation_id = discovery_operation_id
+        self.discovery_operation_cost_usd = discovery_operation_cost_usd
         self.maximum_provider_operations = maximum_provider_operations
         self.retrieved_fetches = []
 
@@ -326,8 +330,12 @@ class DiscoveryService:
         )
         if remaining is not None and remaining <= 0:
             raise RuntimeError("Downloaded-byte budget exhausted during discovery")
-        fetched = self.fetcher.fetch(url, maximum_bytes=remaining)
-        self.downloaded_bytes += len(fetched.content)
+        try:
+            fetched = self.fetcher.fetch(url, maximum_bytes=remaining)
+        except (FetchTooLarge, httpx.TransportError, httpx.TimeoutException) as error:
+            self.downloaded_bytes += int(getattr(error, "downloaded_bytes", 0))
+            raise
+        self.downloaded_bytes += fetched.transferred_bytes
         return fetched
 
     def discover(
@@ -565,7 +573,12 @@ class DiscoveryService:
                     )
                 except Exception:
                     if self.budget:
-                        self.budget.release(operation_id)
+                        # The provider accepted the invocation and may bill failed calls.
+                        self.budget.settle(
+                            operation_id,
+                            self.search_operation_cost_usd,
+                            provider=self.search_provider.provider_name,
+                        )
                     raise
                 if self.budget:
                     self.budget.settle(
@@ -652,9 +665,39 @@ class DiscoveryService:
             candidates_by_url.values(), key=lambda item: item.canonical_url
         )
         if self.discovery_provider:
-            refinement = self.discovery_provider.refine(
-                name=name, evidence=evidence, candidates=candidates
+            operation_id = self.discovery_operation_id or (
+                f"discover-llm:{stable_id('identity', slug)}"
             )
+            if self.budget:
+                self.budget.reserve(
+                    operation_id,
+                    self.discovery_operation_cost_usd,
+                    provider=self.discovery_provider.provider_name,
+                    model=self.discovery_provider.model_name,
+                )
+            try:
+                refinement = self.discovery_provider.refine(
+                    name=name, evidence=evidence, candidates=candidates
+                )
+            except Exception:
+                if self.budget:
+                    self.budget.settle(
+                        operation_id,
+                        self.discovery_operation_cost_usd,
+                        provider=self.discovery_provider.provider_name,
+                        model=self.discovery_provider.model_name,
+                    )
+                raise
+            if self.budget:
+                usage = getattr(self.discovery_provider, "last_usage", {})
+                self.budget.settle(
+                    operation_id,
+                    self.discovery_operation_cost_usd,
+                    input_tokens=int(usage.get("input_tokens", 0)),
+                    output_tokens=int(usage.get("output_tokens", 0)),
+                    provider=self.discovery_provider.provider_name,
+                    model=self.discovery_provider.model_name,
+                )
             identity.canonical_name = refinement.canonical_name
             identity.aliases = refinement.aliases
             if refinement.affiliations:

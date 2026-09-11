@@ -300,7 +300,7 @@ def test_podcast_refuses_unbounded_media_before_enclosure_download(tmp_path) -> 
     )
 
     assert result.failed == 1
-    assert requested == [page_url]
+    assert requested == [page_url, page_url]  # HEAD classification, then page GET
 
 
 def test_direct_podcast_audio_requires_duration_before_get(tmp_path) -> None:
@@ -332,6 +332,97 @@ def test_direct_podcast_audio_requires_duration_before_get(tmp_path) -> None:
 
     assert result.failed == 1
     assert requested == []
+
+
+def test_extensionless_direct_audio_is_classified_by_head_before_get(tmp_path) -> None:
+    audio_url = "https://cdn.example.test/download"
+    requested: list[tuple[str, str]] = []
+
+    def resolver(host: str, port: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((request.method, str(request.url)))
+        return httpx.Response(
+            200,
+            content=b"" if request.method == "HEAD" else b"ID3 audio",
+            headers={"content-type": "audio/mpeg"},
+            request=request,
+        )
+
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    run_context.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
+    result = collect_approved_sources(
+        plan(candidate("podcast", SourceType.PODCAST, url=audio_url)),
+        context=run_context,
+        registry=CollectorRegistry([PodcastCollector()]),
+    )
+
+    assert result.failed == 1
+    assert requested == [("HEAD", audio_url)]
+
+
+def test_failed_collection_retains_downloaded_byte_charge(tmp_path) -> None:
+    page_url = "https://podcast.example.test/episode"
+
+    def resolver(host: str, port: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"<html><audio src='https://cdn.example.test/a.mp3'></audio></html>",
+            headers={"content-type": "text/html"},
+            request=request,
+        )
+
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    run_context.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
+    result = collect_approved_sources(
+        plan(candidate("podcast", SourceType.PODCAST, url=page_url)),
+        context=run_context,
+        registry=CollectorRegistry([PodcastCollector()]),
+    )
+
+    assert result.failed == 1
+    assert result.downloaded_bytes > 0
+    assert run_context.downloaded_bytes_used == result.downloaded_bytes
+
+
+def test_oversized_stream_retains_bytes_received_before_failure(tmp_path) -> None:
+    page_url = "https://blog.example.test/article"
+
+    def resolver(host: str, port: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(b"12345"),
+            headers={"content-type": "text/html", "transfer-encoding": "chunked"},
+            request=request,
+        )
+
+    run_context = context(tmp_path)
+    run_context.maximum_download_bytes = 4
+    run_context.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
+    result = collect_approved_sources(
+        plan(candidate("article", SourceType.WEB_ARTICLE, url=page_url)),
+        context=run_context,
+        registry=CollectorRegistry([WebCollector()]),
+    )
+
+    assert result.failed == 1
+    assert result.downloaded_bytes == 5
+    assert run_context.downloaded_bytes_used == 5
 
 
 def test_youtube_metadata_exclusion_stops_before_captions_or_download(tmp_path) -> None:

@@ -78,10 +78,47 @@ class BudgetExceeded(RuntimeError):
         self.operation_id = operation_id
 
 
+def provider_attempt_count(rows: list[dict[str, Any]]) -> int:
+    return sum(
+        row.get("kind") == "reservation" and bool(row.get("provider")) for row in rows
+    )
+
+
+def attempted_media_seconds(rows: list[dict[str, Any]]) -> float:
+    reserved_by_operation: dict[str, float] = {}
+    attempted = 0.0
+    for row in rows:
+        if row.get("kind") != "reservation" or not row.get("provider"):
+            continue
+        seconds = float(row.get("media_seconds", 0))
+        attempted += seconds
+        operation_id = str(row.get("operation_id"))
+        reserved_by_operation[operation_id] = (
+            reserved_by_operation.get(operation_id, 0.0) + seconds
+        )
+    for row in rows:
+        if (
+            row.get("kind") == "settlement"
+            and float(row.get("media_seconds", 0))
+            and not reserved_by_operation.get(str(row.get("operation_id")), 0.0)
+        ):
+            attempted += float(row["media_seconds"])
+    return attempted
+
+
 class BudgetLedger:
-    def __init__(self, path: Path, maximum: Decimal):
+    def __init__(
+        self,
+        path: Path,
+        maximum: Decimal,
+        *,
+        maximum_provider_operations: int | None = None,
+        maximum_media_seconds: float | None = None,
+    ):
         self.path = Path(path)
         self.maximum = Decimal(maximum)
+        self.maximum_provider_operations = maximum_provider_operations
+        self.maximum_media_seconds = maximum_media_seconds
         self.database_path = self.path.with_suffix(".sqlite")
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
@@ -158,11 +195,7 @@ class BudgetLedger:
 
     @property
     def media_seconds(self) -> float:
-        return sum(
-            float(row["media_seconds"])
-            for row in self._database_rows()
-            if row["kind"] == "settlement"
-        )
+        return attempted_media_seconds([dict(row) for row in self._database_rows()])
 
     @property
     def reserved(self) -> Decimal:
@@ -189,6 +222,7 @@ class BudgetLedger:
         *,
         provider: str | None = None,
         model: str | None = None,
+        media_seconds: float = 0,
     ) -> None:
         amount = Decimal(amount)
         with self._connect() as connection:
@@ -206,6 +240,26 @@ class BudgetLedger:
                     active[str(row["operation_id"])] = None
             if active.get(operation_id) is not None:
                 return
+            provider_operations = sum(
+                row["kind"] == "reservation" and bool(row["provider"]) for row in rows
+            )
+            if (
+                provider
+                and self.maximum_provider_operations is not None
+                and provider_operations + 1 > self.maximum_provider_operations
+            ):
+                raise BudgetExceeded(operation_id)
+            attempted_media = sum(
+                float(row["media_seconds"])
+                for row in rows
+                if row["kind"] == "reservation" and row["provider"]
+            )
+            if (
+                provider
+                and self.maximum_media_seconds is not None
+                and attempted_media + media_seconds > self.maximum_media_seconds
+            ):
+                raise BudgetExceeded(operation_id)
             reserved = sum(
                 (value for value in active.values() if value is not None),
                 start=Decimal(0),
@@ -218,6 +272,7 @@ class BudgetLedger:
                 amount_usd=amount,
                 provider=provider,
                 model=model,
+                media_seconds=media_seconds,
             )
             self._insert(connection, entry)
             append_jsonl(self.path, entry)
@@ -247,6 +302,8 @@ class BudgetLedger:
                     active[str(row["operation_id"])] = Decimal(str(row["amount_usd"]))
                 elif row["kind"] == "release":
                     active[str(row["operation_id"])] = None
+            if active.get(operation_id) is None:
+                return
             active[operation_id] = None
             other_reserved = sum(
                 (value for value in active.values() if value is not None),
@@ -278,14 +335,25 @@ class BudgetLedger:
 
     @property
     def provider_operations(self) -> int:
-        operations: dict[str, str] = {}
-        for row in self._database_rows():
-            if not row["provider"]:
-                continue
-            if row["kind"] == "reservation":
-                operations[str(row["operation_id"])] = "active"
-            elif row["kind"] == "settlement":
-                operations[str(row["operation_id"])] = "settled"
-            elif row["kind"] == "release":
-                operations.pop(str(row["operation_id"]), None)
-        return len(operations)
+        return provider_attempt_count([dict(row) for row in self._database_rows()])
+
+    def trace_consistent(self) -> bool:
+        """Return whether the public JSONL trace exactly mirrors the durable ledger."""
+        public = [CostEntry.model_validate(row) for row in read_jsonl(self.path)]
+        rows = self._database_rows()
+        if len(public) != len(rows):
+            return False
+        for entry, row in zip(public, rows, strict=True):
+            if (
+                entry.operation_id != row["operation_id"]
+                or entry.kind != row["kind"]
+                or entry.amount_usd != Decimal(str(row["amount_usd"]))
+                or entry.input_tokens != row["input_tokens"]
+                or entry.output_tokens != row["output_tokens"]
+                or entry.media_seconds != float(row["media_seconds"])
+                or entry.provider != row["provider"]
+                or entry.model != row["model"]
+                or entry.timestamp.isoformat() != row["timestamp"]
+            ):
+                return False
+        return True

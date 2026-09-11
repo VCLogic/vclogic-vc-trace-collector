@@ -170,4 +170,5 @@ def test_retry_after_is_capped() -> None:
     result = fetcher.fetch("https://example.test/retry")
 
     assert result.content == b"ok"
+    assert result.transferred_bytes == 4
     assert sleeps == [2]

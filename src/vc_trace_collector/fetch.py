@@ -19,7 +19,9 @@ from .policy import Resolver, UnsafeUrl, canonicalize_url, validate_public_url
 
 
 class FetchTooLarge(RuntimeError):
-    pass
+    def __init__(self, message: str, *, downloaded_bytes: int = 0):
+        super().__init__(message)
+        self.downloaded_bytes = downloaded_bytes
 
 
 class FetchResult(BaseModel):
@@ -34,6 +36,7 @@ class FetchResult(BaseModel):
     redirect_chain: list[str] = Field(default_factory=list)
     fetched_at: datetime
     attempts: int
+    transferred_bytes: int = Field(default=0, ge=0)
 
 
 _PUBLIC_HEADERS = {
@@ -119,12 +122,26 @@ class Fetcher:
                 raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
             chunks: list[bytes] = []
             size = 0
-            for chunk in response.iter_bytes():
-                size += len(chunk)
-                if size > maximum_bytes:
-                    raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
-                chunks.append(chunk)
+            try:
+                for chunk in response.iter_bytes():
+                    size += len(chunk)
+                    if size > maximum_bytes:
+                        raise FetchTooLarge(
+                            f"Response exceeds {maximum_bytes} bytes",
+                            downloaded_bytes=size,
+                        )
+                    chunks.append(chunk)
+            except (httpx.TransportError, httpx.TimeoutException) as error:
+                error.downloaded_bytes = size
+                raise
             return response, b"".join(chunks)
+
+    def _head_request(self, url: str) -> httpx.Response:
+        expected_addresses = self._public_addresses(url)
+        self._rate_limit(url)
+        response = self.client.request("HEAD", url, follow_redirects=False)
+        self._verify_connected_peer(url, response, expected_addresses)
+        return response
 
     def _public_addresses(self, url: str) -> set[str]:
         parsed = urlsplit(url)
@@ -188,6 +205,7 @@ class Fetcher:
             conditional["If-Modified-Since"] = last_modified
 
         attempts = 0
+        transferred_bytes = 0
         response_limit = maximum_bytes or self.maximum_response_bytes
         if response_limit <= 0:
             raise ValueError("maximum_bytes must be positive")
@@ -197,11 +215,18 @@ class Fetcher:
                 response, content = self._request(
                     current_url, conditional, response_limit
                 )
-            except (httpx.TransportError, httpx.TimeoutException):
+            except FetchTooLarge as error:
+                error.downloaded_bytes += transferred_bytes
+                raise
+            except (httpx.TransportError, httpx.TimeoutException) as error:
+                transferred_bytes += int(getattr(error, "downloaded_bytes", 0))
                 if attempts >= self.maximum_attempts:
+                    error.downloaded_bytes = transferred_bytes
                     raise
                 self.sleep(min(2 ** (attempts - 1), 4))
                 continue
+
+            transferred_bytes += len(content)
 
             if (
                 response.status_code in {429, 500, 502, 503, 504}
@@ -254,4 +279,45 @@ class Fetcher:
                 redirect_chain=redirects,
                 fetched_at=datetime.now(UTC),
                 attempts=attempts,
+                transferred_bytes=transferred_bytes,
+            )
+
+    def head(self, url: str) -> FetchResult:
+        requested_url = validate_public_url(url, resolver=self.resolver)
+        current_url = requested_url
+        redirects: list[str] = []
+        attempts = 0
+        while True:
+            attempts += 1
+            response = self._head_request(current_url)
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    response.raise_for_status()
+                if len(redirects) >= self.maximum_redirects:
+                    raise httpx.TooManyRedirects(
+                        "Maximum redirect count exceeded", request=response.request
+                    )
+                current_url = validate_public_url(
+                    urljoin(current_url, location), resolver=self.resolver
+                )
+                redirects.append(current_url)
+                continue
+            response.raise_for_status()
+            public_headers = {
+                key.casefold(): value
+                for key, value in response.headers.items()
+                if key.casefold() in _PUBLIC_HEADERS
+            }
+            return FetchResult(
+                requested_url=requested_url,
+                final_url=current_url,
+                canonical_url=canonicalize_url(current_url),
+                status_code=response.status_code,
+                content=b"",
+                headers=public_headers,
+                redirect_chain=redirects,
+                fetched_at=datetime.now(UTC),
+                attempts=attempts,
+                transferred_bytes=0,
             )

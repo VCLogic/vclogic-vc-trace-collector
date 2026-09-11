@@ -702,14 +702,14 @@ def test_media_limit_is_shared_by_reference_and_target_processing(tmp_path) -> N
     assert outcomes[0]["reason"] == (
         "Media processing budget exhausted before model calls"
     )
-    settlements = [
+    provider_attempts = [
         row
         for row in read_jsonl(output / "michael-hyatt/audit/costs.jsonl")
-        if row["kind"] == "settlement"
+        if row["kind"] == "reservation" and row.get("provider")
     ]
-    assert [row["media_seconds"] for row in settlements if row["media_seconds"]] == [
-        50.0
-    ]
+    assert [
+        row["media_seconds"] for row in provider_attempts if row["media_seconds"]
+    ] == [50.0]
 
 
 def test_cli_collect_exits_nonzero_when_export_cannot_verify(tmp_path) -> None:

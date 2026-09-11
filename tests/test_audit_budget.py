@@ -107,3 +107,42 @@ def test_concurrent_reservations_cannot_oversubscribe_budget(tmp_path) -> None:
         accepted = list(executor.map(reserve, ["first", "second"]))
 
     assert sorted(accepted) == [False, True]
+
+
+def test_provider_attempts_count_retries_and_releases(tmp_path) -> None:
+    ledger = BudgetLedger(
+        tmp_path / "costs.jsonl",
+        maximum=Decimal("1.00"),
+        maximum_provider_operations=2,
+    )
+    ledger.reserve("retry", Decimal("0.10"), provider="test")
+    ledger.release("retry")
+    ledger.reserve("retry", Decimal("0.10"), provider="test")
+
+    assert ledger.provider_operations == 2
+    with pytest.raises(BudgetExceeded):
+        ledger.reserve("third", Decimal("0.10"), provider="test")
+
+
+def test_media_budget_is_reserved_per_attempt_even_when_call_fails(tmp_path) -> None:
+    ledger = BudgetLedger(
+        tmp_path / "costs.jsonl",
+        maximum=Decimal("1.00"),
+        maximum_media_seconds=60,
+    )
+    ledger.reserve("first", Decimal("0.10"), provider="test", media_seconds=40)
+    ledger.release("first")
+
+    assert ledger.media_seconds == 40
+    with pytest.raises(BudgetExceeded):
+        ledger.reserve("second", Decimal("0.10"), provider="test", media_seconds=21)
+
+
+def test_public_cost_trace_must_match_transactional_ledger(tmp_path) -> None:
+    path = tmp_path / "costs.jsonl"
+    ledger = BudgetLedger(path, maximum=Decimal("1.00"))
+    ledger.reserve("first", Decimal("0.10"), provider="test")
+    assert ledger.trace_consistent()
+
+    path.write_text("", encoding="utf-8")
+    assert not ledger.trace_consistent()

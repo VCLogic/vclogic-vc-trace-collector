@@ -56,6 +56,7 @@ def exported_workspace(tmp_path, *, empty: bool = False):
         identity_confidence=Confidence(score=0.95, method="test", version="1"),
         source_confidence=Confidence(score=0.95, method="test", version="1"),
         approval_status=ApprovalStatus.APPROVED,
+        decision_reason="test approval",
         reviewed_by="reviewer",
         decision_at=decision_time,
     )
@@ -170,3 +171,15 @@ def test_verification_hashes_raw_lineage(tmp_path) -> None:
 
     assert result.passed is False
     assert any("hash" in error.casefold() for error in result.errors)
+
+
+def test_verification_rejects_unattested_exclusion_override(tmp_path) -> None:
+    exported_workspace(tmp_path)
+    plan_payload = read_json(tmp_path / "discovery/source_plan.json")
+    plan_payload["candidates"][0]["override_rule_ids"] = ["injected-override"]
+    write_json(tmp_path / "discovery/source_plan.json", plan_payload)
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("override" in error.casefold() for error in result.errors)

@@ -195,10 +195,14 @@ the selected models.
 Set conservative per-operation price estimates with
 `--transcription-cost-usd`, `--diarization-cost-usd`, and
 `--embedding-cost-usd`; search calls use `--search-operation-cost-usd`. They
-are reserved transactionally before providers or models are initialized.
+are reserved transactionally before provider or model invocation.
 `--max-download-bytes`, `--max-provider-operations`, and
 `--max-media-minutes` are aggregate run ceilings. Media with an unknown
-duration is rejected before model calls.
+duration is rejected before model calls. Provider reservations are immutable
+attempt records: retries and dispatched failures consume the operation ceiling,
+and potentially billable failures are conservatively settled. The public
+JSONL cost trace is reconciled against the transactional SQLite ledger during
+verification.
 By default, any failed or unresolved approved source prevents a verified
 export; `--allow-partial-run` is an explicit, manifest-visible opt-out.
 
@@ -215,6 +219,8 @@ the signed manifest provenance.
 
 Direct audio URLs are not downloaded during discovery. Their review decision
 must include a positive `estimated_media_seconds` value before collection.
+Extensionless podcast URLs are classified with a safe HEAD request before GET;
+an audio/video MIME type without an approved duration also fails closed.
 
 Pass the file with `--exclusion-file`. Its validated rule contents are frozen
 inside `config_snapshot.json` and fingerprinted in the collection manifest.

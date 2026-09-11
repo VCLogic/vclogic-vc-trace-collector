@@ -170,6 +170,30 @@ def test_search_provider_reserves_monetary_budget_before_each_call(tmp_path) -> 
     assert len(search.queries) == 1
 
 
+def test_failed_discovery_provider_call_is_conservatively_settled(tmp_path) -> None:
+    class FailingProvider:
+        provider_name = "fixture"
+        model_name = "fixture-model"
+
+        def refine(self, **kwargs):
+            raise RuntimeError("provider failed after dispatch")
+
+    ledger = BudgetLedger(tmp_path / "costs.jsonl", Decimal("1.00"))
+    with pytest.raises(RuntimeError, match="after dispatch"):
+        DiscoveryService(
+            fetcher=profile_fetcher(),
+            discovery_provider=FailingProvider(),
+            budget=ledger,
+            discovery_operation_cost_usd=Decimal("0.25"),
+        ).discover(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        )
+
+    assert ledger.provider_operations == 1
+    assert ledger.spent == Decimal("0.25")
+
+
 def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:
     podcast_url = (
         "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"

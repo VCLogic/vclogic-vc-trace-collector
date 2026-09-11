@@ -43,10 +43,15 @@ content, not trust a URL slug.
 
 ## Verification performed
 
-- Offline suite: 101 tests passed, one live test deselected at the time this
+- Offline suite: 130 tests passed, one live test deselected at the time this
   report was updated.
 - Opt-in network contract: the Michael Hyatt profile/voice discovery test
   passed against the public sites.
+- A fresh 1-minute bounded collection re-read the Tank Talk page, accounted
+  700,650 downloaded bytes across discovery and collection, recovered the
+  2,561-second runtime, and stopped before downloading the enclosure because
+  it exceeded the approved media budget. This confirms the media preflight and
+  failed-attempt byte accounting paths against the live source.
 - Offline audiovisual acceptance: a supplied video is converted to audio,
   transcribed, diarized, matched against a human-approved reference embedding,
   filtered to the matched speaker, exported to `talks.jsonl`, and independently
