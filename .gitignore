@@ -1,2 +1,26 @@
 .worktrees/
 
+# Python and uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Credentials and authenticated session state
+.env
+.env.*
+!.env.example
+cookies.txt
+*.cookies
+
+# Generated collection artifacts and large media/model files
+outputs/
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.opus
+*.onnx
+*.safetensors
