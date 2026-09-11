@@ -340,6 +340,13 @@ class YouTubeCollector:
     def collect(
         self, source: SourceCandidate, context: CollectionContext
     ) -> list[RawArtifact]:
+        hostname = (urlsplit(source.url).hostname or "").casefold()
+        if not (
+            hostname == "youtube.com"
+            or hostname.endswith(".youtube.com")
+            or hostname == "youtu.be"
+        ):
+            raise CollectorUnavailable("YouTube collector requires a YouTube URL")
         command = ["yt-dlp", "--dump-single-json", "--skip-download", source.url]
         try:
             completed = self.runner(

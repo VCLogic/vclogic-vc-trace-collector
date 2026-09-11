@@ -301,3 +301,25 @@ def test_youtube_collector_rejects_over_budget_media_before_download(tmp_path) -
 
     assert result.failed == 1
     assert len(calls) == 1
+
+
+def test_youtube_collector_rejects_lookalike_domains_without_running_tool(
+    tmp_path,
+) -> None:
+    calls = []
+    source = candidate(
+        "youtube-lookalike",
+        SourceType.YOUTUBE,
+        url="https://evilyoutube.com/watch?v=abc123",
+    )
+
+    result = collect_approved_sources(
+        plan(source),
+        context=context(tmp_path),
+        registry=CollectorRegistry(
+            [YouTubeCollector(runner=lambda *args, **kwargs: calls.append(args))]
+        ),
+    )
+
+    assert result.failed == 1
+    assert calls == []

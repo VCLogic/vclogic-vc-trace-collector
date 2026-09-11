@@ -236,7 +236,11 @@ def _extract_affiliations(
 def _source_type(url: str, context: str = "") -> SourceType:
     hostname = (urlsplit(url).hostname or "").casefold()
     path = urlsplit(url).path.casefold()
-    if hostname.endswith("youtube.com") or hostname == "youtu.be":
+    if (
+        hostname == "youtube.com"
+        or hostname.endswith(".youtube.com")
+        or hostname == "youtu.be"
+    ):
         return SourceType.YOUTUBE
     if (
         hostname
@@ -245,9 +249,9 @@ def _source_type(url: str, context: str = "") -> SourceType:
         or re.search(r"\b(podcast|episode)\b", context, flags=re.IGNORECASE)
     ):
         return SourceType.PODCAST
-    if hostname.endswith("substack.com"):
+    if hostname == "substack.com" or hostname.endswith(".substack.com"):
         return SourceType.SUBSTACK
-    if hostname.endswith("medium.com"):
+    if hostname == "medium.com" or hostname.endswith(".medium.com"):
         return SourceType.MEDIUM
     if path.endswith(("/feed", "/feed/", ".rss", ".xml", ".atom")):
         return SourceType.RSS_FEED
