@@ -1,13 +1,12 @@
-from pathlib import Path
 import socket
+from pathlib import Path
 
 import httpx
 import pytest
 
 from vc_trace_collector.extract import extract_feed, extract_page
-from vc_trace_collector.fetch import FetchTooLarge, Fetcher
+from vc_trace_collector.fetch import Fetcher, FetchTooLarge
 from vc_trace_collector.policy import UnsafeUrl
-
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -28,7 +27,9 @@ def test_extracts_identity_from_michael_hyatt_profile() -> None:
 
 
 def test_feed_entries_preserve_author_and_source() -> None:
-    entries = extract_feed((FIXTURES / "feed.xml").read_bytes(), "https://example.test/feed")
+    entries = extract_feed(
+        (FIXTURES / "feed.xml").read_bytes(), "https://example.test/feed"
+    )
 
     assert entries[0].author == "Michael Hyatt"
     assert entries[0].canonical_url == "https://example.test/durable"
@@ -45,7 +46,9 @@ def test_fetcher_records_public_response_metadata() -> None:
         )
 
     fetcher = Fetcher(
-        transport=httpx.MockTransport(handler), resolver=public_resolver, minimum_interval=0
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
     )
     result = fetcher.fetch("https://example.test/evidence")
 
@@ -56,10 +59,14 @@ def test_fetcher_records_public_response_metadata() -> None:
 
 def test_fetcher_rejects_redirect_to_private_network() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(302, headers={"location": "http://127.0.0.1/private"}, request=request)
+        return httpx.Response(
+            302, headers={"location": "http://127.0.0.1/private"}, request=request
+        )
 
     fetcher = Fetcher(
-        transport=httpx.MockTransport(handler), resolver=public_resolver, minimum_interval=0
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
     )
     with pytest.raises(UnsafeUrl):
         fetcher.fetch("https://example.test/redirect")
@@ -77,3 +84,19 @@ def test_fetcher_rejects_oversized_response() -> None:
     )
     with pytest.raises(FetchTooLarge):
         fetcher.fetch("https://example.test/large")
+
+
+def test_fetcher_supports_a_bounded_per_request_media_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"12345", request=request)
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        maximum_response_bytes=4,
+        minimum_interval=0,
+    )
+
+    result = fetcher.fetch("https://example.test/media.mp3", maximum_bytes=8)
+
+    assert result.content == b"12345"

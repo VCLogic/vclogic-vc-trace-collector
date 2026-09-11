@@ -1,4 +1,3 @@
-import json
 from hashlib import sha256
 
 from vc_trace_collector.storage import ArtifactStore, StateStore, read_jsonl, write_json

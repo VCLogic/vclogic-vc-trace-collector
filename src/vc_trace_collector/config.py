@@ -18,6 +18,7 @@ class RunConfig(BaseModel):
     name: str
     firm: str | None = None
     known_profile_url: str | None = None
+    source_urls: list[str] = Field(default_factory=list)
     output_dir: str = "outputs"
     approved_source_types: list[str] = Field(default_factory=list)
     excluded_domains: list[str] = Field(default_factory=list)

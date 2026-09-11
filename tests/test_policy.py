@@ -35,14 +35,23 @@ def test_pitch_profile_is_identity_evidence_but_excluded_from_corpus() -> None:
 
 def test_rule_matches_subdomains_but_not_lookalike_domains() -> None:
     rules = RuleSet.pitch_default()
-    assert rules.evaluate(url="https://media.thepitch.show/x", stage="discovery").status == "excluded"
-    assert rules.evaluate(url="https://thepitch.show.example.org/x", stage="discovery").status == "included"
+    assert (
+        rules.evaluate(url="https://media.thepitch.show/x", stage="discovery").status
+        == "excluded"
+    )
+    assert (
+        rules.evaluate(
+            url="https://thepitch.show.example.org/x", stage="discovery"
+        ).status
+        == "included"
+    )
 
 
 def test_canonicalize_url_removes_fragments_and_tracking_parameters() -> None:
-    assert canonicalize_url(
-        "HTTPS://Example.COM:443/a/?utm_source=x&useful=2#fragment"
-    ) == "https://example.com/a?useful=2"
+    assert (
+        canonicalize_url("HTTPS://Example.COM:443/a/?utm_source=x&useful=2#fragment")
+        == "https://example.com/a?useful=2"
+    )
 
 
 @pytest.mark.parametrize(

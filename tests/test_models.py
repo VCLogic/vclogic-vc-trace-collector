@@ -7,8 +7,8 @@ from vc_trace_collector.models import (
     Affiliation,
     Confidence,
     MaterialRole,
-    ResolvedIdentity,
     ResolutionStatus,
+    ResolvedIdentity,
     SourceCandidate,
     SourceType,
 )
@@ -41,9 +41,7 @@ def test_source_candidate_requires_discovery_provenance() -> None:
         identity_confidence=Confidence(
             score=0.9, method="name_firm_match", version="1"
         ),
-        source_confidence=Confidence(
-            score=0.8, method="source_policy", version="1"
-        ),
+        source_confidence=Confidence(score=0.8, method="source_policy", version="1"),
         estimated_cost_usd=Decimal("0.02"),
     )
 

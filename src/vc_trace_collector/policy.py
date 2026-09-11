@@ -6,8 +6,8 @@ import fnmatch
 import ipaddress
 import socket
 import tomllib
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,7 +46,9 @@ def canonicalize_url(url: str) -> str:
         raise UnsafeUrl(f"Invalid host: {hostname}") from error
     port = parsed.port
     netloc = hostname
-    if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
+    if port and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
         netloc = f"{hostname}:{port}"
     path = quote(unquote(parsed.path or "/"), safe="/%:@-._~")
     if path != "/":
@@ -54,7 +56,8 @@ def canonicalize_url(url: str) -> str:
     query = [
         (key, value)
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if not key.casefold().startswith("utm_") and key.casefold() not in _TRACKING_PARAMETERS
+        if not key.casefold().startswith("utm_")
+        and key.casefold() not in _TRACKING_PARAMETERS
     ]
     return urlunsplit((scheme, netloc, path, urlencode(sorted(query)), ""))
 
@@ -77,7 +80,9 @@ def validate_public_url(url: str, *, resolver: Resolver = socket.getaddrinfo) ->
         addresses.append(ipaddress.ip_address(hostname))
     except ValueError:
         try:
-            answers = resolver(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+            answers = resolver(
+                hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+            )
         except OSError as error:
             raise UnsafeUrl(f"Could not resolve host {hostname}") from error
         for answer in answers:
@@ -119,13 +124,13 @@ class RuleSet:
         self.rules = rules
 
     @classmethod
-    def from_toml(cls, path: Path) -> "RuleSet":
+    def from_toml(cls, path: Path) -> RuleSet:
         with Path(path).open("rb") as handle:
             data = tomllib.load(handle)
         return cls([ExclusionRule.model_validate(row) for row in data.get("rules", [])])
 
     @classmethod
-    def pitch_default(cls) -> "RuleSet":
+    def pitch_default(cls) -> RuleSet:
         return cls(
             [
                 ExclusionRule(
@@ -155,15 +160,26 @@ class RuleSet:
         haystack = "\n".join(value for value in (title, text) if value).casefold()
         for rule in self.rules:
             matches: dict[str, str] = {}
-            if parsed.hostname and any(_domain_matches(parsed.hostname, item) for item in rule.domains):
+            if parsed.hostname and any(
+                _domain_matches(parsed.hostname, item) for item in rule.domains
+            ):
                 matches["domain"] = parsed.hostname
-            if url and any(fnmatch.fnmatch(url.casefold(), pattern.casefold()) for pattern in rule.url_patterns):
+            if url and any(
+                fnmatch.fnmatch(url.casefold(), pattern.casefold())
+                for pattern in rule.url_patterns
+            ):
                 matches["url"] = url
-            if channel and any(channel.casefold() == item.casefold() for item in rule.channels):
+            if channel and any(
+                channel.casefold() == item.casefold() for item in rule.channels
+            ):
                 matches["channel"] = channel
-            if programme and any(programme.casefold() == item.casefold() for item in rule.programmes):
+            if programme and any(
+                programme.casefold() == item.casefold() for item in rule.programmes
+            ):
                 matches["programme"] = programme
-            if company and any(company.casefold() == item.casefold() for item in rule.companies):
+            if company and any(
+                company.casefold() == item.casefold() for item in rule.companies
+            ):
                 matches["company"] = company
             matched_keyword = next(
                 (item for item in rule.keywords if item.casefold() in haystack), None

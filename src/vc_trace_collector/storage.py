@@ -6,11 +6,12 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -205,7 +206,9 @@ class StateStore:
                 (operation_id, input_hash, now),
             )
 
-    def finish_operation(self, operation_id: str, input_hash: str, output_id: str) -> None:
+    def finish_operation(
+        self, operation_id: str, input_hash: str, output_id: str
+    ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as connection:
             connection.execute(

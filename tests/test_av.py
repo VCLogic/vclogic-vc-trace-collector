@@ -1,5 +1,5 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -75,7 +75,9 @@ def test_audio_segment_extraction_uses_atomic_output(tmp_path) -> None:
         Path(command[-1]).write_bytes(b"wave")
         return subprocess.CompletedProcess(command, 0)
 
-    extract_audio_segment(source, output, start_seconds=10, end_seconds=40, runner=runner)
+    extract_audio_segment(
+        source, output, start_seconds=10, end_seconds=40, runner=runner
+    )
 
     assert output.read_bytes() == b"wave"
     assert "-ss" in calls[0]

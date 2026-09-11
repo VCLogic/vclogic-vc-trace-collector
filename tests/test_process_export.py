@@ -1,6 +1,6 @@
 from hashlib import sha256
 
-from vc_trace_collector.export import export_persona_sources
+from vc_trace_collector.export import export_persona_sources, export_workspace
 from vc_trace_collector.models import (
     CanonicalDocument,
     Confidence,
@@ -41,7 +41,9 @@ def document(
         extraction_method="fixture",
         identity_confidence=Confidence(score=0.95, method="test", version="1"),
         inclusion_status=inclusion,
-        exclusion_reason="test exclusion" if inclusion == InclusionStatus.EXCLUDED else None,
+        exclusion_reason="test exclusion"
+        if inclusion == InclusionStatus.EXCLUDED
+        else None,
         speaker_attribution=SpeakerAttribution(status=speaker),
     )
 
@@ -51,7 +53,9 @@ def test_normalization_is_stable_without_rewriting_words() -> None:
 
 
 def test_exact_duplicate_retains_relationship() -> None:
-    documents = deduplicate([document("one", "same text"), document("two", "same text")])
+    documents = deduplicate(
+        [document("one", "same text"), document("two", "same text")]
+    )
 
     assert documents[0].duplicate_of is None
     assert documents[1].duplicate_of == documents[0].document_version_id
@@ -108,3 +112,18 @@ def test_accepted_target_speech_exports_as_talk(tmp_path) -> None:
     talks = read_jsonl(tmp_path / "talks.jsonl")
     assert talks[0]["video_id"] == "video123"
     assert talks[0]["text"] == "verified target speech"
+
+
+def test_workspace_places_legacy_export_at_investor_root(tmp_path) -> None:
+    export_workspace(
+        tmp_path,
+        investor_slug="michael-hyatt",
+        identity_id="identity:michael",
+        documents=[document("blog", "public writing")],
+        config_hash="config-hash",
+        exclusion_rules_hash="rules-hash",
+    )
+
+    assert read_jsonl(tmp_path / "blog.jsonl")[0]["full_text"] == "public writing"
+    assert read_jsonl(tmp_path / "talks.jsonl") == []
+    assert (tmp_path / "_manifest.json").is_file()

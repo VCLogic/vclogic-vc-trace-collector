@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 import os
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Callable, Protocol, Sequence
+from typing import Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -154,7 +154,9 @@ def align_transcript_to_speakers(
             )
             for turn in turns
         ]
-        label, seconds = max(overlaps, key=lambda entry: entry[1]) if overlaps else (None, 0.0)
+        label, seconds = (
+            max(overlaps, key=lambda entry: entry[1]) if overlaps else (None, 0.0)
+        )
         aligned.append(
             AlignedText(
                 start_seconds=item.start_seconds,
@@ -185,7 +187,11 @@ def extract_audio_segment(
     output = Path(output)
     if start_seconds is not None and start_seconds < 0:
         raise ValueError("start_seconds must be non-negative")
-    if end_seconds is not None and start_seconds is not None and end_seconds <= start_seconds:
+    if (
+        end_seconds is not None
+        and start_seconds is not None
+        and end_seconds <= start_seconds
+    ):
         raise ValueError("end_seconds must be after start_seconds")
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(f".{output.stem}.{uuid4().hex}.tmp{output.suffix}")
@@ -253,7 +259,9 @@ class WhisperTranscriptProvider:
 class PyannoteDiarizationProvider:
     provider_name = "pyannote"
 
-    def __init__(self, model: str, *, token: str | None = None, device: str | None = None):
+    def __init__(
+        self, model: str, *, token: str | None = None, device: str | None = None
+    ):
         self.model_name = model
         try:
             from pyannote.audio import Pipeline

@@ -1,8 +1,7 @@
-from pathlib import Path
+from test_process_export import document
 
 from vc_trace_collector.export import export_workspace
 from vc_trace_collector.verify import verify_workspace
-from test_process_export import document
 
 
 def test_exported_workspace_verifies(tmp_path) -> None:
@@ -35,3 +34,19 @@ def test_verification_detects_tampered_corpus(tmp_path) -> None:
     result = verify_workspace(tmp_path)
     assert result.passed is False
     assert any("hash" in error.casefold() for error in result.errors)
+
+
+def test_verification_fails_when_quality_report_rejects_empty_corpus(tmp_path) -> None:
+    export_workspace(
+        tmp_path,
+        investor_slug="michael-hyatt",
+        identity_id="identity:michael",
+        documents=[],
+        config_hash="config-hash",
+        exclusion_rules_hash="rules-hash",
+    )
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert "quality report did not pass" in " ".join(result.errors).casefold()

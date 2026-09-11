@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import subprocess
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Protocol
-from urllib.parse import unquote, urlsplit
+from typing import ClassVar, Protocol
+from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
 
+from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field
 
-from .audit import AuditLog
+from .audit import AuditLog, BudgetLedger
 from .extract import extract_feed
 from .fetch import Fetcher
 from .models import (
@@ -48,6 +50,8 @@ class CollectionContext:
     run_id: str
     fetcher: Fetcher | None = None
     audit: AuditLog | None = None
+    budget: BudgetLedger | None = None
+    approved_source_types: set[SourceType] | None = None
 
 
 class CollectionResult(BaseModel):
@@ -80,7 +84,9 @@ class CollectorRegistry:
         try:
             return self._collectors[source_type]
         except KeyError as error:
-            raise CollectorUnavailable(f"No collector for {source_type.value}") from error
+            raise CollectorUnavailable(
+                f"No collector for {source_type.value}"
+            ) from error
 
 
 def apply_decisions(plan: SourcePlan, decisions: list[SourceDecision]) -> SourcePlan:
@@ -120,18 +126,22 @@ def _suffix_for_mime(mime_type: str | None, fallback: str = ".bin") -> str:
     if not mime_type:
         return fallback
     mime = mime_type.split(";", 1)[0].strip()
+    if mime == "application/octet-stream":
+        return fallback
     return mimetypes.guess_extension(mime) or fallback
 
 
 class WebCollector:
-    source_types = {
+    source_types: ClassVar[set[SourceType]] = {
         SourceType.WEB_PROFILE,
         SourceType.WEB_ARTICLE,
         SourceType.SUBSTACK,
         SourceType.MEDIUM,
     }
 
-    def collect(self, source: SourceCandidate, context: CollectionContext) -> list[RawArtifact]:
+    def collect(
+        self, source: SourceCandidate, context: CollectionContext
+    ) -> list[RawArtifact]:
         if context.fetcher is None:
             raise CollectorUnavailable("Web collector requires an HTTP fetcher")
         fetched = context.fetcher.fetch(source.url)
@@ -157,9 +167,11 @@ class WebCollector:
 
 
 class FeedCollector:
-    source_types = {SourceType.RSS_FEED}
+    source_types: ClassVar[set[SourceType]] = {SourceType.RSS_FEED}
 
-    def collect(self, source: SourceCandidate, context: CollectionContext) -> list[RawArtifact]:
+    def collect(
+        self, source: SourceCandidate, context: CollectionContext
+    ) -> list[RawArtifact]:
         if context.fetcher is None:
             raise CollectorUnavailable("Feed collector requires an HTTP fetcher")
         fetched = context.fetcher.fetch(source.url)
@@ -173,36 +185,137 @@ class FeedCollector:
             original_metadata={
                 "candidate_id": source.candidate_id,
                 "headers": fetched.headers,
-                "entries": [entry.model_dump(mode="json") for entry in extract_feed(fetched.content, fetched.final_url)],
+                "entries": [
+                    entry.model_dump(mode="json")
+                    for entry in extract_feed(fetched.content, fetched.final_url)
+                ],
             },
         )
         return [feed_artifact.record]
 
 
-class SuppliedFileCollector:
-    source_types = {SourceType.SUPPLIED, SourceType.LINKEDIN_EXPORT}
+def _podcast_audio_urls(content: bytes, source_url: str) -> list[str]:
+    soup = BeautifulSoup(content, "html.parser")
+    urls: set[str] = set()
+    for element in soup.find_all(["audio", "source"]):
+        value = element.get("src")
+        if value:
+            urls.add(urljoin(source_url, str(value)))
 
-    def collect(self, source: SourceCandidate, context: CollectionContext) -> list[RawArtifact]:
+    # Podcast hosts frequently serialize enclosure URLs into JSON state rather
+    # than audio elements. Decode JSON's escaped slash form before scanning.
+    decoded = content.decode("utf-8", errors="replace").replace("\\u002F", "/")
+    for match in re.findall(
+        r"https?://[^\"'<>\s]+?\.(?:mp3|m4a|opus)(?:\?[^\"'<>\s]*)?",
+        decoded,
+        re.IGNORECASE,
+    ):
+        urls.add(match.replace("&amp;", "&"))
+    return sorted(urls)[:4]
+
+
+class PodcastCollector:
+    source_types: ClassVar[set[SourceType]] = {SourceType.PODCAST}
+
+    def collect(
+        self, source: SourceCandidate, context: CollectionContext
+    ) -> list[RawArtifact]:
+        if context.fetcher is None:
+            raise CollectorUnavailable("Podcast collector requires an HTTP fetcher")
+        fetched = context.fetcher.fetch(source.url)
+        mime = fetched.headers.get("content-type", "text/html")
+        page = context.artifacts.put_bytes(
+            fetched.content,
+            category="podcast",
+            suffix=_suffix_for_mime(mime, ".html"),
+            source_url=fetched.final_url,
+            mime_type=mime,
+            collection_method="podcast_page_http",
+            original_metadata={
+                "candidate_id": source.candidate_id,
+                "canonical_url": fetched.canonical_url,
+                "headers": fetched.headers,
+                "status_code": fetched.status_code,
+            },
+        ).record
+        records = [page]
+        if mime.split(";", 1)[0].strip().startswith("audio/"):
+            return records
+
+        for audio_url in _podcast_audio_urls(fetched.content, fetched.final_url):
+            try:
+                audio = context.fetcher.fetch(audio_url, maximum_bytes=512_000_000)
+            except Exception as error:
+                _audit(
+                    context,
+                    candidate=source,
+                    status=EventStatus.FAILED,
+                    summary="Podcast enclosure collection failed; page was retained",
+                    details={"audio_url": audio_url, "error": str(error)},
+                )
+                continue
+            audio_mime = audio.headers.get("content-type", "application/octet-stream")
+            records.append(
+                context.artifacts.put_bytes(
+                    audio.content,
+                    category="podcast",
+                    suffix=_suffix_for_mime(
+                        audio_mime,
+                        Path(urlsplit(audio.final_url).path).suffix or ".bin",
+                    ),
+                    source_url=audio.final_url,
+                    mime_type=audio_mime,
+                    collection_method="podcast_enclosure_http",
+                    original_metadata={
+                        "candidate_id": source.candidate_id,
+                        "episode_url": fetched.final_url,
+                        "headers": audio.headers,
+                        "status_code": audio.status_code,
+                    },
+                    parent_artifact_ids=[page.artifact_id],
+                ).record
+            )
+        return records
+
+
+class SuppliedFileCollector:
+    source_types: ClassVar[set[SourceType]] = {
+        SourceType.SUPPLIED,
+        SourceType.LINKEDIN_EXPORT,
+    }
+
+    def collect(
+        self, source: SourceCandidate, context: CollectionContext
+    ) -> list[RawArtifact]:
         parsed = urlsplit(source.url)
-        path = Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(source.url)
+        path = (
+            Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(source.url)
+        )
         path = path.expanduser().resolve(strict=True)
         mime, _encoding = mimetypes.guess_type(path.name)
         stored = context.artifacts.put_bytes(
             path.read_bytes(),
-            category="supplied" if source.source_type == SourceType.SUPPLIED else "social",
+            category="supplied"
+            if source.source_type == SourceType.SUPPLIED
+            else "social",
             suffix=path.suffix or ".bin",
             source_path=str(path),
             mime_type=mime,
             collection_method="supplied_snapshot",
-            original_metadata={"candidate_id": source.candidate_id, "original_name": path.name},
+            original_metadata={
+                "candidate_id": source.candidate_id,
+                "original_name": path.name,
+            },
         )
         return [stored.record]
 
 
 class YouTubeCollector:
-    source_types = {SourceType.YOUTUBE}
+    source_types: ClassVar[set[SourceType]] = {SourceType.YOUTUBE}
 
-    def collect(self, source: SourceCandidate, context: CollectionContext) -> list[RawArtifact]:
+    def collect(
+        self, source: SourceCandidate, context: CollectionContext
+    ) -> list[RawArtifact]:
         command = ["yt-dlp", "--dump-single-json", "--skip-download", source.url]
         try:
             completed = subprocess.run(
@@ -213,18 +326,25 @@ class YouTubeCollector:
                 timeout=180,
             )
         except FileNotFoundError as error:
-            raise CollectorUnavailable("Install the youtube extra to use yt-dlp") from error
+            raise CollectorUnavailable(
+                "Install the youtube extra to use yt-dlp"
+            ) from error
         metadata = json.loads(completed.stdout)
         video_id = str(metadata.get("id", ""))
         records = [
             context.artifacts.put_bytes(
-                json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode(
+                    "utf-8"
+                ),
                 category="video",
                 suffix=".metadata.json",
                 source_url=source.canonical_url,
                 mime_type="application/json",
                 collection_method="yt_dlp_metadata",
-                original_metadata={"candidate_id": source.candidate_id, "video_id": video_id},
+                original_metadata={
+                    "candidate_id": source.candidate_id,
+                    "video_id": video_id,
+                },
             ).record
         ]
         try:
@@ -240,13 +360,18 @@ class YouTubeCollector:
         if segments:
             records.append(
                 context.artifacts.put_bytes(
-                    json.dumps(segments, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+                    json.dumps(segments, ensure_ascii=False, sort_keys=True).encode(
+                        "utf-8"
+                    ),
                     category="video",
                     suffix=".captions.json",
                     source_url=source.canonical_url,
                     mime_type="application/json",
                     collection_method="youtube_captions",
-                    original_metadata={"candidate_id": source.candidate_id, "video_id": video_id},
+                    original_metadata={
+                        "candidate_id": source.candidate_id,
+                        "video_id": video_id,
+                    },
                     parent_artifact_ids=[records[0].artifact_id],
                 ).record
             )
@@ -255,7 +380,13 @@ class YouTubeCollector:
 
 def default_registry() -> CollectorRegistry:
     return CollectorRegistry(
-        [WebCollector(), FeedCollector(), SuppliedFileCollector(), YouTubeCollector()]
+        [
+            WebCollector(),
+            FeedCollector(),
+            PodcastCollector(),
+            SuppliedFileCollector(),
+            YouTubeCollector(),
+        ]
     )
 
 
@@ -306,6 +437,19 @@ def collect_approved_sources(
             ApprovalStatus.AUTO_APPROVED,
         }:
             continue
+        if (
+            context.approved_source_types is not None
+            and candidate.source_type not in context.approved_source_types
+        ):
+            result.skipped += 1
+            _audit(
+                context,
+                candidate=candidate,
+                status=EventStatus.SKIPPED,
+                summary="Source type is outside the run allowlist",
+                details={"source_type": candidate.source_type.value},
+            )
+            continue
         exclusion = context.rules.evaluate(
             url=candidate.canonical_url,
             title=candidate.title,
@@ -338,10 +482,14 @@ def collect_approved_sources(
             )
             continue
 
+        if context.budget:
+            context.budget.reserve(operation_id, candidate.estimated_cost_usd)
         context.state.start_operation(operation_id, input_hash)
         try:
             records = collector.collect(candidate, context)
         except Exception as error:
+            if context.budget:
+                context.budget.release(operation_id)
             context.state.fail_operation(operation_id, input_hash, str(error))
             failure = {
                 "candidate_id": candidate.candidate_id,
@@ -361,6 +509,8 @@ def collect_approved_sources(
             continue
 
         output_ids = [record.artifact_id for record in records]
+        if context.budget:
+            context.budget.settle(operation_id, candidate.estimated_cost_usd)
         context.state.finish_operation(operation_id, input_hash, ",".join(output_ids))
         result.collected += 1
         result.artifacts.extend(records)

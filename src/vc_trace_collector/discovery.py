@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from hashlib import sha256
 from typing import Protocol
@@ -19,8 +20,8 @@ from .models import (
     IdentityEvidence,
     MaterialRole,
     ReferenceVoiceCandidate,
-    ResolvedIdentity,
     ResolutionStatus,
+    ResolvedIdentity,
     SourceCandidate,
     SourcePlan,
     SourceType,
@@ -156,12 +157,20 @@ class OpenAICompatibleDiscoveryProvider:
                 },
                 {
                     "role": "user",
-                    "content": {
-                        "name": name,
-                        "evidence": [item.model_dump(mode="json") for item in evidence],
-                        "candidates": [item.model_dump(mode="json") for item in candidates],
-                        "response_schema": schema,
-                    },
+                    "content": json.dumps(
+                        {
+                            "name": name,
+                            "evidence": [
+                                item.model_dump(mode="json") for item in evidence
+                            ],
+                            "candidates": [
+                                item.model_dump(mode="json") for item in candidates
+                            ],
+                            "response_schema": schema,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
                 },
             ],
             "response_format": {"type": "json_object"},
@@ -183,7 +192,9 @@ class DiscoveryResult(BaseModel):
     identity: ResolvedIdentity
     evidence: list[IdentityEvidence]
     source_plan: SourcePlan
-    reference_voice_candidates: list[ReferenceVoiceCandidate] = Field(default_factory=list)
+    reference_voice_candidates: list[ReferenceVoiceCandidate] = Field(
+        default_factory=list
+    )
     provider_operations: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -194,7 +205,9 @@ _KNOWN_NAMESAKES = {
 }
 
 
-def _extract_affiliations(page: ExtractedPage, explicit_firm: str | None) -> list[Affiliation]:
+def _extract_affiliations(
+    page: ExtractedPage, explicit_firm: str | None
+) -> list[Affiliation]:
     firms: list[Affiliation] = []
     if explicit_firm:
         firms.append(Affiliation(firm=explicit_firm, current=True))
@@ -212,7 +225,7 @@ def _extract_affiliations(page: ExtractedPage, explicit_firm: str | None) -> lis
     return firms
 
 
-def _source_type(url: str) -> SourceType:
+def _source_type(url: str, context: str = "") -> SourceType:
     hostname = (urlsplit(url).hostname or "").casefold()
     path = urlsplit(url).path.casefold()
     if hostname.endswith("youtube.com") or hostname == "youtu.be":
@@ -221,21 +234,45 @@ def _source_type(url: str) -> SourceType:
         return SourceType.SUBSTACK
     if hostname.endswith("medium.com"):
         return SourceType.MEDIUM
+    if (
+        hostname
+        in {"podcasts.apple.com", "podcasters.spotify.com", "creators.spotify.com"}
+        or "/podcast" in path
+        or re.search(r"\b(podcast|episode)\b", context, flags=re.IGNORECASE)
+    ):
+        return SourceType.PODCAST
     if path.endswith(("/feed", "/feed/", ".rss", ".xml", ".atom")):
         return SourceType.RSS_FEED
     return SourceType.WEB_ARTICLE
 
 
-def _search_role(name: str, result: SearchResult, source_type: SourceType) -> MaterialRole:
+def _search_role(
+    name: str, result: SearchResult, source_type: SourceType
+) -> MaterialRole:
     combined = f"{result.title}\n{result.snippet}".casefold()
     if name.casefold() not in combined:
         return MaterialRole.UNKNOWN
-    if source_type == SourceType.YOUTUBE and any(
-        word in combined for word in ("interview", "podcast", "talk", "keynote", "conversation")
+    if source_type in {SourceType.YOUTUBE, SourceType.PODCAST} and any(
+        word in combined
+        for word in ("interview", "podcast", "talk", "keynote", "conversation")
     ):
         return MaterialRole.REFERENCE_VOICE
-    if source_type in {SourceType.SUBSTACK, SourceType.MEDIUM}:
+    return MaterialRole.UNKNOWN
+
+
+def _page_role(name: str, page: ExtractedPage, source_type: SourceType) -> MaterialRole:
+    if page.author and page.author.casefold().strip() == name.casefold().strip():
         return MaterialRole.AUTHORED_BY_TARGET
+    combined = f"{page.title}\n{page.description or ''}\n{page.text}".casefold()
+    if (
+        source_type in {SourceType.YOUTUBE, SourceType.PODCAST}
+        and name.casefold() in combined
+        and any(
+            word in combined
+            for word in ("interview", "podcast", "conversation", "guest")
+        )
+    ):
+        return MaterialRole.REFERENCE_VOICE
     return MaterialRole.UNKNOWN
 
 
@@ -248,12 +285,14 @@ class DiscoveryService:
         discovery_provider: DiscoveryProvider | None = None,
         rules: RuleSet | None = None,
         search_limit_per_query: int = 10,
+        maximum_search_operations: int = 20,
     ):
         self.fetcher = fetcher
         self.search_provider = search_provider
         self.discovery_provider = discovery_provider
         self.rules = rules or RuleSet.pitch_default()
         self.search_limit_per_query = search_limit_per_query
+        self.maximum_search_operations = max(0, maximum_search_operations)
         self.retrieved_fetches = []
 
     def discover(
@@ -262,6 +301,7 @@ class DiscoveryService:
         name: str,
         firm: str | None = None,
         known_profile_url: str | None = None,
+        source_urls: list[str] | None = None,
     ) -> DiscoveryResult:
         slug = slugify(f"{name}-{firm}" if firm else name)
         evidence: list[IdentityEvidence] = []
@@ -283,7 +323,9 @@ class DiscoveryService:
                     query=f"known profile supplied for {name}",
                     search_provider="user_supplied",
                     excerpt=page.text[:500],
-                    claim=f"Profile identifies {name}" if exact_name else "Profile identity is ambiguous",
+                    claim=f"Profile identifies {name}"
+                    if exact_name
+                    else "Profile identity is ambiguous",
                     validation_status="supports" if exact_name else "ambiguous",
                 )
             )
@@ -305,9 +347,13 @@ class DiscoveryService:
                 discovery_queries=[f"known profile supplied for {name}"],
                 evidence_ids=[evidence_id],
                 identity_confidence=Confidence(
-                    score=0.9 if exact_name else 0.4, method="exact_name_profile", version="1"
+                    score=0.9 if exact_name else 0.4,
+                    method="exact_name_profile",
+                    version="1",
                 ),
-                source_confidence=Confidence(score=0.9, method="supplied_profile", version="1"),
+                source_confidence=Confidence(
+                    score=0.9, method="supplied_profile", version="1"
+                ),
                 approval_status=(
                     ApprovalStatus.REJECTED
                     if exclusion.status == InclusionStatus.EXCLUDED
@@ -316,16 +362,90 @@ class DiscoveryService:
                 decision_reason=exclusion.reason,
             )
 
-        affiliations = _extract_affiliations(page, firm) if page else (
-            [Affiliation(firm=firm, current=True)] if firm else []
+        affiliations = (
+            _extract_affiliations(page, firm)
+            if page
+            else ([Affiliation(firm=firm, current=True)] if firm else [])
         )
+        for source_url in source_urls or []:
+            fetched = self.fetcher.fetch(source_url)
+            self.retrieved_fetches.append(fetched)
+            source_page = extract_page(fetched.content, fetched.final_url)
+            combined = f"{source_page.title}\n{source_page.description or ''}\n{source_page.text}"
+            exact_name = name.casefold() in combined.casefold()
+            affiliation_match = any(
+                affiliation.firm.casefold() in combined.casefold()
+                for affiliation in affiliations
+            )
+            evidence_id = stable_id("evidence", source_page.canonical_url)
+            evidence.append(
+                IdentityEvidence(
+                    evidence_id=evidence_id,
+                    url=source_url,
+                    canonical_url=source_page.canonical_url,
+                    publisher=urlsplit(source_page.canonical_url).hostname,
+                    query=f"operator supplied source for {name}",
+                    search_provider="user_supplied",
+                    excerpt=source_page.text[:500],
+                    claim=(
+                        f"Source names {name} with a known affiliation"
+                        if exact_name and affiliation_match
+                        else f"Source names {name}"
+                        if exact_name
+                        else "Source identity is ambiguous"
+                    ),
+                    validation_status=(
+                        "supports" if exact_name and affiliation_match else "ambiguous"
+                    ),
+                )
+            )
+            source_type = _source_type(
+                source_page.canonical_url,
+                f"{source_page.title} {source_page.description or ''} {source_page.text[:500]}",
+            )
+            exclusion = self.rules.evaluate(
+                url=source_page.canonical_url,
+                title=source_page.title,
+                text=source_page.text,
+                stage="discovery",
+            )
+            candidates_by_url[source_page.canonical_url] = SourceCandidate(
+                candidate_id=stable_id("candidate", source_page.canonical_url),
+                url=source_url,
+                canonical_url=source_page.canonical_url,
+                source_type=source_type,
+                material_role=_page_role(name, source_page, source_type),
+                title=source_page.title,
+                description=source_page.description or source_page.text[:300],
+                discovered_via="user_supplied_source",
+                discovery_queries=[f"operator supplied source for {name}"],
+                evidence_ids=[evidence_id],
+                identity_confidence=Confidence(
+                    score=0.9
+                    if exact_name and affiliation_match
+                    else (0.7 if exact_name else 0.3),
+                    method="name_affiliation_source",
+                    version="1",
+                ),
+                source_confidence=Confidence(
+                    score=0.9, method="operator_supplied_url", version="1"
+                ),
+                approval_status=(
+                    ApprovalStatus.REJECTED
+                    if exclusion.status == InclusionStatus.EXCLUDED
+                    else ApprovalStatus.PENDING
+                ),
+                decision_reason=exclusion.reason,
+            )
         firm_names = [item.firm for item in affiliations]
         queries = generate_queries(name, firm_names)
         provider_operations: list[dict[str, object]] = []
 
         if self.search_provider:
-            for query in queries:
-                results = self.search_provider.search(query, limit=self.search_limit_per_query)
+            for query in queries[: self.maximum_search_operations]:
+                results = self.search_provider.search(
+                    query, limit=self.search_limit_per_query
+                )
                 provider_operations.append(
                     {
                         "provider": self.search_provider.provider_name,
@@ -335,7 +455,9 @@ class DiscoveryService:
                 )
                 for result in results:
                     canonical = canonicalize_url(result.url)
-                    source_type = _source_type(canonical)
+                    source_type = _source_type(
+                        canonical, f"{result.title} {result.snippet}"
+                    )
                     role = _search_role(name, result, source_type)
                     exclusion = self.rules.evaluate(
                         url=canonical,
@@ -349,7 +471,12 @@ class DiscoveryService:
                             set(existing.discovery_queries + [result.query])
                         )
                         continue
-                    identity_score = 0.8 if name.casefold() in f"{result.title} {result.snippet}".casefold() else 0.3
+                    identity_score = (
+                        0.8
+                        if name.casefold()
+                        in f"{result.title} {result.snippet}".casefold()
+                        else 0.3
+                    )
                     candidates_by_url[canonical] = SourceCandidate(
                         candidate_id=stable_id("candidate", canonical),
                         url=result.url,
@@ -361,7 +488,9 @@ class DiscoveryService:
                         discovered_via=result.provider,
                         discovery_queries=[result.query],
                         identity_confidence=Confidence(
-                            score=identity_score, method="search_name_anchor", version="1"
+                            score=identity_score,
+                            method="search_name_anchor",
+                            version="1",
                         ),
                         source_confidence=Confidence(
                             score=0.7, method="search_result", version="1"
@@ -382,7 +511,9 @@ class DiscoveryService:
             authoritative_profiles=[page.canonical_url] if page else [],
             resolution_status=ResolutionStatus.PROVISIONAL,
             identity_confidence=Confidence(
-                score=0.9 if exact_evidence and affiliations else (0.7 if exact_evidence else 0.4),
+                score=0.9
+                if exact_evidence and affiliations
+                else (0.7 if exact_evidence else 0.4),
                 method="identity_evidence_policy",
                 version="1",
             ),
@@ -390,7 +521,9 @@ class DiscoveryService:
             competing_hypotheses=_KNOWN_NAMESAKES.get(name.casefold(), []),
         )
 
-        candidates = sorted(candidates_by_url.values(), key=lambda item: item.canonical_url)
+        candidates = sorted(
+            candidates_by_url.values(), key=lambda item: item.canonical_url
+        )
         if self.discovery_provider:
             refinement = self.discovery_provider.refine(
                 name=name, evidence=evidence, candidates=candidates

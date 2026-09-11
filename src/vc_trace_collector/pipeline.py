@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -36,14 +35,13 @@ from .models import (
     CanonicalDocument,
     CollectionManifest,
     EventStatus,
-    IdentityEvidence,
     ReferenceVoiceCandidate,
-    ResolvedIdentity,
     ResolutionStatus,
+    ResolvedIdentity,
     RunSummary,
-    SourceCandidate,
     SourceDecision,
     SourcePlan,
+    SourceType,
     utc_now,
 )
 from .policy import ExclusionRule, RuleSet
@@ -157,12 +155,14 @@ class Pipeline:
         name: str,
         firm: str | None = None,
         known_profile_url: str | None = None,
+        source_urls: list[str] | None = None,
         config: RunConfig | None = None,
     ) -> DiscoveryResult:
         config = config or RunConfig(
             name=name,
             firm=firm,
             known_profile_url=known_profile_url,
+            source_urls=source_urls or [],
             output_dir=str(self.output_dir),
         )
         run_rules = self._rules_for(config)
@@ -171,10 +171,13 @@ class Pipeline:
             search_provider=self.search_provider,
             discovery_provider=self._provider_for(config.discovery_model),
             rules=run_rules,
-            search_limit_per_query=max(1, config.maximum_search_operations),
+            maximum_search_operations=config.maximum_search_operations,
         )
         result = service.discover(
-            name=name, firm=firm, known_profile_url=known_profile_url
+            name=name,
+            firm=firm,
+            known_profile_url=known_profile_url,
+            source_urls=source_urls or config.source_urls,
         )
         workspace = self.workspace(result.identity.slug)
         workspace.mkdir(parents=True, exist_ok=True)
@@ -297,7 +300,9 @@ class Pipeline:
             "Identity and source decisions were reviewed",
             details={
                 "reviewer": reviewer,
-                "decisions": [decision.model_dump(mode="json") for decision in decisions],
+                "decisions": [
+                    decision.model_dump(mode="json") for decision in decisions
+                ],
             },
         )
         return ReviewResult(identity=identity, source_plan=plan)
@@ -312,9 +317,28 @@ class Pipeline:
         )
         identity.resolution_status = ResolutionStatus.CONFIRMED
         identity.reviewed_by = "automatic_policy"
+        identity.resolved_at = utc_now()
         write_json(workspace / "identity/resolved_identity.json", identity)
         write_json(workspace / "discovery/source_plan.json", plan)
         self._write_candidate_views(workspace, plan)
+        summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        summary.stages["review"] = "complete"
+        summary.status = "reviewed"
+        write_json(workspace / "run_summary.json", summary)
+        self._event(
+            workspace,
+            summary.run_id,
+            "review",
+            "Identity and sources passed explicit automatic review thresholds",
+            details={
+                "config_fingerprint": config.fingerprint,
+                "approved_candidates": [
+                    candidate.candidate_id
+                    for candidate in plan.candidates
+                    if candidate.approval_status == ApprovalStatus.AUTO_APPROVED
+                ],
+            },
+        )
         return ReviewResult(identity=identity, source_plan=plan)
 
     def collect_sources(self, investor_slug: str) -> CollectionResult:
@@ -333,15 +357,42 @@ class Pipeline:
             run_id=summary.run_id,
             fetcher=self.fetcher,
             audit=self._audit(workspace),
+            budget=BudgetLedger(
+                workspace / "audit/costs.jsonl", config.maximum_cost_usd
+            ),
+            approved_source_types=(
+                {SourceType(value) for value in config.approved_source_types}
+                if config.approved_source_types
+                else None
+            ),
         )
         result = collect_approved_sources(
             plan, context=context, registry=default_registry()
         )
+        voice_path = workspace / "identity/reference_voice_candidates.jsonl"
+        voice_candidates = [
+            ReferenceVoiceCandidate.model_validate(row)
+            for row in read_jsonl(voice_path)
+        ]
+        voice_by_source = {
+            candidate.source_candidate_id: candidate for candidate in voice_candidates
+        }
+        for artifact in result.artifacts:
+            candidate_id = str(artifact.original_metadata.get("candidate_id", ""))
+            voice = voice_by_source.get(candidate_id)
+            if voice and (
+                (artifact.mime_type or "").casefold().startswith("audio/")
+                or Path(artifact.relative_path).suffix.casefold()
+                in {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac"}
+            ):
+                voice.artifact_id = artifact.artifact_id
+        write_jsonl(voice_path, voice_candidates)
         summary.stages["collection"] = "complete"
         summary.status = "collected"
         summary.collected += result.collected
         summary.failures += result.failed
         summary.excluded += result.excluded
+        summary.cost_usd = context.budget.spent
         write_json(workspace / "run_summary.json", summary)
         return result
 
@@ -361,11 +412,19 @@ class Pipeline:
         write_jsonl(workspace / "processed/documents.jsonl", documents)
         write_jsonl(
             workspace / "processed/excluded_documents.jsonl",
-            [document for document in documents if document.inclusion_status != "included"],
+            [
+                document
+                for document in documents
+                if document.inclusion_status != "included"
+            ],
         )
         write_jsonl(
             workspace / "processed/target_speech.jsonl",
-            [document for document in documents if document.material_role == "spoken_by_target"],
+            [
+                document
+                for document in documents
+                if document.material_role == "spoken_by_target"
+            ],
         )
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         summary.stages["processing"] = "complete"
@@ -381,7 +440,9 @@ class Pipeline:
             CanonicalDocument.model_validate(row)
             for row in read_jsonl(workspace / "processed/documents.jsonl")
         ]
-        rules_payload = [rule.model_dump(mode="json") for rule in self._rules_for(config).rules]
+        rules_payload = [
+            rule.model_dump(mode="json") for rule in self._rules_for(config).rules
+        ]
         manifest = export_workspace(
             workspace,
             investor_slug=investor_slug,
@@ -403,7 +464,9 @@ class Pipeline:
         result = verify_workspace(self.workspace(investor_slug))
         workspace = self.workspace(investor_slug)
         if (workspace / "run_summary.json").exists():
-            summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+            summary = RunSummary.model_validate(
+                read_json(workspace / "run_summary.json")
+            )
             summary.stages["verification"] = "passed" if result.passed else "failed"
             summary.status = "verified" if result.passed else "verification_failed"
             write_json(workspace / "run_summary.json", summary)
@@ -415,6 +478,7 @@ class Pipeline:
         name: str,
         firm: str | None = None,
         known_profile_url: str | None = None,
+        source_urls: list[str] | None = None,
         auto_approve_discovery: bool = False,
         resume: str | None = None,
         collection_only: bool = False,
@@ -426,6 +490,7 @@ class Pipeline:
             name=name,
             firm=firm,
             known_profile_url=known_profile_url,
+            source_urls=source_urls or [],
             output_dir=str(self.output_dir),
             automatic_discovery=auto_approve_discovery,
             resume=resume,
@@ -434,7 +499,7 @@ class Pipeline:
         guessed_slug = re_slug(name, firm)
         workspace = self.workspace(guessed_slug)
         if processing_only:
-            documents = self.process(guessed_slug)
+            self.process(guessed_slug)
             return PipelineResult(investor_slug=guessed_slug)
         if export_only:
             manifest = self.export(guessed_slug)
@@ -449,6 +514,7 @@ class Pipeline:
                 name=name,
                 firm=firm,
                 known_profile_url=known_profile_url,
+                source_urls=source_urls,
                 config=config,
             )
             guessed_slug = discovery.identity.slug
@@ -477,7 +543,9 @@ class Pipeline:
         identity = self._load_identity(investor_slug)
         state_path = workspace / "state/state.sqlite"
         summary["identity_status"] = identity.resolution_status.value
-        summary["operations"] = StateStore(state_path).operation_counts() if state_path.exists() else {}
+        summary["operations"] = (
+            StateStore(state_path).operation_counts() if state_path.exists() else {}
+        )
         return summary
 
 

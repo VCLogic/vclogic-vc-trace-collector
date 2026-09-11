@@ -68,7 +68,9 @@ def _json_ld(soup: BeautifulSoup) -> list[dict[str, object]]:
 
 def extract_page(content: bytes | str, source_url: str) -> ExtractedPage:
     soup = BeautifulSoup(content, "html.parser")
-    canonical_element = soup.find("link", rel=lambda value: value and "canonical" in value)
+    canonical_element = soup.find(
+        "link", rel=lambda value: value and "canonical" in value
+    )
     canonical_source = (
         urljoin(source_url, str(canonical_element["href"]))
         if canonical_element and canonical_element.get("href")
@@ -80,7 +82,10 @@ def extract_page(content: bytes | str, source_url: str) -> ExtractedPage:
     title = (
         title_element.get_text(" ", strip=True)
         if title_element
-        else (_meta(soup, "og:title") or (soup.title.get_text(" ", strip=True) if soup.title else ""))
+        else (
+            _meta(soup, "og:title")
+            or (soup.title.get_text(" ", strip=True) if soup.title else "")
+        )
     )
     author = _meta(soup, "author", "article:author")
     published = _meta(soup, "article:published_time", "date", "publish-date")
@@ -98,7 +103,9 @@ def extract_page(content: bytes | str, source_url: str) -> ExtractedPage:
             except UnsafeUrl:
                 continue
 
-    for unwanted in soup.find_all(["script", "style", "noscript", "nav", "footer", "header", "form"]):
+    for unwanted in soup.find_all(
+        ["script", "style", "noscript", "nav", "footer", "header", "form"]
+    ):
         unwanted.decompose()
     root = soup.find("article") or soup.find("main") or soup.body or soup
     text = root.get_text("\n\n", strip=True)
@@ -130,7 +137,9 @@ def extract_feed(content: bytes | str, source_url: str) -> list[FeedEntry]:
         if not link:
             continue
         summary_html = str(entry.get("summary", ""))
-        summary_text = BeautifulSoup(summary_html, "html.parser").get_text("\n\n", strip=True)
+        summary_text = BeautifulSoup(summary_html, "html.parser").get_text(
+            "\n\n", strip=True
+        )
         published = entry.get("published_parsed") or entry.get("updated_parsed")
         results.append(
             FeedEntry(

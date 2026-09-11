@@ -28,11 +28,21 @@ def _video_id(document: CanonicalDocument) -> str:
     return document.source_item_id.rsplit(":", 1)[-1]
 
 
-def export_persona_sources(output: Path, documents: list[CanonicalDocument]) -> dict[str, object]:
+def export_persona_sources(
+    output: Path, documents: list[CanonicalDocument]
+) -> dict[str, object]:
     output = Path(output)
     included = [document for document in documents if eligible_for_corpus(document)]
-    blogs = [document for document in included if document.material_role == MaterialRole.AUTHORED_BY_TARGET]
-    talks = [document for document in included if document.material_role == MaterialRole.SPOKEN_BY_TARGET]
+    blogs = [
+        document
+        for document in included
+        if document.material_role == MaterialRole.AUTHORED_BY_TARGET
+    ]
+    talks = [
+        document
+        for document in included
+        if document.material_role == MaterialRole.SPOKEN_BY_TARGET
+    ]
     blog_rows = [
         {
             "doc_id": document.source_item_id,
@@ -46,7 +56,9 @@ def export_persona_sources(output: Path, documents: list[CanonicalDocument]) -> 
         {
             "doc_id": document.source_item_id,
             "video_id": _video_id(document),
-            "source": "youtube_talk" if document.source_type.value == "youtube" else "talk",
+            "source": "youtube_talk"
+            if document.source_type.value == "youtube"
+            else "talk",
             "text": document.text,
         }
         for document in sorted(talks, key=lambda item: item.source_item_id)
@@ -111,6 +123,10 @@ def export_workspace(
     write_jsonl(workspace / "processed/excluded_documents.jsonl", excluded)
     write_jsonl(workspace / "corpus/all_documents.jsonl", included)
     export_persona_sources(workspace / "corpus", ordered)
+    # Keep a drop-in compatibility view at the investor directory root.  The
+    # canonical corpus remains under corpus/, but legacy consumers expect these
+    # three files directly in persona_sources/<investor-slug>/.
+    export_persona_sources(workspace, ordered)
 
     warnings: list[str] = []
     if not included:
@@ -141,6 +157,9 @@ def export_workspace(
         workspace / "corpus/blog.jsonl",
         workspace / "corpus/talks.jsonl",
         workspace / "corpus/_manifest.json",
+        workspace / "blog.jsonl",
+        workspace / "talks.jsonl",
+        workspace / "_manifest.json",
         workspace / "quality_report.json",
     ]
     files = [_file(path, workspace) for path in sorted(paths)]
@@ -151,7 +170,9 @@ def export_workspace(
         "exclusion_rules_hash": exclusion_rules_hash,
         "files": [item.model_dump(mode="json") for item in files],
     }
-    fingerprint = sha256(canonical_json(fingerprint_payload).encode("utf-8")).hexdigest()
+    fingerprint = sha256(
+        canonical_json(fingerprint_payload).encode("utf-8")
+    ).hexdigest()
     manifest = CollectionManifest(
         investor_slug=investor_slug,
         identity_id=identity_id,

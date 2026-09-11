@@ -9,7 +9,6 @@ from typing import Any
 from .models import AuditEvent, CostEntry
 from .storage import append_jsonl, read_jsonl
 
-
 _SECRET_KEYS = {
     "authorization",
     "cookie",
@@ -26,12 +25,8 @@ _SECRET_KEYS = {
 
 def _secret_key(key: str) -> bool:
     normalized = key.casefold().replace("-", "_")
-    return (
-        normalized in _SECRET_KEYS
-        or normalized.endswith("_secret")
-        or normalized.endswith("_password")
-        or normalized.endswith("_api_key")
-        or normalized.endswith("_access_token")
+    return normalized in _SECRET_KEYS or normalized.endswith(
+        ("_secret", "_password", "_api_key", "_access_token")
     )
 
 
@@ -76,8 +71,12 @@ class BudgetLedger:
     @property
     def spent(self) -> Decimal:
         return sum(
-            (Decimal(str(row["amount_usd"])) for row in self._rows if row["kind"] == "settlement"),
-            start=Decimal("0"),
+            (
+                Decimal(str(row["amount_usd"]))
+                for row in self._rows
+                if row["kind"] == "settlement"
+            ),
+            start=Decimal(0),
         )
 
     @property
@@ -91,8 +90,12 @@ class BudgetLedger:
             elif row["kind"] in {"settlement", "release"}:
                 settled.add(operation)
         return sum(
-            (amount for operation, amount in reservations.items() if operation not in settled),
-            start=Decimal("0"),
+            (
+                amount
+                for operation, amount in reservations.items()
+                if operation not in settled
+            ),
+            start=Decimal(0),
         )
 
     @property
@@ -147,5 +150,5 @@ class BudgetLedger:
     def release(self, operation_id: str) -> None:
         append_jsonl(
             self.path,
-            CostEntry(operation_id=operation_id, kind="release", amount_usd=Decimal("0")),
+            CostEntry(operation_id=operation_id, kind="release", amount_usd=Decimal(0)),
         )

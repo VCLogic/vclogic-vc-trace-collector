@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import CanonicalDocument, CollectionManifest
+from .models import CanonicalDocument, CollectionManifest, QualityReport
 from .policy import eligible_for_corpus
 from .storage import read_json, read_jsonl
 
@@ -26,11 +26,15 @@ def verify_workspace(workspace: Path) -> VerificationResult:
     errors: list[str] = []
     manifest_path = workspace / "collection_manifest.json"
     if not manifest_path.exists():
-        return VerificationResult(passed=False, errors=["Missing collection_manifest.json"])
+        return VerificationResult(
+            passed=False, errors=["Missing collection_manifest.json"]
+        )
     try:
         manifest = CollectionManifest.model_validate(read_json(manifest_path))
     except Exception as error:
-        return VerificationResult(passed=False, errors=[f"Invalid collection manifest: {error}"])
+        return VerificationResult(
+            passed=False, errors=[f"Invalid collection manifest: {error}"]
+        )
 
     checked_files = 0
     for item in manifest.files:
@@ -52,13 +56,23 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             continue
         documents.append(document)
         if not eligible_for_corpus(document):
-            errors.append(f"Ineligible document present in corpus: {document.document_version_id}")
+            errors.append(
+                f"Ineligible document present in corpus: {document.document_version_id}"
+            )
         if not document.raw_artifact_ids:
             errors.append(f"Document lacks raw lineage: {document.document_version_id}")
     if len(documents) != manifest.corpus_documents:
         errors.append(
             f"Manifest corpus count {manifest.corpus_documents} does not match {len(documents)}"
         )
+    try:
+        quality = QualityReport.model_validate(
+            read_json(workspace / "quality_report.json")
+        )
+        if not quality.passed:
+            errors.append("Quality report did not pass")
+    except Exception as error:
+        errors.append(f"Invalid quality report: {error}")
     return VerificationResult(
         passed=not errors,
         errors=errors,

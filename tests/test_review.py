@@ -1,8 +1,12 @@
 import pytest
-
-from vc_trace_collector.collectors import ReviewRequired, apply_decisions, collect_approved_sources
-from vc_trace_collector.models import ApprovalStatus, SourceDecision
 from test_collectors import CollectorRegistry, StaticCollector, candidate, context, plan
+
+from vc_trace_collector.collectors import (
+    ReviewRequired,
+    apply_decisions,
+    collect_approved_sources,
+)
+from vc_trace_collector.models import ApprovalStatus, SourceDecision
 
 
 def test_collection_refuses_unreviewed_plan(tmp_path) -> None:
@@ -10,7 +14,9 @@ def test_collection_refuses_unreviewed_plan(tmp_path) -> None:
 
     with pytest.raises(ReviewRequired):
         collect_approved_sources(
-            plan(pending), context=context(tmp_path), registry=CollectorRegistry([StaticCollector()])
+            plan(pending),
+            context=context(tmp_path),
+            registry=CollectorRegistry([StaticCollector()]),
         )
 
 

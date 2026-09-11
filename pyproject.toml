@@ -21,7 +21,7 @@ av = [
 ]
 av-local = [
     "openai-whisper>=20250625",
-    "pyannote-audio>=3.3,<5",
+    "pyannote-audio>=3.3,<4",
     "torch>=2.4",
 ]
 
@@ -36,9 +36,14 @@ build-backend = "hatchling.build"
 dev = ["pytest>=8,<10", "pytest-cov>=5,<8"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra -m 'not live'"
 markers = ["live: tests that access public internet resources"]
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# Typer deliberately declares CLI metadata in default values. Broad catches are
+# limited to source-isolation and validation boundaries where errors are logged.
+ignore = ["B008", "BLE001"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vc_trace_collector"]

@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable
 
 import typer
 
+from .audit import BudgetExceeded
 from .collectors import ReviewRequired
 from .models import ApprovalStatus, SourceDecision
 from .pipeline import Pipeline
 from .storage import read_json
-
 
 PipelineFactory = Callable[[Path], Pipeline]
 
@@ -30,10 +30,16 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         name: str = typer.Option(..., help="Investor name"),
         firm: str | None = typer.Option(None, help="Known firm"),
         known_profile_url: str | None = typer.Option(None, help="Known public profile"),
+        source_url: list[str] | None = typer.Option(
+            None, help="Additional public source URL; repeat for multiple sources"
+        ),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
         result = pipeline_factory(output_dir).discover(
-            name=name, firm=firm, known_profile_url=known_profile_url
+            name=name,
+            firm=firm,
+            known_profile_url=known_profile_url,
+            source_urls=source_url or [],
         )
         typer.echo(f"Investor: {result.identity.canonical_name}")
         typer.echo(f"Workspace: {output_dir / result.identity.slug}")
@@ -45,14 +51,20 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         investor: str = typer.Option(..., help="Investor workspace slug"),
         output_dir: Path = typer.Option(Path("outputs")),
         reviewer: str = typer.Option("human", help="Reviewer identifier"),
-        decision_file: Path | None = typer.Option(None, help="JSON list of source decisions"),
-        approve_all_eligible: bool = typer.Option(False, help="Approve every pending candidate"),
+        decision_file: Path | None = typer.Option(
+            None, help="JSON list of source decisions"
+        ),
+        approve_all_eligible: bool = typer.Option(
+            False, help="Approve every pending candidate"
+        ),
     ) -> None:
         pipeline = pipeline_factory(output_dir)
         plan = pipeline._load_plan(investor)
         decisions: list[SourceDecision] = []
         if decision_file:
-            decisions = [SourceDecision.model_validate(item) for item in read_json(decision_file)]
+            decisions = [
+                SourceDecision.model_validate(item) for item in read_json(decision_file)
+            ]
         else:
             for candidate in plan.candidates:
                 if candidate.approval_status != ApprovalStatus.PENDING:
@@ -63,7 +75,9 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 decisions.append(
                     SourceDecision(
                         candidate_id=candidate.candidate_id,
-                        status=ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED,
+                        status=ApprovalStatus.APPROVED
+                        if approved
+                        else ApprovalStatus.REJECTED,
                         reason=(
                             "Approved during source-plan review"
                             if approved
@@ -82,6 +96,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         name: str = typer.Option(..., help="Investor name"),
         firm: str | None = typer.Option(None),
         known_profile_url: str | None = typer.Option(None),
+        source_url: list[str] | None = typer.Option(None),
         output_dir: Path = typer.Option(Path("outputs")),
         approved_source_type: list[str] | None = typer.Option(None),
         exclude_domain: list[str] | None = typer.Option(None),
@@ -106,6 +121,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 name=name,
                 firm=firm,
                 known_profile_url=known_profile_url,
+                source_urls=source_url or [],
                 auto_approve_discovery=auto_approve_discovery,
                 resume=resume,
                 collection_only=collection_only,
@@ -125,6 +141,9 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         except ReviewRequired as error:
             typer.echo(f"Review required: {error}")
             raise typer.Exit(3) from error
+        except BudgetExceeded as error:
+            typer.echo(f"Budget limit reached: {error}")
+            raise typer.Exit(4) from error
         typer.echo(f"Completed workspace: {output_dir / result.investor_slug}")
 
     @app.command("process")
@@ -148,7 +167,11 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         investor: str = typer.Option(...),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        typer.echo(json.dumps(pipeline_factory(output_dir).status(investor), indent=2, default=str))
+        typer.echo(
+            json.dumps(
+                pipeline_factory(output_dir).status(investor), indent=2, default=str
+            )
+        )
 
     @app.command()
     def verify(

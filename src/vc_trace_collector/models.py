@@ -138,7 +138,7 @@ class SourceCandidate(StrictModel):
     evidence_ids: list[str] = Field(default_factory=list)
     identity_confidence: Confidence
     source_confidence: Confidence
-    estimated_cost_usd: Decimal = Field(default=Decimal("0"), ge=0)
+    estimated_cost_usd: Decimal = Field(default=Decimal(0), ge=0)
     estimated_media_seconds: float = Field(default=0, ge=0)
     approval_status: ApprovalStatus = ApprovalStatus.PENDING
     decision_reason: str | None = None
@@ -152,7 +152,7 @@ class SourcePlan(StrictModel):
     queries: list[str] = Field(default_factory=list)
     candidates: list[SourceCandidate] = Field(default_factory=list)
     requires_review: bool = True
-    estimated_cost_usd: Decimal = Decimal("0")
+    estimated_cost_usd: Decimal = Decimal(0)
     estimated_media_seconds: float = 0
 
 
@@ -347,5 +347,5 @@ class RunSummary(StrictModel):
     processed: int = 0
     excluded: int = 0
     failures: int = 0
-    cost_usd: Decimal = Decimal("0")
+    cost_usd: Decimal = Decimal(0)
     media_seconds: float = 0

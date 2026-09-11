@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import socket
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Callable
+from typing import Self
 from urllib.parse import urljoin
 
 import httpx
@@ -67,14 +68,17 @@ class Fetcher:
         self.client = httpx.Client(
             transport=transport,
             timeout=timeout,
-            headers={"User-Agent": user_agent, "Accept": "text/html,application/xml;q=0.9,*/*;q=0.5"},
+            headers={
+                "User-Agent": user_agent,
+                "Accept": "text/html,application/xml;q=0.9,*/*;q=0.5",
+            },
             follow_redirects=False,
         )
 
     def close(self) -> None:
         self.client.close()
 
-    def __enter__(self) -> "Fetcher":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -88,18 +92,23 @@ class Fetcher:
             self.sleep(remaining)
         self._last_request[hostname] = time.monotonic()
 
-    def _request(self, url: str, conditional_headers: dict[str, str]) -> tuple[httpx.Response, bytes]:
+    def _request(
+        self,
+        url: str,
+        conditional_headers: dict[str, str],
+        maximum_bytes: int,
+    ) -> tuple[httpx.Response, bytes]:
         self._rate_limit(url)
         with self.client.stream("GET", url, headers=conditional_headers) as response:
             length = response.headers.get("content-length")
-            if length and int(length) > self.maximum_response_bytes:
-                raise FetchTooLarge(f"Response exceeds {self.maximum_response_bytes} bytes")
+            if length and int(length) > maximum_bytes:
+                raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
             chunks: list[bytes] = []
             size = 0
             for chunk in response.iter_bytes():
                 size += len(chunk)
-                if size > self.maximum_response_bytes:
-                    raise FetchTooLarge(f"Response exceeds {self.maximum_response_bytes} bytes")
+                if size > maximum_bytes:
+                    raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
                 chunks.append(chunk)
             return response, b"".join(chunks)
 
@@ -109,6 +118,7 @@ class Fetcher:
         *,
         etag: str | None = None,
         last_modified: str | None = None,
+        maximum_bytes: int | None = None,
     ) -> FetchResult:
         requested_url = validate_public_url(url, resolver=self.resolver)
         current_url = requested_url
@@ -120,19 +130,31 @@ class Fetcher:
             conditional["If-Modified-Since"] = last_modified
 
         attempts = 0
+        response_limit = maximum_bytes or self.maximum_response_bytes
+        if response_limit <= 0:
+            raise ValueError("maximum_bytes must be positive")
         while True:
             attempts += 1
             try:
-                response, content = self._request(current_url, conditional)
+                response, content = self._request(
+                    current_url, conditional, response_limit
+                )
             except (httpx.TransportError, httpx.TimeoutException):
                 if attempts >= self.maximum_attempts:
                     raise
                 self.sleep(min(2 ** (attempts - 1), 4))
                 continue
 
-            if response.status_code in {429, 500, 502, 503, 504} and attempts < self.maximum_attempts:
+            if (
+                response.status_code in {429, 500, 502, 503, 504}
+                and attempts < self.maximum_attempts
+            ):
                 retry_after = response.headers.get("retry-after")
-                delay = float(retry_after) if retry_after and retry_after.isdigit() else min(2 ** (attempts - 1), 4)
+                delay = (
+                    float(retry_after)
+                    if retry_after and retry_after.isdigit()
+                    else min(2 ** (attempts - 1), 4)
+                )
                 self.sleep(delay)
                 continue
 
@@ -141,7 +163,9 @@ class Fetcher:
                 if not location:
                     response.raise_for_status()
                 if len(redirects) >= self.maximum_redirects:
-                    raise httpx.TooManyRedirects("Maximum redirect count exceeded", request=response.request)
+                    raise httpx.TooManyRedirects(
+                        "Maximum redirect count exceeded", request=response.request
+                    )
                 redirected = urljoin(current_url, location)
                 current_url = validate_public_url(redirected, resolver=self.resolver)
                 redirects.append(current_url)

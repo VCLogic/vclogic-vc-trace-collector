@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
+from collections.abc import Iterable
 from difflib import SequenceMatcher
 from hashlib import sha256
 from pathlib import Path
-from typing import Iterable
 
-from .extract import FeedEntry, extract_feed, extract_page
+from .extract import extract_feed, extract_page
 from .models import (
     CanonicalDocument,
-    Confidence,
     InclusionStatus,
     MaterialRole,
     RawArtifact,
@@ -54,13 +52,19 @@ def _inclusion(
     if policy.status == PolicyInclusionStatus.REVIEW_REQUIRED:
         return InclusionStatus.REVIEW_REQUIRED, policy.reason
     if candidate.material_role == MaterialRole.IDENTITY_EVIDENCE:
-        return InclusionStatus.EXCLUDED, "Identity evidence is not persona-corpus material"
+        return (
+            InclusionStatus.EXCLUDED,
+            "Identity evidence is not persona-corpus material",
+        )
     if candidate.material_role in {
         MaterialRole.UNKNOWN,
         MaterialRole.THIRD_PARTY,
         MaterialRole.REFERENCE_VOICE,
     }:
-        return InclusionStatus.REVIEW_REQUIRED, "Material role requires review before corpus use"
+        return (
+            InclusionStatus.REVIEW_REQUIRED,
+            "Material role requires review before corpus use",
+        )
     return InclusionStatus.INCLUDED, None
 
 
@@ -119,7 +123,9 @@ def _make_document(
         material_role=candidate.material_role,
         title=title,
         authors=authors,
-        speakers=(authors if candidate.material_role == MaterialRole.SPOKEN_BY_TARGET else []),
+        speakers=(
+            authors if candidate.material_role == MaterialRole.SPOKEN_BY_TARGET else []
+        ),
         published_at=published_at,
         publication_date_precision="timestamp" if published_at else None,
         text=normalized,
@@ -169,7 +175,16 @@ def process_artifact(
             documents.append(document)
 
     mime = (artifact.mime_type or "").split(";", 1)[0]
-    if mime in {"application/rss+xml", "application/atom+xml", "application/xml", "text/xml"} or path.suffix == ".xml":
+    if (
+        mime
+        in {
+            "application/rss+xml",
+            "application/atom+xml",
+            "application/xml",
+            "text/xml",
+        }
+        or path.suffix == ".xml"
+    ):
         for entry in extract_feed(content, artifact.source_url or candidate.url):
             create(
                 url=entry.canonical_url,
@@ -180,7 +195,10 @@ def process_artifact(
                 extraction_method="rss_atom",
                 original_metadata=entry.metadata,
             )
-    elif mime in {"text/html", "application/xhtml+xml"} or path.suffix in {".html", ".htm"}:
+    elif mime in {"text/html", "application/xhtml+xml"} or path.suffix in {
+        ".html",
+        ".htm",
+    }:
         page = extract_page(content, artifact.source_url or candidate.url)
         create(
             url=page.canonical_url,
@@ -194,9 +212,13 @@ def process_artifact(
     elif mime.startswith("text/") or path.suffix in {".txt", ".md"}:
         create(
             url=artifact.source_url,
-            title=Path(artifact.source_path).name if artifact.source_path else candidate.title,
+            title=Path(artifact.source_path).name
+            if artifact.source_path
+            else candidate.title,
             text=content.decode("utf-8", errors="replace"),
-            authors=[target_name] if candidate.material_role == MaterialRole.AUTHORED_BY_TARGET else [],
+            authors=[target_name]
+            if candidate.material_role == MaterialRole.AUTHORED_BY_TARGET
+            else [],
             published_at=None,
             extraction_method="plain_text",
             original_metadata=artifact.original_metadata,
@@ -249,7 +271,9 @@ def deduplicate(
         duplicate = exact.get(document.content_hash)
         if duplicate is None:
             for prior in canonical:
-                ratio = SequenceMatcher(None, prior.text, document.text, autojunk=False).ratio()
+                ratio = SequenceMatcher(
+                    None, prior.text, document.text, autojunk=False
+                ).ratio()
                 if ratio >= near_threshold:
                     duplicate = prior
                     break
