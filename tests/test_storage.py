@@ -18,6 +18,31 @@ def test_artifacts_are_addressed_by_sha256(tmp_path) -> None:
     assert artifact.metadata_path.exists()
 
 
+def test_same_bytes_keep_distinct_immutable_provenance_records(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+
+    discovered = store.put_bytes(
+        b"same public page",
+        category="web",
+        suffix=".html",
+        source_url="https://example.test/page",
+        collection_method="identity_evidence_http",
+    )
+    collected = store.put_bytes(
+        b"same public page",
+        category="web",
+        suffix=".html",
+        source_url="https://example.test/page",
+        collection_method="http",
+        original_metadata={"candidate_id": "candidate:one"},
+    )
+
+    assert discovered.path == collected.path
+    assert discovered.metadata_path != collected.metadata_path
+    assert discovered.metadata_path.exists()
+    assert collected.metadata_path.exists()
+
+
 def test_atomic_json_uses_canonical_key_order(tmp_path) -> None:
     path = tmp_path / "record.json"
     write_json(path, {"z": 1, "a": 2})

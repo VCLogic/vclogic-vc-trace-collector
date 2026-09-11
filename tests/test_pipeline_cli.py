@@ -28,6 +28,13 @@ def pipeline(tmp_path: Path) -> Pipeline:
         if "cdn.example.test" in request.url.host:
             content = b"ID3 reference voice"
             content_type = "audio/mpeg"
+        if "blog.example.test" in request.url.host:
+            content = (
+                b"<html><head><meta name='author' content='Michael Hyatt'></head>"
+                b"<body><main><h1>Building BlueCat with durable economics</h1>"
+                b"<p>By Michael Hyatt. I learned that capital must serve the business.</p>"
+                b"</main></body></html>"
+            )
         if "spotify.com" in request.url.host:
             content = (
                 b"<html><head><title>Michael Hyatt BlueCat interview podcast</title></head>"
@@ -199,3 +206,19 @@ def test_automatic_review_is_persisted_as_completed_stage(tmp_path) -> None:
 
     status = pipeline(tmp_path).status("michael-hyatt")
     assert status["stages"]["review"] == "complete"
+
+
+def test_complete_pipeline_exports_verified_non_pitch_corpus(tmp_path) -> None:
+    result = pipeline(tmp_path).collect(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=["https://blog.example.test/michael-hyatt-bluecat"],
+        auto_approve_discovery=True,
+    )
+
+    assert result.verification is not None
+    assert result.verification.passed is True
+    blogs = read_jsonl(tmp_path / "michael-hyatt/blog.jsonl")
+    assert len(blogs) == 1
+    assert "durable economics" in blogs[0]["title"]
+    assert all("thepitch.show" not in str(row) for row in blogs)

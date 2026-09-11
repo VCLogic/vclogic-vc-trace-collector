@@ -155,7 +155,28 @@ class ArtifactStore:
             parent_artifact_ids=parent_artifact_ids or [],
             rights_notes=rights_notes,
         )
-        metadata_path = path.with_suffix(path.suffix + ".metadata.json")
+        provenance_key = sha256(
+            canonical_json(
+                {
+                    "artifact_id": record.artifact_id,
+                    "category": category,
+                    "source_url": source_url,
+                    "source_path": source_path,
+                    "mime_type": mime_type,
+                    "collection_method": collection_method,
+                    "collection_version": record.collection_version,
+                    "original_metadata": original_metadata or {},
+                    "parent_artifact_ids": parent_artifact_ids or [],
+                    "rights_notes": rights_notes,
+                }
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        metadata_path = path.with_name(f"{path.name}.{provenance_key}.metadata.json")
+        if metadata_path.exists():
+            existing = RawArtifact.model_validate(read_json(metadata_path))
+            return StoredArtifact(
+                record=existing, path=path, metadata_path=metadata_path
+            )
         write_json(metadata_path, record)
         return StoredArtifact(record=record, path=path, metadata_path=metadata_path)
 
