@@ -11,14 +11,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from .config import RunConfig
 from .models import (
     ApprovalStatus,
+    AVCandidateOutcome,
     CanonicalDocument,
     CollectionManifest,
     QualityReport,
     RawArtifact,
+    ReferenceVoiceCandidate,
     ReferenceVoiceProfile,
     ReferenceVoiceStatus,
     ResolutionStatus,
     ResolvedIdentity,
+    RunSummary,
     SourcePlan,
     SourceType,
     SpeakerStatus,
@@ -51,7 +54,12 @@ def _load_model(path: Path, model: type[BaseModel], label: str, errors: list[str
         return None
 
 
-def _validate_model_attribution(document: CanonicalDocument, errors: list[str]) -> None:
+def _validate_model_attribution(
+    document: CanonicalDocument,
+    config: RunConfig | None,
+    profile: ReferenceVoiceProfile | None,
+    errors: list[str],
+) -> None:
     attribution = document.speaker_attribution
     if attribution.status != SpeakerStatus.ACCEPTED_MODEL:
         return
@@ -73,6 +81,45 @@ def _validate_model_attribution(document: CanonicalDocument, errors: list[str]) 
         errors.append(f"Speaker score below threshold: {document.document_version_id}")
     if attribution.margin < attribution.minimum_margin:
         errors.append(f"Speaker margin below threshold: {document.document_version_id}")
+    if config is not None:
+        if attribution.minimum_score != config.speaker_minimum_score:
+            errors.append(
+                f"Speaker minimum score differs from frozen config: "
+                f"{document.document_version_id}"
+            )
+        if attribution.minimum_margin != config.speaker_minimum_margin:
+            errors.append(
+                f"Speaker minimum margin differs from frozen config: "
+                f"{document.document_version_id}"
+            )
+        if (
+            config.diarization_model
+            and attribution.diarization_model != config.diarization_model
+        ):
+            errors.append(
+                f"Diarization model differs from frozen config: "
+                f"{document.document_version_id}"
+            )
+        if (
+            document.transcript.method == "speech_to_text"
+            and config.transcription_model
+            and document.transcript.model != config.transcription_model
+        ):
+            errors.append(
+                f"Transcription model differs from frozen config: "
+                f"{document.document_version_id}"
+            )
+    if profile is not None:
+        if attribution.embedding_model != profile.embedding_model:
+            errors.append(
+                f"Embedding model differs from reference profile: "
+                f"{document.document_version_id}"
+            )
+        if set(attribution.reference_artifact_ids) != set(profile.artifact_ids):
+            errors.append(
+                f"Speaker attribution references a different voice profile: "
+                f"{document.document_version_id}"
+            )
 
 
 def verify_workspace(workspace: Path) -> VerificationResult:
@@ -162,6 +209,14 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append("Source plan investor slug does not match manifest")
         candidates = {item.candidate_id: item for item in plan.candidates}
 
+    reference_candidates: dict[str, ReferenceVoiceCandidate] = {}
+    for row in read_jsonl(workspace / "identity/reference_voice_candidates.jsonl"):
+        try:
+            item = ReferenceVoiceCandidate.model_validate(row)
+            reference_candidates[item.candidate_id] = item
+        except Exception as error:
+            errors.append(f"Invalid reference voice candidate: {error}")
+
     artifacts: dict[str, list[RawArtifact]] = {}
     for metadata_path in sorted((workspace / "raw").rglob("*.metadata.json")):
         try:
@@ -211,6 +266,29 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 errors.append("Reference voice profile is not human verified")
             if any(item not in artifacts for item in profile.artifact_ids):
                 errors.append("Reference voice profile has missing raw lineage")
+            if (
+                config is not None
+                and config.embedding_model
+                and profile.embedding_model != config.embedding_model
+            ):
+                errors.append("Reference embedding model differs from frozen config")
+            for candidate_id in profile.candidate_ids:
+                voice = reference_candidates.get(candidate_id)
+                if voice is None:
+                    errors.append("Reference voice profile names an unknown candidate")
+                    continue
+                if voice.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
+                    errors.append("Reference voice candidate is not human verified")
+                if voice.artifact_id not in profile.artifact_ids:
+                    errors.append(
+                        "Reference voice candidate artifact differs from profile"
+                    )
+                source = candidates.get(voice.source_candidate_id)
+                if source is None or source.approval_status not in {
+                    ApprovalStatus.APPROVED,
+                    ApprovalStatus.AUTO_APPROVED,
+                }:
+                    errors.append("Reference voice source candidate was not approved")
 
     processed: list[CanonicalDocument] = []
     for row in read_jsonl(workspace / "processed/documents.jsonl"):
@@ -267,13 +345,28 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 f"Corpus document source was not approved: "
                 f"{document.document_version_id}"
             )
-        _validate_model_attribution(document, errors)
+        _validate_model_attribution(document, config, profile, errors)
         if (
             document.speaker_attribution.status == SpeakerStatus.ACCEPTED_MODEL
             and profile is None
         ):
             errors.append(
                 f"Model-attributed speech lacks a reference profile: "
+                f"{document.document_version_id}"
+            )
+        if document.speaker_attribution.status == SpeakerStatus.VERIFIED_HUMAN and (
+            candidate is None or not candidate.speaker_verified_by
+        ):
+            errors.append(
+                f"Human-verified speech lacks source-review evidence: "
+                f"{document.document_version_id}"
+            )
+        if (
+            document.transcript.source_artifact_id
+            and document.transcript.source_artifact_id not in document.raw_artifact_ids
+        ):
+            errors.append(
+                f"Transcript artifact is absent from document lineage: "
                 f"{document.document_version_id}"
             )
         if (
@@ -317,6 +410,35 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                     f"Corpus document violates effective exclusion rules: "
                     f"{document.document_version_id}"
                 )
+            for artifact_id in document.raw_artifact_ids:
+                for record in artifacts.get(artifact_id, []):
+                    metadata = record.original_metadata
+                    decision = effective_rules.evaluate(
+                        url=record.source_url or document.canonical_url,
+                        title=str(metadata.get("title") or document.title or ""),
+                        text=document.text,
+                        channel=str(
+                            metadata.get("channel")
+                            or (candidate.channel if candidate else "")
+                        )
+                        or None,
+                        programme=str(
+                            metadata.get("programme")
+                            or (candidate.programme if candidate else "")
+                        )
+                        or None,
+                        company=str(
+                            metadata.get("company")
+                            or (candidate.company if candidate else "")
+                        )
+                        or None,
+                        stage="verification_metadata",
+                    )
+                    if decision.status != "included":
+                        errors.append(
+                            f"Corpus document violates artifact metadata exclusions: "
+                            f"{document.document_version_id}"
+                        )
     if len(documents) != manifest.corpus_documents:
         errors.append(
             f"Manifest corpus count {manifest.corpus_documents} does not match {len(documents)}"
@@ -339,8 +461,56 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         )
         if not quality.passed:
             errors.append("Quality report did not pass")
+        required_checks = {
+            "corpus_nonempty",
+            "excluded_absent",
+            "lineage_present",
+            "metadata_complete",
+            "first_person_only",
+            "speaker_attribution_complete",
+            "transcript_coverage_complete",
+            "budget_within_limit",
+            "approved_work_complete",
+        }
+        if not required_checks.issubset(quality.checks):
+            errors.append("Quality report is missing required checks")
     except Exception as error:
         errors.append(f"Invalid quality report: {error}")
+
+    outcome_rows = read_jsonl(workspace / "processed/av_candidate_outcomes.jsonl")
+    outcomes: list[AVCandidateOutcome] = []
+    for row in outcome_rows:
+        try:
+            outcomes.append(AVCandidateOutcome.model_validate(row))
+        except Exception as error:
+            errors.append(f"Invalid audiovisual candidate outcome: {error}")
+    approved_spoken = {
+        item.candidate_id
+        for item in candidates.values()
+        if item.approval_status
+        in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+        and item.material_role == "spoken_by_target"
+    }
+    if approved_spoken != {item.candidate_id for item in outcomes}:
+        errors.append("Audiovisual outcomes do not cover every approved spoken source")
+    incomplete = [
+        item
+        for item in outcomes
+        if item.status in {"failed", "not_collected", "review_required"}
+    ]
+    if incomplete and not (config and config.allow_partial_run):
+        errors.append("Approved audiovisual work is incomplete")
+    summary_path = workspace / "run_summary.json"
+    if summary_path.exists():
+        summary = _load_model(summary_path, RunSummary, "run summary", errors)
+        if summary is not None:
+            if (
+                summary.failures
+                != summary.collection_failures + summary.processing_failures
+            ):
+                errors.append("Run summary failure totals are inconsistent")
+            if incomplete and not (config and config.allow_partial_run):
+                errors.append("Run summary contains unresolved required work")
     return VerificationResult(
         passed=not errors,
         errors=errors,

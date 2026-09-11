@@ -9,6 +9,10 @@ maximum_redirects = 5
 maximum_cost_usd = "10.00"
 maximum_search_operations = 20
 maximum_media_minutes = 120
+transcription_cost_usd = "0"
+diarization_cost_usd = "0"
+embedding_cost_usd = "0"
+allow_partial_run = false
 
 [confidence]
 automatic_identity_minimum = 0.90

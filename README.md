@@ -192,6 +192,13 @@ Whisper and pyannote adapters are available in the `av-local` extra; `HF_TOKEN`
 and `VC_TRACE_AV_DEVICE` are optional environment variables consumed only by
 the selected models.
 
+Set conservative per-operation price estimates with
+`--transcription-cost-usd`, `--diarization-cost-usd`, and
+`--embedding-cost-usd`. They are reserved before providers or models are
+initialized. Media with an unknown duration is rejected before model calls.
+By default, any failed or unresolved approved source prevents a verified
+export; `--allow-partial-run` is an explicit, manifest-visible opt-out.
+
 ## Exclusions and source review
 
 `config/exclusions.example.toml` demonstrates domain, channel, programme,
@@ -232,6 +239,7 @@ outputs/<investor-slug>/
 │   ├── documents.jsonl
 │   ├── target_speech.jsonl
 │   ├── av_attribution_results.jsonl
+│   ├── av_candidate_outcomes.jsonl
 │   └── excluded_documents.jsonl
 ├── corpus/
 │   ├── blog.jsonl

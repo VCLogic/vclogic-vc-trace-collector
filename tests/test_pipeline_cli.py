@@ -1,4 +1,5 @@
 import socket
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
@@ -13,6 +14,7 @@ from vc_trace_collector.av import (
 )
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.collectors import ReviewRequired
+from vc_trace_collector.config import RunConfig
 from vc_trace_collector.fetch import Fetcher
 from vc_trace_collector.models import (
     ApprovalStatus,
@@ -49,7 +51,7 @@ def pipeline(tmp_path: Path) -> Pipeline:
         if "spotify.com" in request.url.host:
             content = (
                 b"<html><head><title>Michael Hyatt BlueCat interview podcast</title></head>"
-                b"<body>A conversation with investor Michael Hyatt, co-founder of BlueCat."
+                b"<body>Total time: -00:05. A conversation with investor Michael Hyatt, co-founder of BlueCat."
                 b"<audio src='https://cdn.example.test/reference.mp3'></audio></body>"
                 b"</html>"
             )
@@ -410,6 +412,19 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
         name="Michael Hyatt",
         known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
         supplied_files=[reference_audio, interview_audio],
+        config=RunConfig(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            supplied_files=[str(reference_audio), str(interview_audio)],
+            output_dir=str(output),
+            transcription_model="fixture-transcript",
+            diarization_model="fixture-diarization",
+            embedding_model="fixture-voice-embedding",
+            transcription_cost_usd=Decimal("0.10"),
+            diarization_cost_usd=Decimal("0.20"),
+            embedding_cost_usd=Decimal("0.30"),
+            maximum_cost_usd=Decimal("1.00"),
+        ),
     )
     supplied = [
         item
@@ -481,6 +496,59 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
     assert derived[0]["artifact_id"] not in derived[0]["parent_artifact_ids"]
     talks = read_jsonl(output / "michael-hyatt/talks.jsonl")
     assert [item["text"] for item in talks] == ["I invest in durable customer value."]
+    summary = read_json(output / "michael-hyatt/run_summary.json")
+    assert Decimal(summary["cost_usd"]) == Decimal("0.60")
+
+
+def test_failed_approved_av_source_prevents_otherwise_nonempty_export(tmp_path) -> None:
+    article = tmp_path / "michael-hyatt-article.txt"
+    article.write_text("I invest in durable, customer-led businesses.")
+    interview = tmp_path / "michael-hyatt-interview.mp4"
+    interview.write_bytes(b"video fixture")
+    collector = pipeline(tmp_path)
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[article, interview],
+    )
+    supplied = {
+        Path(item.url.removeprefix("file://")).suffix: item
+        for item in discovered.source_plan.candidates
+        if item.source_type == "supplied"
+    }
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=supplied[".txt"].candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human confirmed authorship",
+                decided_by="reviewer",
+                material_role=MaterialRole.AUTHORED_BY_TARGET,
+            ),
+            SourceDecision(
+                candidate_id=supplied[".mp4"].candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human confirmed interview",
+                decided_by="reviewer",
+                material_role=MaterialRole.SPOKEN_BY_TARGET,
+            ),
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+
+    collector.collect_sources("michael-hyatt")
+    collector.process("michael-hyatt")
+    collector.export("michael-hyatt")
+    verification = collector.verify("michael-hyatt")
+
+    assert verification.passed is False
+    assert "incomplete" in " ".join(verification.errors).casefold()
+    quality = read_json(tmp_path / "michael-hyatt/quality_report.json")
+    assert quality["counts"]["included"] == 1
+    assert quality["counts"]["failures"] == 1
+    assert quality["passed"] is False
 
 
 def test_cli_collect_exits_nonzero_when_export_cannot_verify(tmp_path) -> None:

@@ -54,6 +54,13 @@ class CollectionContext:
     budget: BudgetLedger | None = None
     approved_source_types: set[SourceType] | None = None
     maximum_media_seconds: float | None = None
+    media_seconds_used: float = 0
+
+    @property
+    def remaining_media_seconds(self) -> float | None:
+        if self.maximum_media_seconds is None:
+            return None
+        return max(0.0, self.maximum_media_seconds - self.media_seconds_used)
 
 
 class CollectionResult(BaseModel):
@@ -63,6 +70,7 @@ class CollectionResult(BaseModel):
     failed: int = 0
     skipped: int = 0
     excluded: int = 0
+    media_seconds: float = 0
     artifacts: list[RawArtifact] = Field(default_factory=list)
     failures: list[dict[str, str]] = Field(default_factory=list)
 
@@ -228,6 +236,27 @@ def _podcast_audio_urls(content: bytes, source_url: str) -> list[str]:
     return sorted(urls)[:4]
 
 
+def _podcast_duration_seconds(content: bytes) -> float | None:
+    text = content.decode("utf-8", errors="replace")
+    iso = re.search(
+        r"\bPT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?\b", text, re.IGNORECASE
+    )
+    if iso:
+        hours, minutes, seconds = iso.groups()
+        return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds or 0)
+    numeric = re.search(
+        r'(?i)["\'](?:duration|duration_seconds)["\']\s*[:=]\s*["\']?(\d+(?:\.\d+)?)',
+        text,
+    )
+    if numeric:
+        return float(numeric.group(1))
+    clock = re.search(r"(?<!\d)-?(?:(\d+):)?(\d{1,2}):(\d{2})(?!\d)", text)
+    if clock:
+        hours, minutes, seconds = clock.groups()
+        return int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds)
+    return None
+
+
 class PodcastCollector:
     source_types: ClassVar[set[SourceType]] = {SourceType.PODCAST}
 
@@ -241,10 +270,27 @@ class PodcastCollector:
         soup = BeautifulSoup(fetched.content, "html.parser")
         site_name = soup.find("meta", attrs={"property": "og:site_name"})
         author = soup.find("meta", attrs={"name": "author"})
-        if site_name and site_name.get("content"):
-            source.programme = str(site_name["content"]).strip()
-        if author and author.get("content"):
-            source.channel = str(author["content"]).strip()
+        programme = (
+            str(site_name["content"]).strip()
+            if site_name and site_name.get("content")
+            else None
+        )
+        channel = (
+            str(author["content"]).strip() if author and author.get("content") else None
+        )
+        discovered_title = soup.title.get_text(" ", strip=True) if soup.title else None
+        exclusion = context.rules.evaluate(
+            url=fetched.final_url,
+            title=source.title or discovered_title,
+            text=soup.get_text(" ", strip=True),
+            channel=channel,
+            programme=programme,
+            company=source.company,
+            stage="post_metadata",
+        )
+        duration = source.estimated_media_seconds or _podcast_duration_seconds(
+            fetched.content
+        )
         page = context.artifacts.put_bytes(
             fetched.content,
             category="podcast",
@@ -257,13 +303,34 @@ class PodcastCollector:
                 "canonical_url": fetched.canonical_url,
                 "headers": fetched.headers,
                 "status_code": fetched.status_code,
+                "title": discovered_title,
+                "channel": channel,
+                "programme": programme,
+                "duration_seconds": duration,
+                "collection_exclusion": exclusion.model_dump(mode="json"),
             },
         ).record
         records = [page]
+        if exclusion.status == InclusionStatus.EXCLUDED:
+            return records
         if mime.split(";", 1)[0].strip().startswith("audio/"):
             return records
 
-        for audio_url in _podcast_audio_urls(fetched.content, fetched.final_url):
+        audio_urls = _podcast_audio_urls(fetched.content, fetched.final_url)
+        if audio_urls and context.remaining_media_seconds is not None:
+            if not duration:
+                raise RuntimeError(
+                    "Cannot bound podcast duration before media download"
+                )
+            if duration > context.remaining_media_seconds:
+                raise RuntimeError(
+                    f"Media duration {duration:.1f}s exceeds remaining limit "
+                    f"{context.remaining_media_seconds:.1f}s"
+                )
+
+        # One canonical enclosure is sufficient; hosts often expose several
+        # encodings of the same episode.
+        for audio_url in audio_urls[:1]:
             try:
                 audio = context.fetcher.fetch(audio_url, maximum_bytes=512_000_000)
             except Exception as error:
@@ -292,6 +359,10 @@ class PodcastCollector:
                         "episode_url": fetched.final_url,
                         "headers": audio.headers,
                         "status_code": audio.status_code,
+                        "title": discovered_title,
+                        "channel": channel,
+                        "programme": programme,
+                        "duration_seconds": duration,
                     },
                     parent_artifact_ids=[page.artifact_id],
                 ).record
@@ -361,11 +432,21 @@ class YouTubeCollector:
                 "Install the youtube extra to use yt-dlp"
             ) from error
         metadata = json.loads(completed.stdout)
-        source.channel = (
+        channel = (
             str(metadata.get("channel") or metadata.get("uploader") or "").strip()
             or None
         )
-        source.programme = str(metadata.get("series") or "").strip() or None
+        programme = str(metadata.get("series") or "").strip() or None
+        discovered_title = str(metadata.get("title") or "").strip() or None
+        exclusion = context.rules.evaluate(
+            url=source.canonical_url,
+            title=source.title or discovered_title,
+            text=str(metadata.get("description") or ""),
+            channel=channel,
+            programme=programme,
+            company=source.company,
+            stage="post_metadata",
+        )
         video_id = str(metadata.get("id", ""))
         records = [
             context.artifacts.put_bytes(
@@ -380,9 +461,16 @@ class YouTubeCollector:
                 original_metadata={
                     "candidate_id": source.candidate_id,
                     "video_id": video_id,
+                    "title": discovered_title,
+                    "channel": channel,
+                    "programme": programme,
+                    "duration_seconds": float(metadata.get("duration") or 0),
+                    "collection_exclusion": exclusion.model_dump(mode="json"),
                 },
             ).record
         ]
+        if exclusion.status == InclusionStatus.EXCLUDED:
+            return records
         try:
             from youtube_transcript_api import YouTubeTranscriptApi
 
@@ -412,13 +500,15 @@ class YouTubeCollector:
                 ).record
             )
         duration = float(metadata.get("duration") or 0)
+        if context.remaining_media_seconds is not None and duration <= 0:
+            raise RuntimeError("Cannot bound YouTube duration before media download")
         if (
-            context.maximum_media_seconds is not None
-            and duration > context.maximum_media_seconds
+            context.remaining_media_seconds is not None
+            and duration > context.remaining_media_seconds
         ):
             raise RuntimeError(
                 f"Media duration {duration:.1f}s exceeds remaining limit "
-                f"{context.maximum_media_seconds:.1f}s"
+                f"{context.remaining_media_seconds:.1f}s"
             )
         with tempfile.TemporaryDirectory(prefix="vc-trace-youtube-") as directory:
             output_template = str(Path(directory) / "audio.%(ext)s")
@@ -468,6 +558,9 @@ class YouTubeCollector:
                     original_metadata={
                         "candidate_id": source.candidate_id,
                         "video_id": video_id,
+                        "title": discovered_title,
+                        "channel": channel,
+                        "programme": programme,
                         "duration_seconds": duration,
                     },
                     parent_artifact_ids=[records[0].artifact_id],
@@ -614,6 +707,24 @@ def collect_approved_sources(
             continue
 
         output_ids = [record.artifact_id for record in records]
+        media_seconds = max(
+            (
+                float(record.original_metadata.get("duration_seconds") or 0)
+                for record in records
+                if record.collection_method
+                in {"podcast_enclosure_http", "yt_dlp_audio"}
+            ),
+            default=0.0,
+        )
+        context.media_seconds_used += media_seconds
+        result.media_seconds += media_seconds
+        post_collection_excluded = any(
+            record.original_metadata.get("collection_exclusion", {}).get("status")
+            == InclusionStatus.EXCLUDED
+            for record in records
+        )
+        if post_collection_excluded:
+            result.excluded += 1
         if context.budget:
             context.budget.settle(operation_id, candidate.estimated_cost_usd)
         context.state.finish_operation(operation_id, input_hash, ",".join(output_ids))
@@ -623,7 +734,11 @@ def collect_approved_sources(
             context,
             candidate=candidate,
             status=EventStatus.SUCCEEDED,
-            summary="Source collected",
+            summary=(
+                "Source metadata collected; media excluded by post-metadata rules"
+                if post_collection_excluded
+                else "Source collected"
+            ),
             outputs=output_ids,
         )
     return result

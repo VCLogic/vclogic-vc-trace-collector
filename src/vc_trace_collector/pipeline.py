@@ -48,6 +48,7 @@ from .fetch import Fetcher
 from .models import (
     ApprovalStatus,
     AuditEvent,
+    AVCandidateOutcome,
     CanonicalDocument,
     CollectionManifest,
     EventStatus,
@@ -450,6 +451,11 @@ class Pipeline:
             raise ReviewRequired("Identity review required before collection")
         config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        already_collected_media = sum(
+            float(artifact.original_metadata.get("duration_seconds") or 0)
+            for artifact in load_artifact_records(workspace)
+            if artifact.collection_method in {"podcast_enclosure_http", "yt_dlp_audio"}
+        )
         context = CollectionContext(
             workspace=workspace,
             artifacts=ArtifactStore(workspace),
@@ -467,12 +473,11 @@ class Pipeline:
                 else None
             ),
             maximum_media_seconds=config.maximum_media_minutes * 60,
+            media_seconds_used=already_collected_media,
         )
         result = collect_approved_sources(
             plan, context=context, registry=default_registry()
         )
-        write_json(workspace / "discovery/source_plan.json", plan)
-        self._write_candidate_views(workspace, plan)
         voice_path = workspace / "identity/reference_voice_candidates.jsonl"
         voice_candidates = [
             ReferenceVoiceCandidate.model_validate(row)
@@ -487,14 +492,16 @@ class Pipeline:
             if voice and (
                 (artifact.mime_type or "").casefold().startswith("audio/")
                 or Path(artifact.relative_path).suffix.casefold()
-                in {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac"}
+                in {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac", ".webm"}
+                or artifact.collection_method == "yt_dlp_audio"
             ):
                 voice.artifact_id = artifact.artifact_id
         write_jsonl(voice_path, voice_candidates)
         summary.stages["collection"] = "complete"
         summary.status = "collected"
         summary.collected += result.collected
-        summary.failures += result.failed
+        summary.collection_failures = result.failed
+        summary.failures = summary.collection_failures + summary.processing_failures
         summary.excluded += result.excluded
         summary.cost_usd = context.budget.spent
         write_json(workspace / "run_summary.json", summary)
@@ -538,52 +545,88 @@ class Pipeline:
                 "Reference voice raw artifact is missing"
             ) from error
         config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
-        provider = self.embedding_provider
-        if provider is None:
-            if not config.embedding_model:
-                raise ReviewRequired(
-                    "Configure an embedding model before voice approval"
-                )
-            provider = PyannoteEmbeddingProvider(
-                config.embedding_model,
-                token=os.environ.get("HF_TOKEN"),
-                device=os.environ.get("VC_TRACE_AV_DEVICE"),
-            )
         source_path = workspace / artifact.relative_path
-        reference_artifact = artifact
-        if start_seconds is not None or end_seconds is not None:
-            if start_seconds is None or end_seconds is None:
-                raise ValueError("Both reference start and end seconds are required")
-            with tempfile.TemporaryDirectory(prefix="vc-trace-reference-") as directory:
-                extracted = self.audio_extractor(
-                    source_path,
-                    Path(directory) / "reference.wav",
-                    start_seconds=start_seconds,
-                    end_seconds=end_seconds,
-                )
-                reference_artifact = (
-                    ArtifactStore(workspace)
-                    .put_bytes(
-                        extracted.read_bytes(),
-                        category="voice",
-                        suffix=".wav",
-                        source_url=artifact.source_url,
-                        mime_type="audio/wav",
-                        collection_method="human_selected_reference_segment",
-                        original_metadata={
-                            "candidate_id": selected.source_candidate_id,
-                            "reference_candidate_id": selected.candidate_id,
-                            "reviewer": reviewer,
-                            "start_seconds": start_seconds,
-                            "end_seconds": end_seconds,
-                        },
-                        parent_artifact_ids=[artifact.artifact_id],
+        source_duration = (
+            end_seconds - start_seconds
+            if start_seconds is not None and end_seconds is not None
+            else self.media_probe(source_path)
+        )
+        if source_duration is None:
+            raise ReviewRequired(
+                "Reference media duration is unknown; choose a bounded clip interval"
+            )
+        if source_duration > config.maximum_media_minutes * 60:
+            raise ReviewRequired("Reference voice exceeds the media processing budget")
+        cost = BudgetLedger(workspace / "audit/costs.jsonl", config.maximum_cost_usd)
+        operation_id = f"reference-embedding:{candidate_id}:{artifact.artifact_id}"
+        cost.reserve(operation_id, config.embedding_cost_usd)
+        provider = self.embedding_provider
+        try:
+            if provider is None:
+                if not config.embedding_model:
+                    raise ReviewRequired(
+                        "Configure an embedding model before voice approval"
                     )
-                    .record
+                provider = PyannoteEmbeddingProvider(
+                    config.embedding_model,
+                    token=os.environ.get("HF_TOKEN"),
+                    device=os.environ.get("VC_TRACE_AV_DEVICE"),
                 )
-                embedding = provider.embed(workspace / reference_artifact.relative_path)
-        else:
-            embedding = provider.embed(source_path)
+        except Exception:
+            cost.release(operation_id)
+            raise
+        reference_artifact = artifact
+        try:
+            if start_seconds is not None or end_seconds is not None:
+                if start_seconds is None or end_seconds is None:
+                    raise ValueError(
+                        "Both reference start and end seconds are required"
+                    )
+                with tempfile.TemporaryDirectory(
+                    prefix="vc-trace-reference-"
+                ) as directory:
+                    extracted = self.audio_extractor(
+                        source_path,
+                        Path(directory) / "reference.wav",
+                        start_seconds=start_seconds,
+                        end_seconds=end_seconds,
+                    )
+                    reference_artifact = (
+                        ArtifactStore(workspace)
+                        .put_bytes(
+                            extracted.read_bytes(),
+                            category="voice",
+                            suffix=".wav",
+                            source_url=artifact.source_url,
+                            mime_type="audio/wav",
+                            collection_method="human_selected_reference_segment",
+                            original_metadata={
+                                "candidate_id": selected.source_candidate_id,
+                                "reference_candidate_id": selected.candidate_id,
+                                "reviewer": reviewer,
+                                "start_seconds": start_seconds,
+                                "end_seconds": end_seconds,
+                                "duration_seconds": source_duration,
+                            },
+                            parent_artifact_ids=[artifact.artifact_id],
+                        )
+                        .record
+                    )
+                    embedding = provider.embed(
+                        workspace / reference_artifact.relative_path
+                    )
+            else:
+                embedding = provider.embed(source_path)
+            cost.settle(
+                operation_id,
+                config.embedding_cost_usd,
+                media_seconds=source_duration,
+                provider=provider.provider_name,
+                model=provider.model_name,
+            )
+        except Exception:
+            cost.release(operation_id)
+            raise
         selected.start_seconds = start_seconds
         selected.end_seconds = end_seconds
         selected.status = ReferenceVoiceStatus.VERIFIED_HUMAN
@@ -603,6 +646,7 @@ class Pipeline:
         )
         write_json(workspace / "identity/reference_voice_profile.json", profile)
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        summary.cost_usd = cost.spent
         self._event(
             workspace,
             summary.run_id,
@@ -685,6 +729,69 @@ class Pipeline:
             else None
         )
         candidate_map = {item.candidate_id: item for item in plan.candidates}
+        outcomes = {
+            item.candidate_id: AVCandidateOutcome(
+                candidate_id=item.candidate_id,
+                status="not_collected",
+                reason="No collected audiovisual artifact was available",
+            )
+            for item in plan.candidates
+            if item.approval_status
+            in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+            and item.material_role == MaterialRole.SPOKEN_BY_TARGET
+        }
+
+        def mark_outcome(
+            candidate_id: str, status: str, reason: str, artifact_id: str | None = None
+        ) -> None:
+            outcome = outcomes.get(candidate_id)
+            if outcome is None:
+                return
+            priority = {
+                "not_collected": 0,
+                "failed": 1,
+                "review_required": 2,
+                "excluded": 3,
+                "succeeded": 4,
+            }
+            if priority[status] >= priority[outcome.status]:
+                outcome.status = status
+                outcome.reason = reason
+            if artifact_id and artifact_id not in outcome.artifact_ids:
+                outcome.artifact_ids.append(artifact_id)
+
+        for document in documents:
+            if document.material_role != MaterialRole.SPOKEN_BY_TARGET:
+                continue
+            if document.inclusion_status == InclusionStatus.INCLUDED:
+                mark_outcome(
+                    document.source_candidate_id,
+                    "succeeded",
+                    "Human-verified supplied transcript passed corpus policy",
+                )
+            elif document.inclusion_status == InclusionStatus.EXCLUDED:
+                mark_outcome(
+                    document.source_candidate_id,
+                    "excluded",
+                    document.exclusion_reason or "Excluded by corpus policy",
+                )
+            else:
+                mark_outcome(
+                    document.source_candidate_id,
+                    "review_required",
+                    document.exclusion_reason or "Speech source requires review",
+                )
+
+        for artifact in artifacts:
+            candidate_id = str(artifact.original_metadata.get("candidate_id", ""))
+            exclusion = artifact.original_metadata.get("collection_exclusion", {})
+            if exclusion.get("status") == InclusionStatus.EXCLUDED:
+                mark_outcome(
+                    candidate_id,
+                    "excluded",
+                    str(exclusion.get("reason") or "Excluded by post-metadata rules"),
+                    artifact.artifact_id,
+                )
         audio_suffixes = {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac"}
         video_suffixes = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
         processed_seconds = 0.0
@@ -699,11 +806,14 @@ class Pipeline:
                 # This derivative is processed through its parent video branch.
                 # Treating it as a fresh source on resume duplicates the talk.
                 continue
-            is_audio = (artifact.mime_type or "").casefold().startswith("audio/") or (
-                path.suffix.casefold() in audio_suffixes
+            is_audio = (
+                artifact.collection_method == "yt_dlp_audio"
+                or (artifact.mime_type or "").casefold().startswith("audio/")
+                or path.suffix.casefold() in audio_suffixes
             )
-            is_video = (artifact.mime_type or "").casefold().startswith("video/") or (
-                path.suffix.casefold() in video_suffixes
+            is_video = not is_audio and (
+                (artifact.mime_type or "").casefold().startswith("video/")
+                or path.suffix.casefold() in video_suffixes
             )
             if not candidate or not (is_audio or is_video):
                 continue
@@ -716,6 +826,42 @@ class Pipeline:
                     "message": "Verified reference voice profile required",
                 }
                 append_jsonl(workspace / "audit/failures.jsonl", failure)
+                mark_outcome(
+                    candidate_id,
+                    "failed",
+                    failure["message"],
+                    artifact.artifact_id,
+                )
+                continue
+            probed_seconds = self.media_probe(path)
+            if probed_seconds is None:
+                failure = {
+                    "candidate_id": candidate_id,
+                    "artifact_id": artifact.artifact_id,
+                    "message": "Media duration is unknown; model calls were not started",
+                }
+                append_jsonl(workspace / "audit/failures.jsonl", failure)
+                mark_outcome(
+                    candidate_id,
+                    "failed",
+                    failure["message"],
+                    artifact.artifact_id,
+                )
+                continue
+            if processed_seconds + probed_seconds > config.maximum_media_minutes * 60:
+                failure = {
+                    "candidate_id": candidate_id,
+                    "artifact_id": artifact.artifact_id,
+                    "message": "Media processing budget exhausted before model calls",
+                    "media_seconds": probed_seconds,
+                }
+                append_jsonl(workspace / "audit/failures.jsonl", failure)
+                mark_outcome(
+                    candidate_id,
+                    "failed",
+                    failure["message"],
+                    artifact.artifact_id,
+                )
                 continue
             processing_artifact = artifact
             if is_video:
@@ -756,25 +902,15 @@ class Pipeline:
                             }
                         ),
                     )
+                    mark_outcome(
+                        candidate_id,
+                        "failed",
+                        f"Audio extraction failed: {type(error).__name__}",
+                        artifact.artifact_id,
+                    )
                     continue
                 path = workspace / processing_artifact.relative_path
             existing = self._caption_transcript(workspace, artifacts, candidate_id)
-            probed_seconds = self.media_probe(path)
-            if (
-                probed_seconds is not None
-                and processed_seconds + probed_seconds
-                > config.maximum_media_minutes * 60
-            ):
-                append_jsonl(
-                    workspace / "audit/failures.jsonl",
-                    {
-                        "candidate_id": candidate_id,
-                        "artifact_id": artifact.artifact_id,
-                        "message": "Media processing budget exhausted before model calls",
-                        "media_seconds": probed_seconds,
-                    },
-                )
-                continue
             operation_id = (
                 f"process-av:{candidate_id}:{processing_artifact.artifact_id}"
             )
@@ -799,11 +935,14 @@ class Pipeline:
                 if state.is_complete(operation_id, input_hash) and cache_path.exists():
                     result = TargetSpeechResult.model_validate(read_json(cache_path))
                 else:
+                    model_cost = config.diarization_cost_usd + (
+                        config.transcription_cost_usd if existing is None else 0
+                    )
+                    cost.reserve(operation_id, model_cost)
                     transcript_provider, diarization_provider = self._av_providers(
                         config, needs_transcript=existing is None
                     )
                     state.start_operation(operation_id, input_hash)
-                    cost.reserve(operation_id, 0)
                     result = process_target_speech(
                         path,
                         reference=profile,
@@ -816,8 +955,8 @@ class Pipeline:
                     write_json(cache_path, result)
                     cost.settle(
                         operation_id,
-                        0,
-                        media_seconds=result.media_seconds,
+                        model_cost,
+                        media_seconds=probed_seconds,
                         provider=diarization_provider.provider_name,
                         model=diarization_provider.model_name,
                     )
@@ -834,19 +973,14 @@ class Pipeline:
                     }
                 )
                 append_jsonl(workspace / "audit/failures.jsonl", failure)
+                mark_outcome(
+                    candidate_id,
+                    "failed",
+                    str(failure["message"]),
+                    artifact.artifact_id,
+                )
                 continue
-            if (
-                processed_seconds + result.media_seconds
-                > config.maximum_media_minutes * 60
-            ):
-                failure = {
-                    "candidate_id": candidate_id,
-                    "artifact_id": artifact.artifact_id,
-                    "message": "Media processing budget exhausted",
-                }
-                append_jsonl(workspace / "audit/failures.jsonl", failure)
-                continue
-            processed_seconds += result.media_seconds
+            processed_seconds += probed_seconds
             av_rows.append(
                 {
                     "artifact_id": artifact.artifact_id,
@@ -864,6 +998,35 @@ class Pipeline:
             )
             if document:
                 documents.append(document)
+                if document.inclusion_status == InclusionStatus.EXCLUDED:
+                    mark_outcome(
+                        candidate_id,
+                        "excluded",
+                        document.exclusion_reason or "Excluded by corpus policy",
+                        artifact.artifact_id,
+                    )
+                elif document.inclusion_status == InclusionStatus.INCLUDED:
+                    mark_outcome(
+                        candidate_id,
+                        "succeeded",
+                        "Target speech passed speaker attribution and corpus policy",
+                        artifact.artifact_id,
+                    )
+                else:
+                    mark_outcome(
+                        candidate_id,
+                        "review_required",
+                        document.exclusion_reason
+                        or "Target-speaker attribution requires review",
+                        artifact.artifact_id,
+                    )
+            else:
+                mark_outcome(
+                    candidate_id,
+                    "failed",
+                    "No target-speaker text was extracted",
+                    artifact.artifact_id,
+                )
             summary_for_event = RunSummary.model_validate(
                 read_json(workspace / "run_summary.json")
             )
@@ -882,6 +1045,10 @@ class Pipeline:
             )
         documents = deduplicate(documents)
         write_jsonl(workspace / "processed/av_attribution_results.jsonl", av_rows)
+        write_jsonl(
+            workspace / "processed/av_candidate_outcomes.jsonl",
+            sorted(outcomes.values(), key=lambda item: item.candidate_id),
+        )
         write_jsonl(workspace / "processed/documents.jsonl", documents)
         write_jsonl(
             workspace / "processed/excluded_documents.jsonl",
@@ -904,6 +1071,14 @@ class Pipeline:
         summary.status = "processed"
         summary.processed = len(documents)
         summary.media_seconds = processed_seconds
+        summary.processing_failures = sum(
+            item.status in {"failed", "not_collected"} for item in outcomes.values()
+        )
+        summary.unresolved = sum(
+            item.status == "review_required" for item in outcomes.values()
+        )
+        summary.failures = summary.collection_failures + summary.processing_failures
+        summary.cost_usd = cost.spent
         write_json(workspace / "run_summary.json", summary)
         return documents
 
@@ -951,6 +1126,32 @@ class Pipeline:
                 )
                 for url in sorted(urls)
             ]
+            for artifact_id in document.raw_artifact_ids:
+                for artifact in artifact_map.get(artifact_id, []):
+                    metadata = artifact.original_metadata
+                    decisions.append(
+                        rules.evaluate(
+                            url=artifact.source_url or document.canonical_url,
+                            title=str(metadata.get("title") or document.title or ""),
+                            text=document.text,
+                            channel=str(
+                                metadata.get("channel")
+                                or (candidate.channel if candidate else "")
+                            )
+                            or None,
+                            programme=str(
+                                metadata.get("programme")
+                                or (candidate.programme if candidate else "")
+                            )
+                            or None,
+                            company=str(
+                                metadata.get("company")
+                                or (candidate.company if candidate else "")
+                            )
+                            or None,
+                            stage="final_export_metadata",
+                        )
+                    )
             excluded = next(
                 (item for item in decisions if item.status == InclusionStatus.EXCLUDED),
                 None,
@@ -971,6 +1172,7 @@ class Pipeline:
                 document.exclusion_reason = review.reason
         rules_payload = [rule.model_dump(mode="json") for rule in rules.rules]
         write_json(workspace / "exclusion_rules_snapshot.json", rules_payload)
+        summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         manifest = export_workspace(
             workspace,
             investor_slug=investor_slug,
@@ -980,8 +1182,11 @@ class Pipeline:
             exclusion_rules_hash=sha256(
                 canonical_json(rules_payload).encode("utf-8")
             ).hexdigest(),
+            run_failures=summary.failures,
+            unresolved_sources=summary.unresolved,
+            allow_partial_run=config.allow_partial_run,
+            maximum_cost_usd=float(config.maximum_cost_usd),
         )
-        summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         summary.stages["export"] = "complete"
         summary.status = "exported"
         summary.finished_at = utc_now()

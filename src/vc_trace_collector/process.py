@@ -317,7 +317,9 @@ def target_speech_document(
         artifact=artifact,
         candidate=candidate,
         url=source_url,
-        title=candidate.title,
+        title=candidate.title
+        or str(artifact.original_metadata.get("title") or "").strip()
+        or None,
         text=text,
         authors=[target_name],
         published_at=None,
@@ -337,7 +339,15 @@ def target_speech_document(
         return None
     document.raw_artifact_ids = list(
         dict.fromkeys(
-            [artifact.artifact_id, *result.attribution.reference_artifact_ids]
+            [
+                artifact.artifact_id,
+                *(
+                    [result.transcript.source_artifact_id]
+                    if result.transcript.source_artifact_id
+                    else []
+                ),
+                *result.attribution.reference_artifact_ids,
+            ]
         )
     )
     if result.attribution.status not in {

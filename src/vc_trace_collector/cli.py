@@ -52,12 +52,16 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         transcription_model: str | None = typer.Option(None),
         diarization_model: str | None = typer.Option(None),
         embedding_model: str | None = typer.Option(None),
+        transcription_cost_usd: str = typer.Option("0"),
+        diarization_cost_usd: str = typer.Option("0"),
+        embedding_cost_usd: str = typer.Option("0"),
         max_cost_usd: str = typer.Option("10.00"),
         discovery_call_budget_usd: str | None = typer.Option(
             None, help="Conservative reserved cost for the discovery LLM call"
         ),
         max_search_operations: int = typer.Option(20),
         max_media_minutes: float = typer.Option(120),
+        allow_partial_run: bool = typer.Option(False),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
         config = RunConfig(
@@ -75,6 +79,9 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
             transcription_model=transcription_model,
             diarization_model=diarization_model,
             embedding_model=embedding_model,
+            transcription_cost_usd=Decimal(transcription_cost_usd),
+            diarization_cost_usd=Decimal(diarization_cost_usd),
+            embedding_cost_usd=Decimal(embedding_cost_usd),
             maximum_cost_usd=Decimal(max_cost_usd),
             discovery_call_budget_usd=(
                 Decimal(discovery_call_budget_usd)
@@ -83,6 +90,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
             ),
             maximum_search_operations=max_search_operations,
             maximum_media_minutes=max_media_minutes,
+            allow_partial_run=allow_partial_run,
         )
         result = pipeline_factory(output_dir).discover(
             name=name,
@@ -186,6 +194,9 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         transcription_model: str | None = typer.Option(None),
         diarization_model: str | None = typer.Option(None),
         embedding_model: str | None = typer.Option(None),
+        transcription_cost_usd: str = typer.Option("0"),
+        diarization_cost_usd: str = typer.Option("0"),
+        embedding_cost_usd: str = typer.Option("0"),
         max_cost_usd: str = typer.Option("10.00"),
         discovery_call_budget_usd: str | None = typer.Option(
             None, help="Conservative reserved cost for the discovery LLM call"
@@ -197,6 +208,10 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         collection_only: bool = typer.Option(False),
         processing_only: bool = typer.Option(False),
         export_only: bool = typer.Option(False),
+        allow_partial_run: bool = typer.Option(
+            False,
+            help="Permit verified export with explicitly reported source failures",
+        ),
     ) -> None:
         if sum((collection_only, processing_only, export_only)) > 1:
             raise typer.BadParameter("Only one execution-only mode may be selected")
@@ -221,6 +236,9 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 transcription_model=transcription_model,
                 diarization_model=diarization_model,
                 embedding_model=embedding_model,
+                transcription_cost_usd=Decimal(transcription_cost_usd),
+                diarization_cost_usd=Decimal(diarization_cost_usd),
+                embedding_cost_usd=Decimal(embedding_cost_usd),
                 maximum_cost_usd=Decimal(max_cost_usd),
                 discovery_call_budget_usd=(
                     Decimal(discovery_call_budget_usd)
@@ -229,6 +247,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 ),
                 maximum_search_operations=max_search_operations,
                 maximum_media_minutes=max_media_minutes,
+                allow_partial_run=allow_partial_run,
             )
         except ReviewRequired as error:
             typer.echo(f"Review required: {error}")

@@ -20,7 +20,7 @@ from vc_trace_collector.process import (
     process_artifact,
     target_speech_document,
 )
-from vc_trace_collector.storage import ArtifactStore, read_jsonl
+from vc_trace_collector.storage import ArtifactStore, read_json, read_jsonl
 
 
 def document(
@@ -300,6 +300,28 @@ def test_workspace_places_legacy_export_at_investor_root(tmp_path) -> None:
     assert read_jsonl(tmp_path / "blog.jsonl")[0]["full_text"] == "public writing"
     assert read_jsonl(tmp_path / "talks.jsonl") == []
     assert (tmp_path / "_manifest.json").is_file()
+
+
+def test_quality_report_fails_required_source_failures_unless_partial_is_explicit(
+    tmp_path,
+) -> None:
+    kwargs = {
+        "investor_slug": "michael-hyatt",
+        "identity_id": "identity:michael",
+        "documents": [document("blog", "public writing")],
+        "config_hash": "config-hash",
+        "exclusion_rules_hash": "rules-hash",
+        "run_failures": 1,
+    }
+
+    export_workspace(tmp_path, **kwargs)
+    assert read_json(tmp_path / "quality_report.json")["passed"] is False
+
+    export_workspace(tmp_path, **kwargs, allow_partial_run=True)
+    quality = read_json(tmp_path / "quality_report.json")
+    assert quality["passed"] is True
+    assert quality["counts"]["failures"] == 1
+    assert quality["checks"]["approved_work_complete"] is True
 
 
 def test_feed_entry_by_different_author_requires_review(tmp_path) -> None:
