@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Investor Notes</title>
+    <link>https://example.test/</link>
+    <description>Public writing</description>
+    <item>
+      <title>Building Durable Companies</title>
+      <link>https://example.test/durable?utm_source=feed</link>
+      <author>Michael Hyatt</author>
+      <pubDate>Mon, 01 Sep 2025 10:00:00 GMT</pubDate>
+      <description><![CDATA[<p>Durability starts with customer need.</p>]]></description>
+    </item>
+  </channel>
+</rss>
