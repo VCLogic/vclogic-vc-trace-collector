@@ -254,6 +254,7 @@ class DiscoveryService:
         self.discovery_provider = discovery_provider
         self.rules = rules or RuleSet.pitch_default()
         self.search_limit_per_query = search_limit_per_query
+        self.retrieved_fetches = []
 
     def discover(
         self,
@@ -269,6 +270,7 @@ class DiscoveryService:
 
         if known_profile_url:
             fetched = self.fetcher.fetch(known_profile_url)
+            self.retrieved_fetches.append(fetched)
             page = extract_page(fetched.content, fetched.final_url)
             exact_name = name.casefold() in f"{page.title}\n{page.text}".casefold()
             evidence_id = stable_id("evidence", page.canonical_url)
