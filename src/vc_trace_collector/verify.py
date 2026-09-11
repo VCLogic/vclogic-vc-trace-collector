@@ -27,7 +27,7 @@ from .models import (
     SpeakerStatus,
 )
 from .policy import ExclusionRule, RuleSet, eligible_for_corpus
-from .storage import canonical_json, read_json, read_jsonl
+from .storage import StateStore, canonical_json, read_json, read_jsonl
 
 
 class VerificationResult(BaseModel):
@@ -584,6 +584,15 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             "failures": failures,
             "unresolved_sources": unresolved,
         }
+        expected_retries = sum(
+            max(0, int(record.original_metadata.get("attempts", 1)) - 1)
+            for records in artifacts.values()
+            for record in records
+        )
+        state_path = workspace / "state/state.sqlite"
+        if state_path.exists():
+            expected_retries += StateStore(state_path).retry_count()
+        expected_counts["retries"] = expected_retries
         for name, expected in expected_counts.items():
             if quality.counts.get(name) != expected:
                 errors.append(f"Quality count does not match workspace: {name}")

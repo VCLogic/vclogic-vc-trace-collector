@@ -15,7 +15,14 @@ from .models import (
     QualityReport,
 )
 from .policy import eligible_for_corpus
-from .storage import canonical_json, read_json, read_jsonl, write_json, write_jsonl
+from .storage import (
+    StateStore,
+    canonical_json,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 
 
 def _video_id(document: CanonicalDocument) -> str:
@@ -151,6 +158,9 @@ def export_workspace(
         max(0, int(row.get("original_metadata", {}).get("attempts", 1)) - 1)
         for row in raw_records
     )
+    state_path = workspace / "state/state.sqlite"
+    if state_path.exists():
+        retry_count += StateStore(state_path).retry_count()
     duplicate_count = sum(
         bool(document.duplicate_of) or document.inclusion_status == "duplicate"
         for document in ordered

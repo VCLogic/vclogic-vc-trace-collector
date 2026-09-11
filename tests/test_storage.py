@@ -60,6 +60,16 @@ def test_state_store_resumes_successful_operations(tmp_path) -> None:
     assert reopened.output_id("fetch:one", "input-hash") == "artifact-1"
 
 
+def test_state_store_counts_retries_after_restarted_operation(tmp_path) -> None:
+    state = StateStore(tmp_path / "state.sqlite")
+    state.start_operation("fetch:one", "input-hash")
+    state.fail_operation("fetch:one", "input-hash", "temporary failure")
+    state.start_operation("fetch:one", "input-hash")
+    state.finish_operation("fetch:one", "input-hash", "artifact-1")
+
+    assert state.retry_count() == 1
+
+
 def test_jsonl_reader_ignores_blank_lines(tmp_path) -> None:
     path = tmp_path / "rows.jsonl"
     path.write_text('{"a": 1}\n\n{"a": 2}\n')

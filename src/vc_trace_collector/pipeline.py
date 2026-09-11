@@ -546,6 +546,8 @@ class Pipeline:
             ) from error
         config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
         source_path = workspace / artifact.relative_path
+        if (start_seconds is None) != (end_seconds is None):
+            raise ValueError("Both reference start and end seconds are required")
         source_duration = (
             end_seconds - start_seconds
             if start_seconds is not None and end_seconds is not None
@@ -582,10 +584,7 @@ class Pipeline:
         reference_artifact = artifact
         try:
             if start_seconds is not None or end_seconds is not None:
-                if start_seconds is None or end_seconds is None:
-                    raise ValueError(
-                        "Both reference start and end seconds are required"
-                    )
+                assert start_seconds is not None and end_seconds is not None
                 with tempfile.TemporaryDirectory(
                     prefix="vc-trace-reference-"
                 ) as directory:

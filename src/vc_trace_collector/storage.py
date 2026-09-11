@@ -271,6 +271,13 @@ class StateStore:
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
+    def retry_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(MAX(attempts - 1, 0)), 0) AS count FROM operations"
+            ).fetchone()
+        return int(row["count"])
+
     def _row(self, operation_id: str, input_hash: str) -> sqlite3.Row | None:
         with self._connect() as connection:
             return connection.execute(
