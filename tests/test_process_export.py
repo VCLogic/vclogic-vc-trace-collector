@@ -1,5 +1,6 @@
 from hashlib import sha256
 
+from vc_trace_collector.av import AlignedText, TargetSpeechResult
 from vc_trace_collector.export import export_persona_sources, export_workspace
 from vc_trace_collector.models import (
     CanonicalDocument,
@@ -10,9 +11,15 @@ from vc_trace_collector.models import (
     SourceType,
     SpeakerAttribution,
     SpeakerStatus,
+    TranscriptInfo,
 )
 from vc_trace_collector.policy import RuleSet, eligible_for_corpus
-from vc_trace_collector.process import deduplicate, normalize_text, process_artifact
+from vc_trace_collector.process import (
+    deduplicate,
+    normalize_text,
+    process_artifact,
+    target_speech_document,
+)
 from vc_trace_collector.storage import ArtifactStore, read_jsonl
 
 
@@ -92,6 +99,67 @@ def test_human_verified_supplied_transcript_is_eligible_target_speech(tmp_path) 
     assert len(result) == 1
     assert result[0].speaker_attribution.status == SpeakerStatus.VERIFIED_HUMAN
     assert eligible_for_corpus(result[0])
+
+
+def test_uncertain_model_speech_is_routed_to_review_not_corpus(tmp_path) -> None:
+    candidate = SourceCandidate(
+        candidate_id="candidate:talk",
+        url="https://example.test/talk",
+        canonical_url="https://example.test/talk",
+        source_type=SourceType.PODCAST,
+        material_role=MaterialRole.SPOKEN_BY_TARGET,
+        discovery_queries=["query"],
+        identity_confidence=Confidence(score=0.95, method="test", version="1"),
+        source_confidence=Confidence(score=0.95, method="test", version="1"),
+        approval_status="approved",
+    )
+    artifact = (
+        ArtifactStore(tmp_path)
+        .put_bytes(
+            b"audio",
+            category="podcast",
+            suffix=".mp3",
+            source_url=candidate.url,
+            mime_type="audio/mpeg",
+            original_metadata={"candidate_id": candidate.candidate_id},
+        )
+        .record
+    )
+    attribution = SpeakerAttribution(
+        status=SpeakerStatus.UNCERTAIN,
+        speaker_label="SPEAKER_1",
+        score=0.8,
+        runner_up_score=0.75,
+        margin=0.05,
+        minimum_score=0.75,
+        minimum_margin=0.1,
+    )
+    segment = AlignedText(
+        start_seconds=1,
+        end_seconds=3,
+        text="Potential target speech",
+        speaker_label="SPEAKER_1",
+        overlap_seconds=2,
+    )
+
+    result = target_speech_document(
+        investor_slug="michael-hyatt",
+        target_name="Michael Hyatt",
+        artifact=artifact,
+        candidate=candidate,
+        result=TargetSpeechResult(
+            transcript=TranscriptInfo(method="speech_to_text"),
+            attribution=attribution,
+            aligned_segments=[segment],
+            target_segments=[segment],
+            media_seconds=3,
+        ),
+        rules=RuleSet.pitch_default(),
+    )
+
+    assert result is not None
+    assert result.inclusion_status == InclusionStatus.REVIEW_REQUIRED
+    assert not eligible_for_corpus(result)
 
 
 def test_exact_duplicate_retains_relationship() -> None:
