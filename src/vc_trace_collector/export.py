@@ -188,7 +188,8 @@ def export_workspace(
         "transcript_coverage_complete": len(transcribed_speech) == len(corpus_speech),
         "budget_within_limit": maximum_cost_usd is None
         or provider_cost <= maximum_cost_usd,
-        "approved_work_complete": approved_work_complete or allow_partial_run,
+        "approved_work_complete": approved_work_complete,
+        "partial_run_policy_satisfied": approved_work_complete or allow_partial_run,
     }
     warnings: list[str] = []
     if not included:
@@ -201,7 +202,9 @@ def export_workspace(
         warnings.append("Corpus has fewer than two source types")
     quality = QualityReport(
         investor_slug=investor_slug,
-        passed=all(checks.values()),
+        passed=all(
+            value for name, value in checks.items() if name != "approved_work_complete"
+        ),
         checks=checks,
         counts={
             "documents": len(ordered),

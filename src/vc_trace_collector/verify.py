@@ -471,6 +471,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             "transcript_coverage_complete",
             "budget_within_limit",
             "approved_work_complete",
+            "partial_run_policy_satisfied",
         }
         if not required_checks.issubset(quality.checks):
             errors.append("Quality report is missing required checks")

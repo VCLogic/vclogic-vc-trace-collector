@@ -321,7 +321,8 @@ def test_quality_report_fails_required_source_failures_unless_partial_is_explici
     quality = read_json(tmp_path / "quality_report.json")
     assert quality["passed"] is True
     assert quality["counts"]["failures"] == 1
-    assert quality["checks"]["approved_work_complete"] is True
+    assert quality["checks"]["approved_work_complete"] is False
+    assert quality["checks"]["partial_run_policy_satisfied"] is True
 
 
 def test_feed_entry_by_different_author_requires_review(tmp_path) -> None:
