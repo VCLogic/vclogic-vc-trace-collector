@@ -462,6 +462,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
     }
     if corpus_versions != processed_versions:
         errors.append("Corpus documents do not match eligible processed documents")
+    quality = None
     try:
         quality = QualityReport.model_validate(
             read_json(workspace / "quality_report.json")
@@ -509,6 +510,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
     if incomplete and not (config and config.allow_partial_run):
         errors.append("Approved audiovisual work is incomplete")
     summary_path = workspace / "run_summary.json"
+    summary = None
     if summary_path.exists():
         summary = _load_model(summary_path, RunSummary, "run summary", errors)
         if summary is not None:
@@ -519,6 +521,79 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 errors.append("Run summary failure totals are inconsistent")
             if incomplete and not (config and config.allow_partial_run):
                 errors.append("Run summary contains unresolved required work")
+    if quality is not None:
+        corpus_speech = [
+            item for item in documents if item.material_role == "spoken_by_target"
+        ]
+        verified_speech = [
+            item
+            for item in corpus_speech
+            if item.speaker_attribution.status
+            in {SpeakerStatus.ACCEPTED_MODEL, SpeakerStatus.VERIFIED_HUMAN}
+        ]
+        transcribed_speech = [
+            item for item in corpus_speech if item.transcript.method != "none"
+        ]
+        failures = summary.failures if summary is not None else 0
+        unresolved = summary.unresolved if summary is not None else 0
+        provider_cost = sum(
+            float(row.get("amount_usd", 0))
+            for row in read_jsonl(workspace / "audit/costs.jsonl")
+            if row.get("kind") == "settlement"
+        )
+        actual_complete = failures == 0 and unresolved == 0
+        expected_checks = {
+            "corpus_nonempty": bool(documents),
+            "excluded_absent": all(eligible_for_corpus(item) for item in documents),
+            "lineage_present": all(bool(item.raw_artifact_ids) for item in processed),
+            "metadata_complete": all(
+                bool(item.title) and bool(item.canonical_url or item.local_source_path)
+                for item in documents
+            ),
+            "first_person_only": all(
+                item.material_role in {"authored_by_target", "spoken_by_target"}
+                for item in documents
+            ),
+            "speaker_attribution_complete": len(verified_speech) == len(corpus_speech),
+            "transcript_coverage_complete": len(transcribed_speech)
+            == len(corpus_speech),
+            "budget_within_limit": config is None
+            or provider_cost <= float(config.maximum_cost_usd),
+            "approved_work_complete": actual_complete,
+            "partial_run_policy_satisfied": actual_complete
+            or bool(config and config.allow_partial_run),
+        }
+        for name, expected in expected_checks.items():
+            if quality.checks.get(name) != expected:
+                errors.append(f"Quality check does not match workspace: {name}")
+        expected_counts = {
+            "documents": len(processed),
+            "included": len(documents),
+            "excluded_or_pending": sum(
+                not eligible_for_corpus(item) for item in processed
+            ),
+            "target_speech": sum(
+                item.material_role == "spoken_by_target" for item in processed
+            ),
+            "verified_target_speech": len(verified_speech),
+            "duplicates": sum(
+                bool(item.duplicate_of) or item.inclusion_status == "duplicate"
+                for item in processed
+            ),
+            "source_types": len({item.source_type for item in documents}),
+            "failures": failures,
+            "unresolved_sources": unresolved,
+        }
+        for name, expected in expected_counts.items():
+            if quality.counts.get(name) != expected:
+                errors.append(f"Quality count does not match workspace: {name}")
+        expected_passed = all(
+            value
+            for name, value in expected_checks.items()
+            if name != "approved_work_complete"
+        )
+        if quality.passed != expected_passed:
+            errors.append("Quality pass result does not match workspace")
     return VerificationResult(
         passed=not errors,
         errors=errors,
