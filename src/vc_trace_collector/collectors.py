@@ -467,7 +467,6 @@ def collect_approved_sources(
             )
             continue
 
-        collector = registry.get(candidate.source_type)
         input_hash = sha256(
             canonical_json(candidate.model_dump(mode="json")).encode("utf-8")
         ).hexdigest()
@@ -486,6 +485,7 @@ def collect_approved_sources(
             context.budget.reserve(operation_id, candidate.estimated_cost_usd)
         context.state.start_operation(operation_id, input_hash)
         try:
+            collector = registry.get(candidate.source_type)
             records = collector.collect(candidate, context)
         except Exception as error:
             if context.budget:

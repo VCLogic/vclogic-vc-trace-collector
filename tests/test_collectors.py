@@ -101,6 +101,20 @@ def test_one_failed_source_does_not_remove_success(tmp_path) -> None:
     assert next((tmp_path / "raw/web").rglob("*.html")).exists()
 
 
+def test_unavailable_collector_is_isolated_from_supported_sources(tmp_path) -> None:
+    collector = StaticCollector()
+
+    result = collect_approved_sources(
+        plan(candidate("unsupported", SourceType.X), candidate("success")),
+        context=context(tmp_path),
+        registry=CollectorRegistry([collector]),
+    )
+
+    assert result.failed == 1
+    assert result.collected == 1
+    assert result.failures[0]["error_type"] == "CollectorUnavailable"
+
+
 def test_completed_collection_is_skipped_on_resume(tmp_path) -> None:
     collector = StaticCollector()
     registry = CollectorRegistry([collector])
