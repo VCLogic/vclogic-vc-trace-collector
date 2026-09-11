@@ -48,7 +48,15 @@ def _inclusion(
     title: str | None,
     text: str,
 ) -> tuple[InclusionStatus, str | None]:
-    policy = rules.evaluate(url=url, title=title, text=text, stage="post_extraction")
+    policy = rules.evaluate(
+        url=url,
+        title=title,
+        text=text,
+        channel=candidate.channel,
+        programme=candidate.programme,
+        company=candidate.company,
+        stage="post_extraction",
+    )
     if policy.status == PolicyInclusionStatus.EXCLUDED:
         return InclusionStatus.EXCLUDED, policy.reason
     if policy.status == PolicyInclusionStatus.REVIEW_REQUIRED:
@@ -173,6 +181,9 @@ def process_artifact(
                 url=url,
                 title=kwargs.get("title"),
                 text=normalized_text,
+                channel=candidate.channel,
+                programme=candidate.programme,
+                company=candidate.company,
                 stage="post_extraction",
             )
             for url in sorted(provenance_urls)

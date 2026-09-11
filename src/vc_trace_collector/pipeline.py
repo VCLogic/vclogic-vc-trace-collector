@@ -471,6 +471,8 @@ class Pipeline:
         result = collect_approved_sources(
             plan, context=context, registry=default_registry()
         )
+        write_json(workspace / "discovery/source_plan.json", plan)
+        self._write_candidate_views(workspace, plan)
         voice_path = workspace / "identity/reference_voice_candidates.jsonl"
         voice_candidates = [
             ReferenceVoiceCandidate.model_validate(row)
@@ -693,6 +695,10 @@ class Pipeline:
             candidate_id = str(artifact.original_metadata.get("candidate_id", ""))
             candidate = candidate_map.get(candidate_id)
             path = workspace / artifact.relative_path
+            if artifact.collection_method == "ffmpeg_audio_extraction":
+                # This derivative is processed through its parent video branch.
+                # Treating it as a fresh source on resume duplicates the talk.
+                continue
             is_audio = (artifact.mime_type or "").casefold().startswith("audio/") or (
                 path.suffix.casefold() in audio_suffixes
             )
@@ -938,6 +944,9 @@ class Pipeline:
                     url=url,
                     title=document.title,
                     text=document.text,
+                    channel=candidate.channel if candidate else None,
+                    programme=candidate.programme if candidate else None,
+                    company=candidate.company if candidate else None,
                     stage="final_export",
                 )
                 for url in sorted(urls)

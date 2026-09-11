@@ -108,6 +108,10 @@ def apply_decisions(plan: SourcePlan, decisions: list[SourceDecision]) -> Source
                     "Speaker verification requires spoken_by_target material"
                 )
             candidate.speaker_verified_by = decision.decided_by
+        for field in ("channel", "programme", "company"):
+            value = getattr(decision, field)
+            if value is not None:
+                setattr(candidate, field, value)
     return updated
 
 
@@ -234,6 +238,13 @@ class PodcastCollector:
             raise CollectorUnavailable("Podcast collector requires an HTTP fetcher")
         fetched = context.fetcher.fetch(source.url)
         mime = fetched.headers.get("content-type", "text/html")
+        soup = BeautifulSoup(fetched.content, "html.parser")
+        site_name = soup.find("meta", attrs={"property": "og:site_name"})
+        author = soup.find("meta", attrs={"name": "author"})
+        if site_name and site_name.get("content"):
+            source.programme = str(site_name["content"]).strip()
+        if author and author.get("content"):
+            source.channel = str(author["content"]).strip()
         page = context.artifacts.put_bytes(
             fetched.content,
             category="podcast",
@@ -343,6 +354,11 @@ class YouTubeCollector:
                 "Install the youtube extra to use yt-dlp"
             ) from error
         metadata = json.loads(completed.stdout)
+        source.channel = (
+            str(metadata.get("channel") or metadata.get("uploader") or "").strip()
+            or None
+        )
+        source.programme = str(metadata.get("series") or "").strip() or None
         video_id = str(metadata.get("id", ""))
         records = [
             context.artifacts.put_bytes(
@@ -529,6 +545,9 @@ def collect_approved_sources(
             url=candidate.canonical_url,
             title=candidate.title,
             text=candidate.description,
+            channel=candidate.channel,
+            programme=candidate.programme,
+            company=candidate.company,
             stage="pre_collection",
         )
         if exclusion.status == InclusionStatus.EXCLUDED:

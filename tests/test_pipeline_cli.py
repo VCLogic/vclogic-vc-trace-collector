@@ -449,18 +449,36 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
         reviewer="reviewer",
     )
     documents = collector.process("michael-hyatt")
+    resumed_documents = collector.process("michael-hyatt")
     collector.export("michael-hyatt")
     verified = collector.verify("michael-hyatt")
 
     assert verified.passed is True
     speech = [item for item in documents if item.material_role == "spoken_by_target"]
     assert len(speech) == 1
+    assert (
+        len(
+            [
+                item
+                for item in resumed_documents
+                if item.material_role == "spoken_by_target"
+            ]
+        )
+        == 1
+    )
     assert speech[0].speaker_attribution.status == "accepted_model"
     assert any(
         row["collection_method"] == "ffmpeg_audio_extraction"
         for path in (output / "michael-hyatt/raw/video").rglob("*.metadata.json")
         for row in [read_json(path)]
     )
+    derived = [
+        read_json(path)
+        for path in (output / "michael-hyatt/raw/video").rglob("*.metadata.json")
+        if read_json(path)["collection_method"] == "ffmpeg_audio_extraction"
+    ]
+    assert len(derived) == 1
+    assert derived[0]["artifact_id"] not in derived[0]["parent_artifact_ids"]
     talks = read_jsonl(output / "michael-hyatt/talks.jsonl")
     assert [item["text"] for item in talks] == ["I invest in durable customer value."]
 

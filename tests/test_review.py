@@ -77,6 +77,29 @@ def test_review_decision_can_attest_supplied_transcript_speaker() -> None:
     assert updated.candidates[0].speaker_verified_by == "reviewer"
 
 
+def test_review_decision_can_record_channel_programme_and_company() -> None:
+    source_plan = plan(candidate("pending", status=ApprovalStatus.PENDING))
+
+    updated = apply_decisions(
+        source_plan,
+        [
+            SourceDecision(
+                candidate_id="pending",
+                status=ApprovalStatus.APPROVED,
+                reason="Human annotated source provenance",
+                decided_by="reviewer",
+                channel="Example Channel",
+                programme="Example Programme",
+                company="Example Company",
+            )
+        ],
+    )
+
+    assert updated.candidates[0].channel == "Example Channel"
+    assert updated.candidates[0].programme == "Example Programme"
+    assert updated.candidates[0].company == "Example Company"
+
+
 def test_review_rejects_unknown_candidate_id() -> None:
     with pytest.raises(KeyError):
         apply_decisions(

@@ -139,6 +139,9 @@ class SourceCandidate(StrictModel):
     material_role: MaterialRole = MaterialRole.UNKNOWN
     title: str | None = None
     description: str | None = None
+    channel: str | None = None
+    programme: str | None = None
+    company: str | None = None
     discovered_via: str = "generated_query"
     discovery_queries: list[str] = Field(min_length=1)
     evidence_ids: list[str] = Field(default_factory=list)
@@ -170,6 +173,9 @@ class SourceDecision(StrictModel):
     decided_by: str
     material_role: MaterialRole | None = None
     speaker_verified: bool = False
+    channel: str | None = None
+    programme: str | None = None
+    company: str | None = None
     decided_at: AwareDatetime = Field(default_factory=utc_now)
 
 

@@ -13,7 +13,7 @@ from vc_trace_collector.models import (
     SpeakerStatus,
     TranscriptInfo,
 )
-from vc_trace_collector.policy import RuleSet, eligible_for_corpus
+from vc_trace_collector.policy import ExclusionRule, RuleSet, eligible_for_corpus
 from vc_trace_collector.process import (
     deduplicate,
     normalize_text,
@@ -160,6 +160,55 @@ def test_uncertain_model_speech_is_routed_to_review_not_corpus(tmp_path) -> None
     assert result is not None
     assert result.inclusion_status == InclusionStatus.REVIEW_REQUIRED
     assert not eligible_for_corpus(result)
+
+
+def test_channel_rule_is_applied_during_document_processing(tmp_path) -> None:
+    candidate = SourceCandidate(
+        candidate_id="candidate:blocked-channel",
+        url=(tmp_path / "article.txt").as_uri(),
+        canonical_url=(tmp_path / "article.txt").as_uri(),
+        source_type=SourceType.SUPPLIED,
+        material_role=MaterialRole.AUTHORED_BY_TARGET,
+        channel="Outcome Reveal Show",
+        discovery_queries=["query"],
+        identity_confidence=Confidence(score=0.95, method="test", version="1"),
+        source_confidence=Confidence(score=0.95, method="test", version="1"),
+        approval_status="approved",
+    )
+    artifact = (
+        ArtifactStore(tmp_path)
+        .put_bytes(
+            b"Public investor writing",
+            category="supplied",
+            suffix=".txt",
+            source_path=str(tmp_path / "article.txt"),
+            mime_type="text/plain",
+            original_metadata={"candidate_id": candidate.candidate_id},
+        )
+        .record
+    )
+    rules = RuleSet(
+        [
+            ExclusionRule(
+                rule_id="blocked-channel",
+                action="exclude",
+                reason="Evaluation leakage channel",
+                channels=["Outcome Reveal Show"],
+            )
+        ]
+    )
+
+    result = process_artifact(
+        tmp_path,
+        artifact,
+        candidate,
+        investor_slug="michael-hyatt",
+        target_name="Michael Hyatt",
+        rules=rules,
+    )
+
+    assert result[0].inclusion_status == InclusionStatus.EXCLUDED
+    assert result[0].exclusion_reason == "Evaluation leakage channel"
 
 
 def test_exact_duplicate_retains_relationship() -> None:

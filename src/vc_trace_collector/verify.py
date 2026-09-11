@@ -305,6 +305,9 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                     url=url,
                     title=document.title,
                     text=document.text,
+                    channel=candidate.channel if candidate else None,
+                    programme=candidate.programme if candidate else None,
+                    company=candidate.company if candidate else None,
                     stage="verification",
                 ).status
                 != "included"
