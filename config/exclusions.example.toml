@@ -1,0 +1,15 @@
+[[rules]]
+rule_id = "exclude-the-pitch"
+version = "1"
+action = "exclude"
+reason = "Downstream leakage firewall: The Pitch sources are prohibited"
+domains = ["thepitch.show"]
+channels = ["The Pitch Show"]
+programmes = ["The Pitch"]
+
+[[rules]]
+rule_id = "review-pitch-outcomes"
+version = "1"
+action = "review"
+reason = "Material may reveal target-pitch outcomes"
+keywords = ["investment outcome", "funded on the pitch", "declined to invest"]

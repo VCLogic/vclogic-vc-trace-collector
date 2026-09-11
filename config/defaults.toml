@@ -1,0 +1,26 @@
+[network]
+user_agent = "vc-trace-collector/0.1 (+public research; contact configured by operator)"
+timeout_seconds = 30
+maximum_response_bytes = 10000000
+minimum_host_interval_seconds = 1.0
+maximum_redirects = 5
+
+[budget]
+maximum_cost_usd = "10.00"
+maximum_search_operations = 20
+maximum_media_minutes = 120
+
+[confidence]
+automatic_identity_minimum = 0.90
+automatic_source_minimum = 0.85
+speaker_minimum_score = 0.75
+speaker_minimum_margin = 0.10
+
+[models]
+discovery = ""
+transcription = ""
+diarization = ""
+embedding = ""
+
+[collection]
+approved_source_types = ["web_article", "rss_feed", "substack", "medium", "youtube", "supplied"]
