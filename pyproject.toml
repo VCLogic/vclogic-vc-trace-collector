@@ -47,3 +47,12 @@ ignore = ["B008", "BLE001"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vc_trace_collector"]
+
+[tool.hatch.build]
+exclude = [
+    "/.pytest_cache",
+    "/.ruff_cache",
+    "/.venv",
+    "/.worktrees",
+    "/outputs",
+]

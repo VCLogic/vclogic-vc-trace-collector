@@ -43,7 +43,7 @@ content, not trust a URL slug.
 
 ## Verification performed
 
-- Offline suite: 96 tests passed, one live test deselected at the time this
+- Offline suite: 98 tests passed, one live test deselected at the time this
   report was updated.
 - Opt-in network contract: the Michael Hyatt profile/voice discovery test
   passed against the public sites.

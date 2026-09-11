@@ -7,6 +7,7 @@ from vc_trace_collector.models import (
     Affiliation,
     Confidence,
     MaterialRole,
+    ReferenceVoiceCandidate,
     ResolutionStatus,
     ResolvedIdentity,
     SourceCandidate,
@@ -51,3 +52,14 @@ def test_source_candidate_requires_discovery_provenance() -> None:
 def test_confidence_rejects_out_of_range_scores() -> None:
     with pytest.raises(ValidationError):
         Confidence(score=1.1, method="bad", version="1")
+
+
+def test_reference_voice_interval_must_be_complete_and_ordered() -> None:
+    with pytest.raises(ValidationError, match="both start and end"):
+        ReferenceVoiceCandidate(
+            candidate_id="voice:1",
+            source_candidate_id="candidate:1",
+            source_url="https://example.test/voice",
+            start_seconds=10,
+            identity_confidence=Confidence(score=0.9, method="test", version="1"),
+        )
