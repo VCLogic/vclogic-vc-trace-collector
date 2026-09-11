@@ -18,7 +18,8 @@ The MVP is a modular Python package with:
 - optional SearXNG search and optional structured LLM refinement;
 - human review or confidence-gated automatic approval;
 - safe, rate-limited web/feed collection, supplied-file ingestion, optional
-  YouTube metadata/caption/audio collection, and bounded podcast-enclosure downloads;
+  YouTube metadata/caption/audio collection, and bounded podcast-enclosure
+  downloads;
 - configurable exclusion rules with a built-in The Pitch leakage firewall;
 - content-addressed raw artifacts, resumable SQLite operation state, sanitized
   audit events, canonical documents, deterministic manifests, and verification;
@@ -61,7 +62,7 @@ Discovery always creates a reviewable plan before collection:
 uv run vc-trace-collector collect \
   --name "Michael Hyatt" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --source-url "https://podcasters.spotify.com/..." \
+  --source-url "https://tanktalks.substack.com/p/tank-talk-michael-hyatt-hyatt-family" \
   --transcription-model small.en \
   --diarization-model "operator-selected-pyannote-pipeline" \
   --embedding-model "operator-selected-pyannote-embedding"
@@ -144,8 +145,8 @@ export VC_TRACE_DISCOVERY_MODEL="provider-model-name"
 The LLM receives structured public evidence and returns schema-validated JSON.
 The audit stores the model/provider operation, token usage when returned, and a
 concise action record, never private chain-of-thought. Search, fetching,
-approval, hashing, policy evaluation,
-normalization, deduplication, export, and verification remain deterministic.
+approval, hashing, policy evaluation, normalization, deduplication, export, and
+verification remain deterministic.
 
 Do not commit these variables. Copy `.env.example` only as a list of supported
 names and load credentials through your normal secret manager or shell.
