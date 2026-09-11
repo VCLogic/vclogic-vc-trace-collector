@@ -1,6 +1,7 @@
 import socket
 from decimal import Decimal
 from pathlib import Path
+from typing import ClassVar
 
 import httpx
 import pytest
@@ -13,7 +14,7 @@ from vc_trace_collector.av import (
     TranscriptResult,
 )
 from vc_trace_collector.cli import create_app
-from vc_trace_collector.collectors import ReviewRequired
+from vc_trace_collector.collectors import CollectorRegistry, ReviewRequired
 from vc_trace_collector.config import RunConfig
 from vc_trace_collector.fetch import Fetcher
 from vc_trace_collector.models import (
@@ -23,6 +24,7 @@ from vc_trace_collector.models import (
     TranscriptInfo,
 )
 from vc_trace_collector.pipeline import Pipeline
+from vc_trace_collector.policy import RuleSet
 from vc_trace_collector.storage import read_json, read_jsonl
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -240,6 +242,7 @@ def test_collected_voice_audio_is_linked_to_reference_candidate(tmp_path) -> Non
                 status=ApprovalStatus.APPROVED,
                 reason="Human confirmed interview identity",
                 decided_by="reviewer",
+                material_role=MaterialRole.REFERENCE_VOICE,
             )
         ],
         reviewer="reviewer",
@@ -251,6 +254,69 @@ def test_collected_voice_audio_is_linked_to_reference_candidate(tmp_path) -> Non
     voice = read_jsonl(
         tmp_path / "michael-hyatt/identity/reference_voice_candidates.jsonl"
     )[0]
+    assert voice["artifact_id"].startswith("sha256:")
+
+
+def test_youtube_webm_audio_is_linked_to_reference_candidate(
+    tmp_path, monkeypatch
+) -> None:
+    youtube_url = "https://www.youtube.com/watch?v=voice123"
+    collector = pipeline(tmp_path)
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=[youtube_url],
+    )
+    collector.rules = RuleSet([])
+    youtube = next(
+        item for item in discovered.source_plan.candidates if item.url == youtube_url
+    )
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=youtube.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human confirmed interview identity",
+                decided_by="reviewer",
+                material_role=MaterialRole.REFERENCE_VOICE,
+            )
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+
+    class WebmAudioCollector:
+        source_types: ClassVar = {youtube.source_type}
+
+        def collect(self, source, context):
+            return [
+                context.artifacts.put_bytes(
+                    b"webm audio fixture",
+                    category="video",
+                    suffix=".webm",
+                    source_url=source.url,
+                    mime_type="video/webm",
+                    collection_method="yt_dlp_audio",
+                    original_metadata={"candidate_id": source.candidate_id},
+                ).record
+            ]
+
+    monkeypatch.setattr(
+        "vc_trace_collector.pipeline.default_registry",
+        lambda: CollectorRegistry([WebmAudioCollector()]),
+    )
+    collection = collector.collect_sources("michael-hyatt")
+
+    voices = read_jsonl(
+        tmp_path / "michael-hyatt/identity/reference_voice_candidates.jsonl"
+    )
+    voice = next(
+        item for item in voices if item["source_candidate_id"] == youtube.candidate_id
+    )
+    assert collection.failed == 0
+    assert collection.collected == 1
+    assert len(collection.artifacts) == 1
     assert voice["artifact_id"].startswith("sha256:")
 
 
@@ -549,6 +615,101 @@ def test_failed_approved_av_source_prevents_otherwise_nonempty_export(tmp_path) 
     assert quality["counts"]["included"] == 1
     assert quality["counts"]["failures"] == 1
     assert quality["passed"] is False
+
+
+def test_media_limit_is_shared_by_reference_and_target_processing(tmp_path) -> None:
+    reference_audio = tmp_path / "known-michael-hyatt.wav"
+    reference_audio.write_bytes(b"reference voice fixture")
+    interview_audio = tmp_path / "michael-hyatt-interview.mp4"
+    interview_audio.write_bytes(b"video interview fixture")
+    output = tmp_path / "outputs"
+    base = pipeline(output)
+
+    def fixture_audio_extractor(source, destination, **kwargs):
+        destination.write_bytes(b"extracted audio fixture")
+        return destination
+
+    collector = Pipeline(
+        output,
+        fetcher=base.fetcher,
+        embedding_provider=FixtureEmbedding(),
+        transcript_provider=FixtureTranscript(),
+        diarization_provider=FixtureDiarization(),
+        audio_extractor=fixture_audio_extractor,
+        media_probe=lambda _path: 50.0,
+    )
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[reference_audio, interview_audio],
+        config=RunConfig(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            supplied_files=[str(reference_audio), str(interview_audio)],
+            output_dir=str(output),
+            transcription_model="fixture-transcript",
+            diarization_model="fixture-diarization",
+            embedding_model="fixture-voice-embedding",
+            maximum_media_minutes=1,
+        ),
+    )
+    supplied = [
+        item
+        for item in discovered.source_plan.candidates
+        if item.source_type == "supplied"
+    ]
+    reference = next(item for item in supplied if "known-" in item.url)
+    interview = next(item for item in supplied if "interview" in item.url)
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=reference.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human verified isolated reference voice",
+                decided_by="reviewer",
+                material_role=MaterialRole.REFERENCE_VOICE,
+            ),
+            SourceDecision(
+                candidate_id=interview.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human verified target interview",
+                decided_by="reviewer",
+                material_role=MaterialRole.SPOKEN_BY_TARGET,
+            ),
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    collector.collect_sources("michael-hyatt")
+    voice = read_jsonl(
+        output / "michael-hyatt/identity/reference_voice_candidates.jsonl"
+    )[0]
+    collector.approve_reference_voice(
+        "michael-hyatt",
+        candidate_id=voice["candidate_id"],
+        reviewer="reviewer",
+    )
+
+    collector.process("michael-hyatt")
+
+    outcomes = read_jsonl(
+        output / "michael-hyatt/processed/av_candidate_outcomes.jsonl"
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0]["candidate_id"] == interview.candidate_id
+    assert outcomes[0]["status"] == "failed"
+    assert outcomes[0]["reason"] == (
+        "Media processing budget exhausted before model calls"
+    )
+    settlements = [
+        row
+        for row in read_jsonl(output / "michael-hyatt/audit/costs.jsonl")
+        if row["kind"] == "settlement"
+    ]
+    assert [row["media_seconds"] for row in settlements if row["media_seconds"]] == [
+        50.0
+    ]
 
 
 def test_cli_collect_exits_nonzero_when_export_cannot_verify(tmp_path) -> None:

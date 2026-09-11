@@ -446,16 +446,38 @@ class YouTubeCollector:
             str(metadata.get("channel") or metadata.get("uploader") or "").strip()
             or None
         )
+        channel_id = (
+            str(metadata.get("channel_id") or metadata.get("uploader_id") or "").strip()
+            or None
+        )
         programme = str(metadata.get("series") or "").strip() or None
         discovered_title = str(metadata.get("title") or "").strip() or None
-        exclusion = context.rules.evaluate(
-            url=source.canonical_url,
-            title=source.title or discovered_title,
-            text=str(metadata.get("description") or ""),
-            channel=channel,
-            programme=programme,
-            company=source.company,
-            stage="post_metadata",
+        metadata_decisions = [
+            context.rules.evaluate(
+                url=source.canonical_url,
+                title=source.title or discovered_title,
+                text=str(metadata.get("description") or ""),
+                channel=value,
+                programme=programme,
+                company=source.company,
+                stage="post_metadata",
+            )
+            for value in dict.fromkeys([channel, channel_id])
+        ]
+        exclusion = next(
+            (
+                decision
+                for decision in metadata_decisions
+                if decision.status == InclusionStatus.EXCLUDED
+            ),
+            next(
+                (
+                    decision
+                    for decision in metadata_decisions
+                    if decision.status == InclusionStatus.REVIEW_REQUIRED
+                ),
+                metadata_decisions[0],
+            ),
         )
         video_id = str(metadata.get("id", ""))
         records = [
@@ -473,6 +495,7 @@ class YouTubeCollector:
                     "video_id": video_id,
                     "title": discovered_title,
                     "channel": channel,
+                    "channel_id": channel_id,
                     "programme": programme,
                     "duration_seconds": float(metadata.get("duration") or 0),
                     "collection_exclusion": exclusion.model_dump(mode="json"),
@@ -570,6 +593,7 @@ class YouTubeCollector:
                         "video_id": video_id,
                         "title": discovered_title,
                         "channel": channel,
+                        "channel_id": channel_id,
                         "programme": programme,
                         "duration_seconds": duration,
                     },

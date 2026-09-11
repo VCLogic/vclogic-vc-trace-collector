@@ -323,6 +323,53 @@ def test_youtube_metadata_exclusion_stops_before_captions_or_download(tmp_path) 
     assert source.channel is None
 
 
+def test_youtube_channel_id_exclusion_stops_before_download(tmp_path) -> None:
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "id": "abc123",
+                    "duration": 42,
+                    "channel": "Safe Display Name",
+                    "channel_id": "UC_BLOCKED",
+                }
+            ),
+            stderr="",
+        )
+
+    run_context = context(tmp_path)
+    run_context.rules = RuleSet(
+        [
+            ExclusionRule(
+                rule_id="blocked-channel-id",
+                action="exclude",
+                reason="test exclusion",
+                channels=["UC_BLOCKED"],
+            )
+        ]
+    )
+    result = collect_approved_sources(
+        plan(
+            candidate(
+                "youtube",
+                SourceType.YOUTUBE,
+                url="https://www.youtube.com/watch?v=abc123",
+            )
+        ),
+        context=run_context,
+        registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
+    )
+
+    assert result.excluded == 1
+    assert len(calls) == 1
+    assert result.artifacts[0].original_metadata["channel_id"] == "UC_BLOCKED"
+
+
 def test_youtube_collector_preserves_metadata_captions_and_audio(tmp_path) -> None:
     calls = []
 

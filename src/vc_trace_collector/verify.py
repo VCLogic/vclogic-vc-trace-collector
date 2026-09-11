@@ -413,28 +413,35 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             for artifact_id in document.raw_artifact_ids:
                 for record in artifacts.get(artifact_id, []):
                     metadata = record.original_metadata
-                    decision = effective_rules.evaluate(
-                        url=record.source_url or document.canonical_url,
-                        title=str(metadata.get("title") or document.title or ""),
-                        text=document.text,
-                        channel=str(
-                            metadata.get("channel")
-                            or (candidate.channel if candidate else "")
-                        )
-                        or None,
-                        programme=str(
-                            metadata.get("programme")
-                            or (candidate.programme if candidate else "")
-                        )
-                        or None,
-                        company=str(
-                            metadata.get("company")
-                            or (candidate.company if candidate else "")
-                        )
-                        or None,
-                        stage="verification_metadata",
+                    channel_values = dict.fromkeys(
+                        [
+                            metadata.get("channel"),
+                            metadata.get("channel_id"),
+                            metadata.get("uploader_id"),
+                            candidate.channel if candidate else None,
+                        ]
                     )
-                    if decision.status != "included":
+                    if any(
+                        effective_rules.evaluate(
+                            url=record.source_url or document.canonical_url,
+                            title=str(metadata.get("title") or document.title or ""),
+                            text=document.text,
+                            channel=str(value) if value else None,
+                            programme=str(
+                                metadata.get("programme")
+                                or (candidate.programme if candidate else "")
+                            )
+                            or None,
+                            company=str(
+                                metadata.get("company")
+                                or (candidate.company if candidate else "")
+                            )
+                            or None,
+                            stage="verification_metadata",
+                        ).status
+                        != "included"
+                        for value in channel_values
+                    ):
                         errors.append(
                             f"Corpus document violates artifact metadata exclusions: "
                             f"{document.document_version_id}"

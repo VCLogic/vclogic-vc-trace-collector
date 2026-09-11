@@ -558,6 +558,10 @@ class Pipeline:
         if source_duration > config.maximum_media_minutes * 60:
             raise ReviewRequired("Reference voice exceeds the media processing budget")
         cost = BudgetLedger(workspace / "audit/costs.jsonl", config.maximum_cost_usd)
+        if cost.media_seconds + source_duration > config.maximum_media_minutes * 60:
+            raise ReviewRequired(
+                "Run-wide media processing budget exhausted before voice embedding"
+            )
         operation_id = f"reference-embedding:{candidate_id}:{artifact.artifact_id}"
         cost.reserve(operation_id, config.embedding_cost_usd)
         provider = self.embedding_provider
@@ -794,10 +798,10 @@ class Pipeline:
                 )
         audio_suffixes = {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac"}
         video_suffixes = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
-        processed_seconds = 0.0
         av_rows: list[dict] = []
         state = StateStore(workspace / "state/state.sqlite")
         cost = BudgetLedger(workspace / "audit/costs.jsonl", config.maximum_cost_usd)
+        processed_seconds = cost.media_seconds
         for artifact in artifacts:
             candidate_id = str(artifact.original_metadata.get("candidate_id", ""))
             candidate = candidate_map.get(candidate_id)
@@ -839,21 +843,6 @@ class Pipeline:
                     "candidate_id": candidate_id,
                     "artifact_id": artifact.artifact_id,
                     "message": "Media duration is unknown; model calls were not started",
-                }
-                append_jsonl(workspace / "audit/failures.jsonl", failure)
-                mark_outcome(
-                    candidate_id,
-                    "failed",
-                    failure["message"],
-                    artifact.artifact_id,
-                )
-                continue
-            if processed_seconds + probed_seconds > config.maximum_media_minutes * 60:
-                failure = {
-                    "candidate_id": candidate_id,
-                    "artifact_id": artifact.artifact_id,
-                    "message": "Media processing budget exhausted before model calls",
-                    "media_seconds": probed_seconds,
                 }
                 append_jsonl(workspace / "audit/failures.jsonl", failure)
                 mark_outcome(
@@ -931,8 +920,28 @@ class Pipeline:
                 ).encode("utf-8")
             ).hexdigest()
             cache_path = workspace / "state/av_results" / f"{input_hash}.json"
+            cached = state.is_complete(operation_id, input_hash) and cache_path.exists()
+            if (
+                not cached
+                and processed_seconds + probed_seconds
+                > config.maximum_media_minutes * 60
+            ):
+                failure = {
+                    "candidate_id": candidate_id,
+                    "artifact_id": artifact.artifact_id,
+                    "message": "Media processing budget exhausted before model calls",
+                    "media_seconds": probed_seconds,
+                }
+                append_jsonl(workspace / "audit/failures.jsonl", failure)
+                mark_outcome(
+                    candidate_id,
+                    "failed",
+                    failure["message"],
+                    artifact.artifact_id,
+                )
+                continue
             try:
-                if state.is_complete(operation_id, input_hash) and cache_path.exists():
+                if cached:
                     result = TargetSpeechResult.model_validate(read_json(cache_path))
                 else:
                     model_cost = config.diarization_cost_usd + (
@@ -980,7 +989,7 @@ class Pipeline:
                     artifact.artifact_id,
                 )
                 continue
-            processed_seconds += probed_seconds
+            processed_seconds = cost.media_seconds
             av_rows.append(
                 {
                     "artifact_id": artifact.artifact_id,
@@ -1129,29 +1138,36 @@ class Pipeline:
             for artifact_id in document.raw_artifact_ids:
                 for artifact in artifact_map.get(artifact_id, []):
                     metadata = artifact.original_metadata
-                    decisions.append(
-                        rules.evaluate(
-                            url=artifact.source_url or document.canonical_url,
-                            title=str(metadata.get("title") or document.title or ""),
-                            text=document.text,
-                            channel=str(
-                                metadata.get("channel")
-                                or (candidate.channel if candidate else "")
-                            )
-                            or None,
-                            programme=str(
-                                metadata.get("programme")
-                                or (candidate.programme if candidate else "")
-                            )
-                            or None,
-                            company=str(
-                                metadata.get("company")
-                                or (candidate.company if candidate else "")
-                            )
-                            or None,
-                            stage="final_export_metadata",
-                        )
+                    channel_values = dict.fromkeys(
+                        [
+                            metadata.get("channel"),
+                            metadata.get("channel_id"),
+                            metadata.get("uploader_id"),
+                            candidate.channel if candidate else None,
+                        ]
                     )
+                    for channel_value in channel_values:
+                        decisions.append(
+                            rules.evaluate(
+                                url=artifact.source_url or document.canonical_url,
+                                title=str(
+                                    metadata.get("title") or document.title or ""
+                                ),
+                                text=document.text,
+                                channel=str(channel_value) if channel_value else None,
+                                programme=str(
+                                    metadata.get("programme")
+                                    or (candidate.programme if candidate else "")
+                                )
+                                or None,
+                                company=str(
+                                    metadata.get("company")
+                                    or (candidate.company if candidate else "")
+                                )
+                                or None,
+                                stage="final_export_metadata",
+                            )
+                        )
             excluded = next(
                 (item for item in decisions if item.status == InclusionStatus.EXCLUDED),
                 None,

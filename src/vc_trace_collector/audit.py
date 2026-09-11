@@ -98,6 +98,14 @@ class BudgetLedger:
         )
 
     @property
+    def media_seconds(self) -> float:
+        return sum(
+            float(row.get("media_seconds", 0))
+            for row in self._rows
+            if row["kind"] == "settlement"
+        )
+
+    @property
     def reserved(self) -> Decimal:
         reservations: dict[str, Decimal | None] = {}
         for row in self._rows:
