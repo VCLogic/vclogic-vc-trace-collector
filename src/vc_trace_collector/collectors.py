@@ -238,18 +238,28 @@ def _podcast_audio_urls(content: bytes, source_url: str) -> list[str]:
 
 def _podcast_duration_seconds(content: bytes) -> float | None:
     text = content.decode("utf-8", errors="replace")
+    total_time = re.search(
+        r"(?i)total\s+time\s*:\s*-?(?:(\d+):)?(\d{1,2}):(\d{2})", text
+    )
+    if total_time:
+        hours, minutes, seconds = total_time.groups()
+        return int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds)
     iso = re.search(
         r"\bPT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?\b", text, re.IGNORECASE
     )
     if iso:
         hours, minutes, seconds = iso.groups()
-        return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds or 0)
+        duration = int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds or 0)
+        if duration > 0:
+            return duration
     numeric = re.search(
         r'(?i)["\'](?:duration|duration_seconds)["\']\s*[:=]\s*["\']?(\d+(?:\.\d+)?)',
         text,
     )
     if numeric:
-        return float(numeric.group(1))
+        duration = float(numeric.group(1))
+        if duration > 0:
+            return duration
     clock = re.search(r"(?<!\d)-?(?:(\d+):)?(\d{1,2}):(\d{2})(?!\d)", text)
     if clock:
         hours, minutes, seconds = clock.groups()

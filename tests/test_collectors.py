@@ -15,6 +15,7 @@ from vc_trace_collector.collectors import (
     PodcastCollector,
     SuppliedFileCollector,
     YouTubeCollector,
+    _podcast_duration_seconds,
     collect_approved_sources,
 )
 from vc_trace_collector.fetch import Fetcher
@@ -237,6 +238,12 @@ def test_podcast_collector_preserves_page_and_public_audio(tmp_path) -> None:
     assert result.artifacts[1].parent_artifact_ids == [result.artifacts[0].artifact_id]
     assert result.artifacts[1].relative_path.endswith(".mp3")
     assert result.media_seconds == 5
+
+
+def test_podcast_duration_ignores_zero_placeholder_before_real_runtime() -> None:
+    html = b'{"duration": 0}<div>Total time: -42:41</div>'
+
+    assert _podcast_duration_seconds(html) == 2561
 
 
 def test_podcast_refuses_unbounded_media_before_enclosure_download(tmp_path) -> None:
