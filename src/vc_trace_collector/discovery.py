@@ -548,7 +548,22 @@ class DiscoveryService:
             )
 
         plan = SourcePlan(
-            plan_id=stable_id("plan", f"{slug}:{'|'.join(queries)}"),
+            plan_id=stable_id(
+                "plan",
+                json.dumps(
+                    {
+                        "investor_slug": slug,
+                        "queries": queries,
+                        "candidates": [
+                            candidate.model_dump(mode="json")
+                            for candidate in candidates
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
             investor_slug=slug,
             queries=queries,
             candidates=candidates,

@@ -209,3 +209,19 @@ def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> N
 
     user_message = captured["json"]["messages"][1]["content"]
     assert json.loads(user_message)["name"] == "Michael Hyatt"
+
+
+def test_source_plan_id_changes_when_candidate_set_changes() -> None:
+    first = DiscoveryService(fetcher=profile_fetcher()).discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+    )
+    second = DiscoveryService(fetcher=profile_fetcher()).discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=[
+            "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"
+        ],
+    )
+
+    assert first.source_plan.plan_id != second.source_plan.plan_id
