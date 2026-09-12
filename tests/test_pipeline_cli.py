@@ -1,3 +1,4 @@
+import os
 import socket
 from decimal import Decimal
 from pathlib import Path
@@ -254,6 +255,26 @@ def test_default_cli_constructs_credential_free_public_search(
 
     assert result.exit_code == 0
     assert created == [(tmp_path, marker)]
+
+
+def test_cli_loads_dotenv_without_overriding_process_environment(
+    tmp_path, monkeypatch
+) -> None:
+    dotenv_variable = "VC_TRACE_TEST_DOTENV_LOADING"
+    shell_variable = "VC_TRACE_TEST_DOTENV_PRECEDENCE"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(dotenv_variable, raising=False)
+    monkeypatch.setenv(shell_variable, "from-shell")
+    (tmp_path / ".env").write_text(
+        f"{dotenv_variable}=from-dotenv\n{shell_variable}=from-dotenv\n"
+    )
+
+    try:
+        create_app(lambda output_dir: pipeline(Path(output_dir)))
+        assert os.environ[dotenv_variable] == "from-dotenv"
+        assert os.environ[shell_variable] == "from-shell"
+    finally:
+        os.environ.pop(dotenv_variable, None)
 
 
 def test_cli_can_disable_public_search_for_discovery(tmp_path) -> None:

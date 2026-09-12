@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 
 from .audit import BudgetExceeded
 from .collectors import ReviewRequired
@@ -27,6 +28,8 @@ def _rules_from_file(path: Path | None):
 
 
 def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
+    load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+
     def make_pipeline(output_dir: Path) -> Pipeline:
         if pipeline_factory is not None:
             return pipeline_factory(output_dir)

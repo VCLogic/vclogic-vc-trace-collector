@@ -166,7 +166,16 @@ approval, hashing, policy evaluation, normalization, deduplication, export, and
 verification remain deterministic.
 
 Do not commit these variables. Copy `.env.example` only as a list of supported
-names and load credentials through your normal secret manager or shell.
+names, then place local values in `.env`:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+The CLI automatically loads `.env` from the current working directory. Values
+already exported in the shell take precedence over values in `.env`. The file
+is ignored by Git and must never be force-added or committed.
 
 ## Reference voice and speaker attribution
 
