@@ -399,6 +399,9 @@ def test_youtube_failed_attempt_accounts_partial_file_and_disables_retries(
     download = calls[-1]
     assert download[download.index("--retries") + 1] == "0"
     assert download[download.index("--fragment-retries") + 1] == "0"
+    metadata_command = calls[0]
+    assert "--write-pages" in metadata_command
+    assert metadata_command[metadata_command.index("--retries") + 1] == "0"
 
 
 def test_extensionless_direct_audio_is_classified_by_head_before_get(tmp_path) -> None:
@@ -497,6 +500,7 @@ def test_youtube_metadata_exclusion_stops_before_captions_or_download(tmp_path) 
 
     def runner(command, **kwargs):
         calls.append(command)
+        Path(kwargs["cwd"], "youtube-page.dump").write_bytes(b"metadata-page")
         return subprocess.CompletedProcess(
             command,
             0,
@@ -532,6 +536,9 @@ def test_youtube_metadata_exclusion_stops_before_captions_or_download(tmp_path) 
     assert result.collected == 1
     assert result.excluded == 1
     assert len(calls) == 1
+    assert result.downloaded_bytes == len(b"metadata-page")
+    assert "--write-pages" in calls[0]
+    assert calls[0][calls[0].index("--retries") + 1] == "0"
     assert result.artifacts[0].original_metadata["channel"] == "Prohibited Channel"
     assert source.channel is None
 

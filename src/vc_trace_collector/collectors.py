@@ -55,6 +55,17 @@ NETWORK_COLLECTION_METHODS = {
     "identity_evidence_http",
 }
 
+_YT_DLP_NO_RETRY_FLAGS = [
+    "--retries",
+    "0",
+    "--fragment-retries",
+    "0",
+    "--file-access-retries",
+    "0",
+    "--extractor-retries",
+    "0",
+]
+
 
 @dataclass
 class CollectionContext:
@@ -559,20 +570,60 @@ class YouTubeCollector:
             or hostname == "youtu.be"
         ):
             raise CollectorUnavailable("YouTube collector requires a YouTube URL")
-        command = ["yt-dlp", "--dump-single-json", "--skip-download", source.url]
+        command = [
+            "yt-dlp",
+            *_YT_DLP_NO_RETRY_FLAGS,
+            "--write-pages",
+            "--dump-single-json",
+            "--skip-download",
+            source.url,
+        ]
+        page_bytes = 0
         try:
-            completed = self.runner(
-                command,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=180,
-            )
+            with tempfile.TemporaryDirectory(
+                prefix="vc-trace-youtube-metadata-"
+            ) as metadata_directory:
+                try:
+                    completed = self.runner(
+                        command,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                        cwd=metadata_directory,
+                    )
+                finally:
+                    page_bytes = sum(
+                        item.stat().st_size
+                        for item in Path(metadata_directory).rglob("*")
+                        if item.is_file()
+                    )
+                    if page_bytes:
+                        _charge_download(context, page_bytes)
         except FileNotFoundError as error:
             raise CollectorUnavailable(
                 "Install the youtube extra to use yt-dlp"
             ) from error
-        metadata = json.loads(completed.stdout)
+        except subprocess.CalledProcessError as error:
+            if not page_bytes and error.stdout:
+                output = (
+                    error.stdout.encode("utf-8")
+                    if isinstance(error.stdout, str)
+                    else error.stdout
+                )
+                _charge_download(context, len(output))
+            raise
+        if not page_bytes:
+            _charge_download(context, len(completed.stdout.encode("utf-8")))
+        metadata = None
+        for line in reversed(completed.stdout.splitlines()):
+            try:
+                metadata = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            break
+        if not isinstance(metadata, dict):
+            raise TypeError("yt-dlp did not return valid metadata JSON")
         channel = (
             str(metadata.get("channel") or metadata.get("uploader") or "").strip()
             or None
@@ -618,7 +669,6 @@ class YouTubeCollector:
         metadata_bytes = json.dumps(
             metadata, ensure_ascii=False, sort_keys=True
         ).encode("utf-8")
-        _charge_download(context, len(metadata_bytes))
         records = [
             context.artifacts.put_bytes(
                 metadata_bytes,
@@ -691,14 +741,7 @@ class YouTubeCollector:
             download = [
                 "yt-dlp",
                 "--no-playlist",
-                "--retries",
-                "0",
-                "--fragment-retries",
-                "0",
-                "--file-access-retries",
-                "0",
-                "--extractor-retries",
-                "0",
+                *_YT_DLP_NO_RETRY_FLAGS,
                 "--max-filesize",
                 str(
                     min(512_000_000, remaining_bytes)

@@ -79,31 +79,41 @@ class BudgetExceeded(RuntimeError):
 
 
 def provider_attempt_count(rows: list[dict[str, Any]]) -> int:
-    return sum(
-        row.get("kind") == "reservation" and bool(row.get("provider")) for row in rows
-    )
+    attempts = 0
+    active: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        operation_id = str(row.get("operation_id"))
+        if row.get("kind") == "reservation":
+            active[operation_id] = row
+        elif row.get("kind") == "release":
+            active.pop(operation_id, None)
+        elif row.get("kind") == "settlement":
+            reservation = active.pop(operation_id, None)
+            if row.get("provider") or (reservation and reservation.get("provider")):
+                attempts += 1
+    return attempts + sum(bool(row.get("provider")) for row in active.values())
 
 
 def attempted_media_seconds(rows: list[dict[str, Any]]) -> float:
-    reserved_by_operation: dict[str, float] = {}
+    active: dict[str, dict[str, Any]] = {}
     attempted = 0.0
     for row in rows:
-        if row.get("kind") != "reservation" or not row.get("provider"):
-            continue
-        seconds = float(row.get("media_seconds", 0))
-        attempted += seconds
         operation_id = str(row.get("operation_id"))
-        reserved_by_operation[operation_id] = (
-            reserved_by_operation.get(operation_id, 0.0) + seconds
-        )
-    for row in rows:
-        if (
-            row.get("kind") == "settlement"
-            and float(row.get("media_seconds", 0))
-            and not reserved_by_operation.get(str(row.get("operation_id")), 0.0)
-        ):
-            attempted += float(row["media_seconds"])
-    return attempted
+        if row.get("kind") == "reservation":
+            active[operation_id] = row
+        elif row.get("kind") == "release":
+            active.pop(operation_id, None)
+        elif row.get("kind") == "settlement":
+            reservation = active.pop(operation_id, None)
+            seconds = float(row.get("media_seconds", 0))
+            if not seconds and reservation:
+                seconds = float(reservation.get("media_seconds", 0))
+            attempted += seconds
+    return attempted + sum(
+        float(row.get("media_seconds", 0))
+        for row in active.values()
+        if row.get("provider")
+    )
 
 
 class BudgetLedger:
@@ -240,20 +250,15 @@ class BudgetLedger:
                     active[str(row["operation_id"])] = None
             if active.get(operation_id) is not None:
                 return
-            provider_operations = sum(
-                row["kind"] == "reservation" and bool(row["provider"]) for row in rows
-            )
+            serialized_rows = [dict(row) for row in rows]
+            provider_operations = provider_attempt_count(serialized_rows)
             if (
                 provider
                 and self.maximum_provider_operations is not None
                 and provider_operations + 1 > self.maximum_provider_operations
             ):
                 raise BudgetExceeded(operation_id)
-            attempted_media = sum(
-                float(row["media_seconds"])
-                for row in rows
-                if row["kind"] == "reservation" and row["provider"]
-            )
+            attempted_media = attempted_media_seconds(serialized_rows)
             if (
                 provider
                 and self.maximum_media_seconds is not None
