@@ -14,7 +14,9 @@ def test_public_search_finds_michael_hyatt_web_and_youtube_results() -> None:
     except ModuleNotFoundError:
         raise
     except Exception as error:
-        pytest.skip(f"public web search blocked in this environment: {type(error).__name__}")
+        pytest.skip(
+            f"public web search blocked in this environment: {type(error).__name__}"
+        )
 
     youtube = YtDlpSearchProvider(timeout=120)
     youtube_results = youtube.search(

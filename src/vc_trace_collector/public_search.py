@@ -22,9 +22,7 @@ class DdgSearchProvider:
         self._search = search or self._default_search
 
     @staticmethod
-    def _default_search(
-        query: str, *, max_results: int
-    ) -> Iterable[dict[str, Any]]:
+    def _default_search(query: str, *, max_results: int) -> Iterable[dict[str, Any]]:
         from ddgs import DDGS
 
         return DDGS().text(query, max_results=max_results)

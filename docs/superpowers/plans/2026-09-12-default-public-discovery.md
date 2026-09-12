@@ -1,6 +1,6 @@
 # Default Public Discovery Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Restore credential-free YouTube discovery and add best-effort credential-free general web discovery to the normal CLI.
 
@@ -16,7 +16,7 @@
 - Create: `src/vc_trace_collector/public_search.py`
 - Create: `tests/test_public_search.py`
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Add tests that instantiate `DdgSearchProvider` with an injected callable and
 `YtDlpSearchProvider` with an injected subprocess runner. Assert normalized
@@ -26,7 +26,7 @@ Add a composite-provider test proving YouTube queries route to yt-dlp while
 ordinary queries route to DDG and a failing adapter returns an audited empty
 result without preventing later queries.
 
-- [ ] **Step 2: Verify the adapter tests fail for the missing module**
+- [x] **Step 2: Verify the adapter tests fail for the missing module**
 
 Run:
 
@@ -37,25 +37,31 @@ uv run pytest tests/test_public_search.py -q
 Expected: collection fails because `vc_trace_collector.public_search` does not
 exist.
 
-- [ ] **Step 3: Implement the adapters**
+- [x] **Step 3: Implement the adapters**
 
 Create these public APIs:
 
 ```python
 class DdgSearchProvider:
     provider_name = "ddg"
+
     def __init__(self, search=None): ...
     def search(self, query: str, limit: int = 10) -> list[SearchResult]: ...
 
+
 class YtDlpSearchProvider:
     provider_name = "yt-dlp"
+
     def __init__(self, runner=subprocess.run, timeout: float = 120): ...
     def search(self, query: str, limit: int = 10) -> list[SearchResult]: ...
 
+
 class CompositeSearchProvider:
     provider_name = "public-search"
+
     def __init__(self, web, youtube): ...
     def search(self, query: str, limit: int = 10) -> list[SearchResult]: ...
+
 
 def default_public_search_provider(*, searxng_endpoint: str | None = None): ...
 ```
@@ -64,8 +70,13 @@ def default_public_search_provider(*, searxng_endpoint: str | None = None): ...
 
 ```python
 [
-    "yt-dlp", "--dump-json", "--flat-playlist", "--no-download",
-    "--playlist-end", str(limit), f"ytsearch{limit}:{query}",
+    "yt-dlp",
+    "--dump-json",
+    "--flat-playlist",
+    "--no-download",
+    "--playlist-end",
+    str(limit),
+    f"ytsearch{limit}:{query}",
 ]
 ```
 
@@ -73,7 +84,7 @@ The composite catches adapter exceptions, appends concise public diagnostics,
 and returns an empty result for that query. It never includes secrets or a
 traceback in its diagnostics.
 
-- [ ] **Step 4: Verify the adapter tests pass**
+- [x] **Step 4: Verify the adapter tests pass**
 
 Run:
 
@@ -83,7 +94,7 @@ uv run pytest tests/test_public_search.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit the adapters**
+- [x] **Step 5: Commit the adapters**
 
 ```bash
 git add src/vc_trace_collector/public_search.py tests/test_public_search.py
@@ -99,7 +110,7 @@ git commit -m "feat: add credential-free public search adapters"
 - Modify: `src/vc_trace_collector/pipeline.py`
 - Modify: `tests/test_pipeline_cli.py`
 
-- [ ] **Step 1: Write failing CLI and audit tests**
+- [x] **Step 1: Write failing CLI and audit tests**
 
 Add a CLI test whose default factory receives a composite provider without a
 SearXNG environment variable. Add a test for `--disable-public-search` that
@@ -107,7 +118,7 @@ asserts `RunConfig.public_search_enabled` is false and no provider operations
 run. Add a discovery test that asserts composite diagnostics appear in the
 structured provider-operation audit data.
 
-- [ ] **Step 2: Verify the new tests fail**
+- [x] **Step 2: Verify the new tests fail**
 
 Run:
 
@@ -118,7 +129,7 @@ uv run pytest tests/test_pipeline_cli.py tests/test_discovery.py -q
 Expected: failures mention the missing CLI option, config field, or provider
 diagnostics.
 
-- [ ] **Step 3: Wire default discovery into the CLI**
+- [x] **Step 3: Wire default discovery into the CLI**
 
 Add this config field:
 
@@ -141,7 +152,7 @@ Copy sanitized composite diagnostics into each matching
 `provider_operations` entry so failures remain visible in
 `audit/events.jsonl`.
 
-- [ ] **Step 4: Verify CLI and discovery tests pass**
+- [x] **Step 4: Verify CLI and discovery tests pass**
 
 Run:
 
@@ -151,7 +162,7 @@ uv run pytest tests/test_pipeline_cli.py tests/test_discovery.py -q
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit CLI integration**
+- [x] **Step 5: Commit CLI integration**
 
 ```bash
 git add src/vc_trace_collector/cli.py src/vc_trace_collector/config.py \
@@ -168,7 +179,7 @@ git commit -m "feat: enable public discovery by default in CLI"
 - Modify: `README.md`
 - Create: `tests/test_live_public_search.py`
 
-- [ ] **Step 1: Add a failing live acceptance test**
+- [x] **Step 1: Add a failing live acceptance test**
 
 Create an opt-in `@pytest.mark.live` test that runs the default public provider
 for one ordinary Michael Hyatt query and one YouTube query. Assert that the
@@ -176,7 +187,7 @@ combined normalized result set is nonempty and includes at least one YouTube
 URL when public providers are available; skip with the recorded diagnostic
 when a public service blocks the environment.
 
-- [ ] **Step 2: Update dependencies and lockfile**
+- [x] **Step 2: Update dependencies and lockfile**
 
 Add `ddgs>=9,<10` to core dependencies and retain `yt-dlp` in the existing
 `youtube` extra, then run:
@@ -186,13 +197,13 @@ uv lock
 uv sync --extra youtube
 ```
 
-- [ ] **Step 3: Update the README**
+- [x] **Step 3: Update the README**
 
 Document that normal CLI discovery uses DDG plus direct yt-dlp search without
 credentials; SearXNG is an optional override; `--disable-public-search` is for
 offline/supplied-source runs; and public no-key search may be throttled.
 
-- [ ] **Step 4: Run static and offline verification**
+- [x] **Step 4: Run static and offline verification**
 
 Run:
 
@@ -203,7 +214,7 @@ uv run pytest -q
 
 Expected: lint succeeds and all offline tests pass.
 
-- [ ] **Step 5: Run live provider verification**
+- [x] **Step 5: Run live provider verification**
 
 Run:
 
@@ -214,7 +225,7 @@ uv run pytest -q -m live tests/test_live_public_search.py
 Expected: the test passes, or explicitly skips only when the public provider
 reports environmental blocking.
 
-- [ ] **Step 6: Run fresh Michael Hyatt discovery**
+- [x] **Step 6: Run fresh Michael Hyatt discovery**
 
 Preserve `outputs/michael-hyatt` and execute:
 
@@ -231,7 +242,7 @@ Verify that `outputs-full/michael-hyatt-hyatt-family-office/audit/events.jsonl`
 contains nonzero provider operations and that the review plan contains public
 web and YouTube candidates when providers responded.
 
-- [ ] **Step 7: Commit documentation and dependency changes**
+- [x] **Step 7: Commit documentation and dependency changes**
 
 ```bash
 git add pyproject.toml uv.lock README.md tests/test_live_public_search.py
