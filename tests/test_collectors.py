@@ -334,6 +334,73 @@ def test_direct_podcast_audio_requires_duration_before_get(tmp_path) -> None:
     assert requested == []
 
 
+def test_direct_audio_over_remaining_duration_is_rejected_before_get(tmp_path) -> None:
+    audio_url = "https://cdn.example.test/episode.mp3"
+    requested: list[str] = []
+
+    def resolver(host: str, port: int):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(200, content=b"ID3 audio", request=request)
+
+    source = candidate("podcast", SourceType.PODCAST, url=audio_url)
+    source.estimated_media_seconds = 100
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    run_context.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
+    result = collect_approved_sources(
+        plan(source),
+        context=run_context,
+        registry=CollectorRegistry([PodcastCollector()]),
+    )
+
+    assert result.failed == 1
+    assert requested == []
+
+
+def test_youtube_failed_attempt_accounts_partial_file_and_disables_retries(
+    tmp_path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if "--dump-single-json" in command:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"id": "abc", "duration": 40}),
+                stderr="",
+            )
+        template = Path(command[command.index("-o") + 1])
+        template.with_name("audio.webm.part").write_bytes(b"partial-media")
+        raise subprocess.CalledProcessError(1, command)
+
+    run_context = context(tmp_path)
+    run_context.maximum_media_seconds = 60
+    result = collect_approved_sources(
+        plan(
+            candidate(
+                "youtube",
+                SourceType.YOUTUBE,
+                url="https://www.youtube.com/watch?v=abc",
+            )
+        ),
+        context=run_context,
+        registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
+    )
+
+    assert result.failed == 1
+    assert result.downloaded_bytes >= len(b"partial-media")
+    download = calls[-1]
+    assert download[download.index("--retries") + 1] == "0"
+    assert download[download.index("--fragment-retries") + 1] == "0"
+
+
 def test_extensionless_direct_audio_is_classified_by_head_before_get(tmp_path) -> None:
     audio_url = "https://cdn.example.test/download"
     requested: list[tuple[str, str]] = []

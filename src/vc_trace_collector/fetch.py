@@ -211,9 +211,15 @@ class Fetcher:
             raise ValueError("maximum_bytes must be positive")
         while True:
             attempts += 1
+            attempt_limit = response_limit - transferred_bytes
+            if attempt_limit <= 0:
+                raise FetchTooLarge(
+                    f"Response exceeds {response_limit} bytes",
+                    downloaded_bytes=transferred_bytes,
+                )
             try:
                 response, content = self._request(
-                    current_url, conditional, response_limit
+                    current_url, conditional, attempt_limit
                 )
             except FetchTooLarge as error:
                 error.downloaded_bytes += transferred_bytes

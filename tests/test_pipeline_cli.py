@@ -763,3 +763,72 @@ def test_llm_discovery_requires_an_explicit_cost_reservation(tmp_path) -> None:
             name="Michael Hyatt",
             known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
         )
+
+
+def test_reference_budget_is_reserved_before_model_initialization(
+    tmp_path, monkeypatch
+) -> None:
+    reference_audio = tmp_path / "known-michael-hyatt.wav"
+    reference_audio.write_bytes(b"reference voice fixture")
+    output = tmp_path / "outputs"
+    collector = pipeline(output)
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[reference_audio],
+        supplied_role=MaterialRole.REFERENCE_VOICE,
+        config=RunConfig(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            supplied_files=[str(reference_audio)],
+            supplied_role=MaterialRole.REFERENCE_VOICE,
+            output_dir=str(output),
+            embedding_model="fixture-model",
+        ),
+    )
+    source = next(
+        item
+        for item in discovered.source_plan.candidates
+        if item.source_type == "supplied"
+    )
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=source.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Verified reference source",
+                decided_by="reviewer",
+                material_role=MaterialRole.REFERENCE_VOICE,
+            )
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    collector.collect_sources("michael-hyatt")
+    voice = read_jsonl(
+        output / "michael-hyatt/identity/reference_voice_candidates.jsonl"
+    )[0]
+    costs_path = output / "michael-hyatt/audit/costs.jsonl"
+
+    class GuardedProvider:
+        def __init__(self, *args, **kwargs):
+            rows = read_jsonl(costs_path)
+            assert rows[-1]["kind"] == "reservation"
+            assert rows[-1]["provider"] == "pyannote"
+            raise RuntimeError("model initialization stopped")
+
+    monkeypatch.setattr(
+        "vc_trace_collector.pipeline.PyannoteEmbeddingProvider", GuardedProvider
+    )
+    with pytest.raises(RuntimeError, match="initialization stopped"):
+        collector.approve_reference_voice(
+            "michael-hyatt",
+            candidate_id=voice["candidate_id"],
+            reviewer="reviewer",
+            start_seconds=0,
+            end_seconds=10,
+        )
+
+    rows = read_jsonl(costs_path)
+    assert [row["kind"] for row in rows[-2:]] == ["reservation", "release"]

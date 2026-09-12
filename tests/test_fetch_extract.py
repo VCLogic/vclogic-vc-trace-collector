@@ -172,3 +172,29 @@ def test_retry_after_is_capped() -> None:
     assert result.content == b"ok"
     assert result.transferred_bytes == 4
     assert sleeps == [2]
+
+
+def test_retry_attempts_share_one_aggregate_byte_limit() -> None:
+    responses = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal responses
+        responses += 1
+        return httpx.Response(
+            429 if responses == 1 else 200,
+            stream=httpx.ByteStream(b"12"),
+            headers={"transfer-encoding": "chunked"},
+            request=request,
+        )
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
+        maximum_retry_delay=0,
+    )
+
+    with pytest.raises(FetchTooLarge) as caught:
+        fetcher.fetch("https://example.test/retry", maximum_bytes=3)
+
+    assert caught.value.downloaded_bytes == 4

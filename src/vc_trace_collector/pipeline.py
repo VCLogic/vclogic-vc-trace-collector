@@ -623,66 +623,73 @@ class Pipeline:
             raise ReviewRequired(
                 "Provider-operation budget exhausted before voice embedding"
             )
-        if provider is None:
-            if not config.embedding_model:
-                raise ReviewRequired(
-                    "Configure an embedding model before voice approval"
-                )
-            provider = PyannoteEmbeddingProvider(
-                config.embedding_model,
-                token=os.environ.get("HF_TOKEN"),
-                device=os.environ.get("VC_TRACE_AV_DEVICE"),
-            )
-        reference_artifact = artifact
-        if start_seconds is not None or end_seconds is not None:
-            assert start_seconds is not None and end_seconds is not None
-            with tempfile.TemporaryDirectory(prefix="vc-trace-reference-") as directory:
-                extracted = self.audio_extractor(
-                    source_path,
-                    Path(directory) / "reference.wav",
-                    start_seconds=start_seconds,
-                    end_seconds=end_seconds,
-                )
-                reference_artifact = (
-                    ArtifactStore(workspace)
-                    .put_bytes(
-                        extracted.read_bytes(),
-                        category="voice",
-                        suffix=".wav",
-                        source_url=artifact.source_url,
-                        mime_type="audio/wav",
-                        collection_method="human_selected_reference_segment",
-                        original_metadata={
-                            "candidate_id": selected.source_candidate_id,
-                            "reference_candidate_id": selected.candidate_id,
-                            "reviewer": reviewer,
-                            "start_seconds": start_seconds,
-                            "end_seconds": end_seconds,
-                            "duration_seconds": source_duration,
-                        },
-                        parent_artifact_ids=[artifact.artifact_id],
-                    )
-                    .record
-                )
-                embedding_path = workspace / reference_artifact.relative_path
-        else:
-            embedding_path = source_path
+        reserved_provider = provider.provider_name if provider else "pyannote"
+        reserved_model = provider.model_name if provider else config.embedding_model
+        if not reserved_model:
+            raise ReviewRequired("Configure an embedding model before voice approval")
         cost.reserve(
             operation_id,
             config.embedding_cost_usd,
-            provider=provider.provider_name,
-            model=provider.model_name,
+            provider=reserved_provider,
+            model=reserved_model,
             media_seconds=source_duration,
         )
+        provider_invoked = False
         try:
+            if provider is None:
+                provider = PyannoteEmbeddingProvider(
+                    reserved_model,
+                    token=os.environ.get("HF_TOKEN"),
+                    device=os.environ.get("VC_TRACE_AV_DEVICE"),
+                )
+            reference_artifact = artifact
+            if start_seconds is not None or end_seconds is not None:
+                assert start_seconds is not None and end_seconds is not None
+                with tempfile.TemporaryDirectory(
+                    prefix="vc-trace-reference-"
+                ) as directory:
+                    extracted = self.audio_extractor(
+                        source_path,
+                        Path(directory) / "reference.wav",
+                        start_seconds=start_seconds,
+                        end_seconds=end_seconds,
+                    )
+                    reference_artifact = (
+                        ArtifactStore(workspace)
+                        .put_bytes(
+                            extracted.read_bytes(),
+                            category="voice",
+                            suffix=".wav",
+                            source_url=artifact.source_url,
+                            mime_type="audio/wav",
+                            collection_method="human_selected_reference_segment",
+                            original_metadata={
+                                "candidate_id": selected.source_candidate_id,
+                                "reference_candidate_id": selected.candidate_id,
+                                "reviewer": reviewer,
+                                "start_seconds": start_seconds,
+                                "end_seconds": end_seconds,
+                                "duration_seconds": source_duration,
+                            },
+                            parent_artifact_ids=[artifact.artifact_id],
+                        )
+                        .record
+                    )
+                    embedding_path = workspace / reference_artifact.relative_path
+            else:
+                embedding_path = source_path
+            provider_invoked = True
             embedding = provider.embed(embedding_path)
         except Exception:
-            cost.settle(
-                operation_id,
-                config.embedding_cost_usd,
-                provider=provider.provider_name,
-                model=provider.model_name,
-            )
+            if provider_invoked:
+                cost.settle(
+                    operation_id,
+                    config.embedding_cost_usd,
+                    provider=provider.provider_name,
+                    model=provider.model_name,
+                )
+            else:
+                cost.release(operation_id)
             raise
         cost.settle(
             operation_id,

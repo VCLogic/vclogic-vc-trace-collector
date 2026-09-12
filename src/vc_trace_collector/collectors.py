@@ -195,9 +195,9 @@ def _remaining_bytes(context: CollectionContext) -> int | None:
 
 def _charge_download(context: CollectionContext, size_bytes: int) -> None:
     remaining = context.remaining_download_bytes
+    context.downloaded_bytes_used += size_bytes
     if remaining is not None and size_bytes > remaining:
         raise RuntimeError("Downloaded-byte budget exceeded")
-    context.downloaded_bytes_used += size_bytes
 
 
 def _fetch(context: CollectionContext, url: str, *, maximum_bytes: int | None = None):
@@ -363,6 +363,15 @@ class PodcastCollector:
                 "Direct podcast audio requires an approved duration estimate before GET"
             )
         if (
+            source.estimated_media_seconds > 0
+            and context.remaining_media_seconds is not None
+            and source.estimated_media_seconds > context.remaining_media_seconds
+        ):
+            raise RuntimeError(
+                f"Media duration {source.estimated_media_seconds:.1f}s exceeds "
+                f"remaining limit {context.remaining_media_seconds:.1f}s"
+            )
+        if (
             not looks_like_direct_audio
             and context.remaining_media_seconds is not None
             and source.estimated_media_seconds <= 0
@@ -437,6 +446,15 @@ class PodcastCollector:
         if mime.split(";", 1)[0].strip().startswith("audio/"):
             if context.remaining_media_seconds is not None and not duration:
                 raise RuntimeError("Cannot account direct podcast audio duration")
+            if (
+                context.remaining_media_seconds is not None
+                and duration
+                and duration > context.remaining_media_seconds
+            ):
+                raise RuntimeError(
+                    f"Media duration {duration:.1f}s exceeds remaining limit "
+                    f"{context.remaining_media_seconds:.1f}s"
+                )
             return records
 
         audio_urls = _podcast_audio_urls(fetched.content, fetched.final_url)
@@ -673,6 +691,14 @@ class YouTubeCollector:
             download = [
                 "yt-dlp",
                 "--no-playlist",
+                "--retries",
+                "0",
+                "--fragment-retries",
+                "0",
+                "--file-access-retries",
+                "0",
+                "--extractor-retries",
+                "0",
                 "--max-filesize",
                 str(
                     min(512_000_000, remaining_bytes)
@@ -688,17 +714,28 @@ class YouTubeCollector:
                 source.url,
             ]
             try:
-                downloaded = self.runner(
-                    download,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=1800,
+                try:
+                    downloaded = self.runner(
+                        download,
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=1800,
+                    )
+                except FileNotFoundError as error:
+                    raise CollectorUnavailable(
+                        "Install the youtube extra to download YouTube audio"
+                    ) from error
+            finally:
+                # yt-dlp internal retries are disabled above. Count every byte
+                # left by the one bounded attempt, including partial/fragments
+                # when the subprocess fails.
+                transferred = sum(
+                    item.stat().st_size
+                    for item in Path(directory).rglob("*")
+                    if item.is_file()
                 )
-            except FileNotFoundError as error:
-                raise CollectorUnavailable(
-                    "Install the youtube extra to download YouTube audio"
-                ) from error
+                _charge_download(context, transferred)
             output_lines = [
                 line.strip() for line in downloaded.stdout.splitlines() if line.strip()
             ]
@@ -710,7 +747,6 @@ class YouTubeCollector:
                 raise RuntimeError("yt-dlp reported an invalid audio path")
             mime, _encoding = mimetypes.guess_type(media_path.name)
             media_bytes = media_path.read_bytes()
-            _charge_download(context, len(media_bytes))
             records.append(
                 context.artifacts.put_bytes(
                     media_bytes,
