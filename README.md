@@ -179,12 +179,17 @@ single-identity voice sources in
 - avoid music, crosstalk, or unidentified panel speech;
 - be human-reviewed before it becomes a reference profile.
 
-The AV layer supports FFmpeg audio extraction, existing timed transcripts or a
-configurable speech-to-text provider, diarization, voice embeddings, cosine
-matching, minimum-score and runner-up-margin gates, and transcript-to-speaker
-alignment. A low score or narrow margin produces `uncertain`, not verified
-speech. Models, device selection, and access tokens are supplied by the
-operator; none are hard-coded.
+The authoritative AV path follows the original `transcribe_investors.py`
+workflow: downloaded media is normalized by FFmpeg to mono 16 kHz WAV;
+pyannote diarizes it and produces speaker embeddings; those embeddings are
+compared with the human-approved reference voice; each diarized speaker turn
+is extracted; and Whisper transcribes the extracted WAV segments. Platform
+captions are not fetched or substituted for this transcription path. Only
+segments attributed to the target speaker can enter `target_speech.jsonl`.
+
+Cosine matching uses minimum-score and runner-up-margin gates. A low score or
+narrow margin produces `uncertain`, not verified speech. Models, device
+selection, and access tokens are supplied by the operator; none are hard-coded.
 
 After collecting an approved reference source, inspect
 `identity/reference_voice_candidates.jsonl`, select a clean interval, and approve

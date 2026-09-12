@@ -111,6 +111,10 @@ class FixtureTranscript:
 class FixtureDiarization:
     provider_name = "fixture"
     model_name = "fixture-diarization"
+    model_version = "1"
+
+    def embed(self, audio_path):
+        return [1.0, 0.0]
 
     def diarize(self, audio_path):
         return DiarizationResult(
@@ -533,7 +537,6 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
     collector = Pipeline(
         output,
         fetcher=base.fetcher,
-        embedding_provider=FixtureEmbedding(),
         transcript_provider=FixtureTranscript(),
         diarization_provider=FixtureDiarization(),
         audio_extractor=fixture_audio_extractor,
@@ -550,7 +553,6 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
             output_dir=str(output),
             transcription_model="fixture-transcript",
             diarization_model="fixture-diarization",
-            embedding_model="fixture-voice-embedding",
             transcription_cost_usd=Decimal("0.10"),
             diarization_cost_usd=Decimal("0.20"),
             embedding_cost_usd=Decimal("0.30"),

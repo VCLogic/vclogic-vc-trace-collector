@@ -460,6 +460,19 @@ class PyannoteDiarizationProvider:
             speaker_embeddings=by_label,
         )
 
+    def embed(self, audio_path: Path) -> list[float]:
+        """Embed a clean reference with the same pipeline used on interviews."""
+        result = self.diarize(audio_path)
+        durations: dict[str, float] = {}
+        for turn in result.turns:
+            durations[turn.speaker_label] = durations.get(turn.speaker_label, 0) + (
+                turn.end_seconds - turn.start_seconds
+            )
+        if not durations:
+            raise RuntimeError("No speaker found in the reference voice sample")
+        dominant = max(durations, key=durations.__getitem__)
+        return result.speaker_embeddings[dominant]
+
 
 class PyannoteEmbeddingProvider:
     provider_name = "pyannote"

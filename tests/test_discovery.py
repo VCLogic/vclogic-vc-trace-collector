@@ -101,7 +101,7 @@ def test_discovery_proposes_voice_queries() -> None:
     assert any("YouTube" in query for query in queries)
 
 
-def test_youtube_search_result_becomes_reference_voice_candidate() -> None:
+def test_youtube_search_result_becomes_target_speech_and_voice_candidate() -> None:
     result = DiscoveryService(
         fetcher=profile_fetcher(), search_provider=StaticSearch()
     ).discover(
@@ -114,7 +114,7 @@ def test_youtube_search_result_becomes_reference_voice_candidate() -> None:
         for candidate in result.source_plan.candidates
         if candidate.source_type == SourceType.YOUTUBE
     )
-    assert youtube.material_role == MaterialRole.REFERENCE_VOICE
+    assert youtube.material_role == MaterialRole.SPOKEN_BY_TARGET
     assert youtube.discovery_queries
     assert (
         result.reference_voice_candidates[0].source_candidate_id == youtube.candidate_id
@@ -227,7 +227,9 @@ def test_search_adapter_diagnostics_are_preserved_in_provider_operations() -> No
     assert "private provider detail" not in str(failures)
 
 
-def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:
+def test_operator_supplied_podcast_url_becomes_target_speech_and_voice_candidate() -> (
+    None
+):
     podcast_url = (
         "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"
     )
@@ -243,7 +245,7 @@ def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:
         if candidate.url == podcast_url
     )
     assert podcast.source_type == SourceType.PODCAST
-    assert podcast.material_role == MaterialRole.REFERENCE_VOICE
+    assert podcast.material_role == MaterialRole.SPOKEN_BY_TARGET
     assert podcast.approval_status == ApprovalStatus.PENDING
     assert any(
         voice.source_candidate_id == podcast.candidate_id
@@ -280,7 +282,7 @@ def test_direct_media_url_is_planned_without_downloading_during_discovery() -> N
     assert requested == ["https://www.thepitch.show/investors/michael-hyatt"]
 
 
-def test_embedded_audio_page_is_classified_as_podcast_voice_source() -> None:
+def test_embedded_audio_page_is_classified_as_target_podcast_source() -> None:
     page_url = "https://tanktalks.substack.com/p/michael-hyatt"
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -314,7 +316,7 @@ def test_embedded_audio_page_is_classified_as_podcast_voice_source() -> None:
         item for item in result.source_plan.candidates if item.url == page_url
     )
     assert source.source_type == SourceType.PODCAST
-    assert source.material_role == MaterialRole.REFERENCE_VOICE
+    assert source.material_role == MaterialRole.SPOKEN_BY_TARGET
 
 
 def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> None:

@@ -270,7 +270,7 @@ def _search_role(
         word in combined
         for word in ("interview", "podcast", "talk", "keynote", "conversation")
     ):
-        return MaterialRole.REFERENCE_VOICE
+        return MaterialRole.SPOKEN_BY_TARGET
     return MaterialRole.UNKNOWN
 
 
@@ -286,7 +286,7 @@ def _page_role(name: str, page: ExtractedPage, source_type: SourceType) -> Mater
             for word in ("interview", "podcast", "conversation", "guest")
         )
     ):
-        return MaterialRole.REFERENCE_VOICE
+        return MaterialRole.SPOKEN_BY_TARGET
     return MaterialRole.UNKNOWN
 
 
@@ -758,7 +758,8 @@ class DiscoveryService:
                 identity_confidence=candidate.identity_confidence,
             )
             for candidate in candidates
-            if candidate.material_role == MaterialRole.REFERENCE_VOICE
+            if candidate.material_role
+            in {MaterialRole.REFERENCE_VOICE, MaterialRole.SPOKEN_BY_TARGET}
         ]
         return DiscoveryResult(
             identity=identity,

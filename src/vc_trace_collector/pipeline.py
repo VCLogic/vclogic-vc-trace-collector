@@ -381,7 +381,8 @@ class Pipeline:
         voice_source_ids = {item.source_candidate_id for item in voice_candidates}
         for candidate in plan.candidates:
             if (
-                candidate.material_role == MaterialRole.REFERENCE_VOICE
+                candidate.material_role
+                in {MaterialRole.REFERENCE_VOICE, MaterialRole.SPOKEN_BY_TARGET}
                 and candidate.candidate_id not in voice_source_ids
             ):
                 voice_candidates.append(
@@ -619,12 +620,22 @@ class Pipeline:
             )
         operation_id = f"reference-embedding:{candidate_id}:{artifact.artifact_id}"
         provider = self.embedding_provider
+        if (
+            provider is None
+            and self.diarization_provider is not None
+            and hasattr(self.diarization_provider, "embed")
+        ):
+            provider = self.diarization_provider
         if cost.provider_operations >= config.maximum_provider_operations:
             raise ReviewRequired(
                 "Provider-operation budget exhausted before voice embedding"
             )
         reserved_provider = provider.provider_name if provider else "pyannote"
-        reserved_model = provider.model_name if provider else config.embedding_model
+        reserved_model = (
+            provider.model_name
+            if provider
+            else (config.embedding_model or config.diarization_model)
+        )
         if not reserved_model:
             raise ReviewRequired("Configure an embedding model before voice approval")
         cost.reserve(
@@ -637,11 +648,18 @@ class Pipeline:
         provider_invoked = False
         try:
             if provider is None:
-                provider = PyannoteEmbeddingProvider(
-                    reserved_model,
-                    token=os.environ.get("HF_TOKEN"),
-                    device=os.environ.get("VC_TRACE_AV_DEVICE"),
-                )
+                if config.embedding_model:
+                    provider = PyannoteEmbeddingProvider(
+                        reserved_model,
+                        token=os.environ.get("HF_TOKEN"),
+                        device=os.environ.get("VC_TRACE_AV_DEVICE"),
+                    )
+                else:
+                    provider = PyannoteDiarizationProvider(
+                        reserved_model,
+                        token=os.environ.get("HF_TOKEN"),
+                        device=os.environ.get("VC_TRACE_AV_DEVICE"),
+                    )
             reference_artifact = artifact
             if start_seconds is not None or end_seconds is not None:
                 assert start_seconds is not None and end_seconds is not None
