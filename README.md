@@ -19,7 +19,7 @@ The MVP is a modular Python package with:
   SearXNG override, and optional structured LLM refinement;
 - human review or confidence-gated automatic approval;
 - safe, rate-limited web/feed collection, supplied-file ingestion, optional
-  YouTube metadata/caption/audio collection, and bounded podcast-enclosure
+  YouTube metadata/audio collection, and bounded podcast-enclosure
   downloads;
 - configurable exclusion rules with a built-in The Pitch leakage firewall;
 - content-addressed raw artifacts, resumable SQLite operation state, sanitized
@@ -230,7 +230,7 @@ company, author, speaker, keyword, and URL-pattern controls. Rules are evaluated
 at discovery, post-metadata collection, processing, export, and verification.
 Items that are excluded, third-party, unknown, or have uncertain speaker
 attribution cannot enter the corpus. A post-metadata `review` rule pauses before
-captions or media; an analyst may record its rule ID in a decision file's
+media download; an analyst may record its rule ID in a decision file's
 `override_rule_ids` and rerun review/collection. The decision history is part of
 the signed manifest provenance.
 

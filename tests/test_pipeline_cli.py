@@ -87,6 +87,7 @@ class FixtureTranscript:
     model_name = "fixture-transcript"
 
     def transcribe(self, audio_path):
+        is_target = "VC" in Path(audio_path).stem
         return TranscriptResult(
             info=TranscriptInfo(
                 method="speech_to_text",
@@ -94,11 +95,14 @@ class FixtureTranscript:
                 model=self.model_name,
             ),
             segments=[
-                TimedText(start_seconds=0, end_seconds=2, text="Host question"),
                 TimedText(
-                    start_seconds=2,
-                    end_seconds=5,
-                    text="I invest in durable customer value.",
+                    start_seconds=0,
+                    end_seconds=1,
+                    text=(
+                        "I invest in durable customer value."
+                        if is_target
+                        else "Host question"
+                    ),
                 ),
             ],
         )

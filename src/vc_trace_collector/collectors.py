@@ -694,36 +694,6 @@ class YouTubeCollector:
             exclusion.status == InclusionStatus.REVIEW_REQUIRED and not override_applied
         ):
             return records
-        try:
-            from youtube_transcript_api import YouTubeTranscriptApi
-
-            transcript = YouTubeTranscriptApi().fetch(video_id)
-            segments = [
-                {"text": item.text, "start": item.start, "duration": item.duration}
-                for item in transcript.snippets
-            ]
-        except (ImportError, Exception):
-            segments = []
-        if segments:
-            caption_bytes = json.dumps(
-                segments, ensure_ascii=False, sort_keys=True
-            ).encode("utf-8")
-            _charge_download(context, len(caption_bytes))
-            records.append(
-                context.artifacts.put_bytes(
-                    caption_bytes,
-                    category="video",
-                    suffix=".captions.json",
-                    source_url=source.canonical_url,
-                    mime_type="application/json",
-                    collection_method="youtube_captions",
-                    original_metadata={
-                        "candidate_id": source.candidate_id,
-                        "video_id": video_id,
-                    },
-                    parent_artifact_ids=[records[0].artifact_id],
-                ).record
-            )
         duration = float(metadata.get("duration") or 0)
         if context.remaining_media_seconds is not None and duration <= 0:
             raise RuntimeError("Cannot bound YouTube duration before media download")

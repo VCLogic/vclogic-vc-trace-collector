@@ -113,7 +113,15 @@ class FakeTranscript:
     provider_name = "fixture-stt"
     model_name = "fixture-stt-1"
 
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.calls: list[Path] = []
+
     def transcribe(self, audio_path):
+        audio_path = Path(audio_path)
+        self.calls.append(audio_path)
+        self.events.append(f"transcribe:{audio_path.stem}")
+        is_target = "VC" in audio_path.stem
         return TranscriptResult(
             info=TranscriptInfo(
                 method="speech_to_text",
@@ -121,8 +129,11 @@ class FakeTranscript:
                 model=self.model_name,
             ),
             segments=[
-                TimedText(start_seconds=0, end_seconds=2, text="Host asks."),
-                TimedText(start_seconds=2, end_seconds=5, text="I back durable firms."),
+                TimedText(
+                    start_seconds=0,
+                    end_seconds=1,
+                    text=("I back durable firms." if is_target else "Host asks."),
+                ),
             ],
         )
 
@@ -131,10 +142,12 @@ class FakeDiarization:
     provider_name = "fixture-diarization"
     model_name = "fixture-diarization-1"
 
-    def __init__(self, vc_embedding=None):
+    def __init__(self, vc_embedding=None, events=None):
         self.vc_embedding = vc_embedding or [1.0, 0.0]
+        self.events = events if events is not None else []
 
     def diarize(self, audio_path):
+        self.events.append("diarize")
         return DiarizationResult(
             model=self.model_name,
             turns=[
@@ -160,17 +173,35 @@ def reference_profile() -> ReferenceVoiceProfile:
 def test_target_speech_pipeline_extracts_only_clear_matched_speaker(tmp_path) -> None:
     audio = tmp_path / "episode.wav"
     audio.write_bytes(b"fixture")
+    events: list[str] = []
+    extracted: list[tuple[float, float, str]] = []
+
+    def extract(source, destination, *, start_seconds, end_seconds):
+        events.append(f"extract:{destination.stem}")
+        extracted.append((start_seconds, end_seconds, destination.name))
+        destination.write_bytes(b"segment")
+        return destination
+
+    transcript = FakeTranscript(events)
 
     result = process_target_speech(
         audio,
         reference=reference_profile(),
-        transcript_provider=FakeTranscript(),
-        diarization_provider=FakeDiarization(),
+        transcript_provider=transcript,
+        diarization_provider=FakeDiarization(events=events),
+        segment_extractor=extract,
     )
 
     assert result.attribution.status == SpeakerStatus.ACCEPTED_MODEL
     assert [item.text for item in result.target_segments] == ["I back durable firms."]
+    assert result.target_segments[0].start_seconds == 2
     assert result.media_seconds == 5
+    assert events[0] == "diarize"
+    assert len(transcript.calls) == 2
+    assert extracted == [
+        (0, 2, "segment_HOST_00000.wav"),
+        (2, 5, "segment_VC_00001.wav"),
+    ]
 
 
 def test_target_speech_pipeline_flags_weak_match_for_review(tmp_path) -> None:
@@ -183,6 +214,9 @@ def test_target_speech_pipeline_flags_weak_match_for_review(tmp_path) -> None:
         transcript_provider=FakeTranscript(),
         diarization_provider=FakeDiarization([0.72, 0.69]),
         minimum_score=0.9,
+        segment_extractor=lambda source, destination, **kwargs: (
+            destination.write_bytes(b"segment") or destination
+        ),
     )
 
     assert result.attribution.status == SpeakerStatus.UNCERTAIN

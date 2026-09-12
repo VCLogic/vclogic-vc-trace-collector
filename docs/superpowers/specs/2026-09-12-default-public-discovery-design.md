@@ -74,9 +74,10 @@ retries, and costs use the existing audit and budget records. Candidate URLs
 then follow the existing identity validation and policy path before appearing
 in the review plan.
 
-YouTube discovery retrieves metadata only. Captions and media remain part of
-the later collection stage, so discovery does not incur unreviewed audiovisual
-processing cost.
+YouTube discovery retrieves metadata only. Media download remains part of the
+later collection stage, so discovery does not incur unreviewed audiovisual
+processing cost. The authoritative AV path transcribes normalized audio rather
+than substituting platform captions.
 
 ## Safety and quality controls
 
@@ -115,4 +116,3 @@ Paid APIs and credentials remain unnecessary for the default test suite.
   sources when public providers respond successfully.
 - Failures are explicit and resumable.
 - Existing offline tests remain green.
-

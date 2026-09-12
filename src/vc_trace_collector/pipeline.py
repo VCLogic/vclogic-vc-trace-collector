@@ -19,9 +19,7 @@ from .av import (
     PyannoteDiarizationProvider,
     PyannoteEmbeddingProvider,
     TargetSpeechResult,
-    TimedText,
     TranscriptProvider,
-    TranscriptResult,
     WhisperTranscriptProvider,
     extract_audio_segment,
     probe_media_duration,
@@ -734,31 +732,6 @@ class Pipeline:
         )
         return profile
 
-    @staticmethod
-    def _caption_transcript(
-        workspace: Path, artifacts: list, candidate_id: str
-    ) -> TranscriptResult | None:
-        for artifact in artifacts:
-            if artifact.collection_method != "youtube_captions":
-                continue
-            if str(artifact.original_metadata.get("candidate_id", "")) != candidate_id:
-                continue
-            try:
-                rows = read_json(workspace / artifact.relative_path)
-                segments = [TimedText.from_caption(row) for row in rows]
-            except Exception:
-                return None
-            return TranscriptResult(
-                info={
-                    "method": "existing_caption",
-                    "provider": "youtube",
-                    "model": None,
-                    "source_artifact_id": artifact.artifact_id,
-                },
-                segments=segments,
-            )
-        return None
-
     def _av_providers(
         self, config: RunConfig, *, needs_transcript: bool
     ) -> tuple[TranscriptProvider | None, DiarizationProvider]:
@@ -937,7 +910,7 @@ class Pipeline:
                 )
                 continue
             processing_artifact = artifact
-            if is_video:
+            if is_video or path.suffix.casefold() != ".wav":
                 try:
                     with tempfile.TemporaryDirectory(
                         prefix="vc-trace-video-audio-"
@@ -983,7 +956,6 @@ class Pipeline:
                     )
                     continue
                 path = workspace / processing_artifact.relative_path
-            existing = self._caption_transcript(workspace, artifacts, candidate_id)
             operation_id = (
                 f"process-av:{candidate_id}:{processing_artifact.artifact_id}"
             )
@@ -996,9 +968,7 @@ class Pipeline:
                         "diarization_model": config.diarization_model,
                         "minimum_score": config.speaker_minimum_score,
                         "minimum_margin": config.speaker_minimum_margin,
-                        "caption_artifact": (
-                            existing.info.source_artifact_id if existing else None
-                        ),
+                        "segmented_transcription": True,
                         "probed_media_seconds": probed_seconds,
                     }
                 ).encode("utf-8")
@@ -1029,7 +999,7 @@ class Pipeline:
                 if cached:
                     result = TargetSpeechResult.model_validate(read_json(cache_path))
                 else:
-                    required_provider_operations = 1 + int(existing is None)
+                    required_provider_operations = 2
                     if (
                         cost.provider_operations + required_provider_operations
                         > config.maximum_provider_operations
@@ -1054,34 +1024,32 @@ class Pipeline:
                         media_seconds=probed_seconds,
                     )
                     cost_operation_ids.append(diarization_operation)
-                    transcription_operation = None
-                    if existing is None:
-                        transcription_operation = f"{operation_id}:transcription"
-                        cost.reserve(
-                            transcription_operation,
-                            config.transcription_cost_usd,
-                            provider=(
-                                self.transcript_provider.provider_name
-                                if self.transcript_provider
-                                else "local-whisper"
-                            ),
-                            model=(
-                                self.transcript_provider.model_name
-                                if self.transcript_provider
-                                else config.transcription_model
-                            ),
-                        )
-                        cost_operation_ids.append(transcription_operation)
+                    transcription_operation = f"{operation_id}:transcription"
+                    cost.reserve(
+                        transcription_operation,
+                        config.transcription_cost_usd,
+                        provider=(
+                            self.transcript_provider.provider_name
+                            if self.transcript_provider
+                            else "local-whisper"
+                        ),
+                        model=(
+                            self.transcript_provider.model_name
+                            if self.transcript_provider
+                            else config.transcription_model
+                        ),
+                    )
+                    cost_operation_ids.append(transcription_operation)
                     transcript_provider, diarization_provider = self._av_providers(
-                        config, needs_transcript=existing is None
+                        config, needs_transcript=True
                     )
                     state.start_operation(operation_id, input_hash)
                     result = process_target_speech(
                         path,
                         reference=profile,
                         transcript_provider=transcript_provider,
-                        existing_transcript=existing,
                         diarization_provider=diarization_provider,
+                        segment_extractor=self.audio_extractor,
                         minimum_score=config.speaker_minimum_score,
                         minimum_margin=config.speaker_minimum_margin,
                     )

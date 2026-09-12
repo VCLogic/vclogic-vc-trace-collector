@@ -644,7 +644,9 @@ def test_post_metadata_review_pauses_media_until_explicit_rule_override(
     assert sum("--print" in call for call in calls) == 1
 
 
-def test_youtube_collector_preserves_metadata_captions_and_audio(tmp_path) -> None:
+def test_youtube_collector_preserves_metadata_and_audio_without_captions(
+    tmp_path,
+) -> None:
     calls = []
 
     def runner(command, **kwargs):
@@ -679,6 +681,9 @@ def test_youtube_collector_preserves_metadata_captions_and_audio(tmp_path) -> No
 
     assert result.collected == 1
     assert any(item.collection_method == "yt_dlp_audio" for item in result.artifacts)
+    assert not any(
+        item.collection_method == "youtube_captions" for item in result.artifacts
+    )
     assert any("--max-filesize" in command for command in calls)
 
 

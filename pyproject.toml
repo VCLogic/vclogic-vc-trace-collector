@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 browser = ["playwright>=1.49,<2"]
-youtube = ["yt-dlp>=2025.1", "youtube-transcript-api>=1,<2"]
+youtube = ["yt-dlp>=2025.1"]
 av = [
     "numpy>=1.26,<3",
     "scipy>=1.12,<2",
