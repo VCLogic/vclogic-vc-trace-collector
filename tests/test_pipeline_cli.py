@@ -7,13 +7,13 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
+import vc_trace_collector.cli as cli_module
 from vc_trace_collector.av import (
     DiarizationResult,
     DiarizedTurn,
     TimedText,
     TranscriptResult,
 )
-import vc_trace_collector.cli as cli_module
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.collectors import CollectorRegistry, ReviewRequired
 from vc_trace_collector.config import RunConfig

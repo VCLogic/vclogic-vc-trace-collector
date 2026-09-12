@@ -15,7 +15,8 @@ The MVP is a modular Python package with:
 
 - deterministic known-profile parsing, query generation, identity evidence,
   and explicit namesake hypotheses;
-- optional SearXNG search and optional structured LLM refinement;
+- credential-free DDG web search, direct `yt-dlp` YouTube search, optional
+  SearXNG override, and optional structured LLM refinement;
 - human review or confidence-gated automatic approval;
 - safe, rate-limited web/feed collection, supplied-file ingestion, optional
   YouTube metadata/caption/audio collection, and bounded podcast-enclosure
@@ -126,12 +127,28 @@ uv run vc-trace-collector verify --help
 
 ## Discovery providers
 
-Without provider configuration, discovery deterministically evaluates a known
-profile and produces targeted queries for human or external execution. To run
-search automatically, configure an operator-controlled SearXNG JSON endpoint:
+The normal CLI searches the public web through DDG without credentials. When
+the `youtube` extra is installed, YouTube-specific queries use `yt-dlp`
+directly, matching the discovery behavior of the reference collector:
 
 ```bash
-export VC_TRACE_SEARCH_ENDPOINT="https://search.example/api"
+uv sync --extra youtube
+uv run vc-trace-collector discover \
+  --name "Michael Hyatt" \
+  --firm "Hyatt Family Office" \
+  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt"
+```
+
+No-key public search is best-effort: a public service may throttle automated
+requests or change its interface. Failures are isolated and recorded in the
+discovery audit. Use `--disable-public-search` for offline tests or a run that
+must evaluate only supplied profiles, URLs, and files.
+
+An operator-controlled SearXNG JSON endpoint can replace DDG for general web
+search. Direct YouTube discovery remains enabled:
+
+```bash
+export VC_TRACE_SEARCH_ENDPOINT="https://search.example/search"
 ```
 
 Structured LLM refinement is enabled only when all three variables are set:
