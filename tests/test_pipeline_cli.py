@@ -6,6 +6,7 @@ from typing import ClassVar
 
 import httpx
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 import vc_trace_collector.cli as cli_module
@@ -255,6 +256,138 @@ def test_default_cli_constructs_credential_free_public_search(
 
     assert result.exit_code == 0
     assert created == [(tmp_path, marker)]
+
+
+def test_stage_specific_options_keep_av_models_out_of_discovery() -> None:
+    command = get_command(create_app())
+    option_names = {parameter.name for parameter in command.commands["discover"].params}
+
+    assert "discovery_model" in option_names
+    assert "transcription_model" not in option_names
+    assert "diarization_model" not in option_names
+    assert "embedding_model" not in option_names
+
+
+def test_process_cli_routes_av_stage_configuration(tmp_path) -> None:
+    calls = []
+
+    class FakePipeline:
+        def process(self, investor, **options):
+            calls.append((investor, options))
+            return []
+
+    app = create_app(lambda _output_dir: FakePipeline())
+    result = CliRunner().invoke(
+        app,
+        [
+            "process",
+            "--investor",
+            "michael-hyatt",
+            "--transcription-model",
+            "turbo",
+            "--diarization-model",
+            "pyannote/speaker-diarization-3.1",
+            "--transcription-cost-usd",
+            "0.10",
+            "--diarization-cost-usd",
+            "0.20",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "michael-hyatt",
+            {
+                "transcription_model": "turbo",
+                "diarization_model": "pyannote/speaker-diarization-3.1",
+                "transcription_cost_usd": Decimal("0.10"),
+                "diarization_cost_usd": Decimal("0.20"),
+            },
+        )
+    ]
+
+
+def test_review_voice_cli_routes_av_stage_configuration(tmp_path) -> None:
+    calls = []
+
+    class Profile:
+        embedding: ClassVar = [1.0, 0.0]
+
+    class FakePipeline:
+        def approve_reference_voice(self, investor, **options):
+            calls.append((investor, options))
+            return Profile()
+
+    app = create_app(lambda _output_dir: FakePipeline())
+    result = CliRunner().invoke(
+        app,
+        [
+            "review-voice",
+            "--investor",
+            "michael-hyatt",
+            "--candidate-id",
+            "voice:candidate",
+            "--diarization-model",
+            "pyannote/speaker-diarization-3.1",
+            "--embedding-cost-usd",
+            "0.30",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "michael-hyatt",
+            {
+                "candidate_id": "voice:candidate",
+                "reviewer": "human",
+                "start_seconds": None,
+                "end_seconds": None,
+                "diarization_model": "pyannote/speaker-diarization-3.1",
+                "embedding_model": None,
+                "embedding_cost_usd": Decimal("0.30"),
+            },
+        )
+    ]
+
+
+def test_process_persists_av_configuration_without_duplicate_audit_events(
+    tmp_path,
+) -> None:
+    collector = pipeline(tmp_path)
+    collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+    )
+
+    options = {
+        "transcription_model": "turbo",
+        "diarization_model": "pyannote/speaker-diarization-3.1",
+        "transcription_cost_usd": Decimal("0.10"),
+        "diarization_cost_usd": Decimal("0.20"),
+    }
+    collector.process("michael-hyatt", **options)
+    collector.process("michael-hyatt", **options)
+
+    workspace = tmp_path / "michael-hyatt"
+    config = read_json(workspace / "config_snapshot.json")
+    assert config["transcription_model"] == "turbo"
+    assert config["diarization_model"] == "pyannote/speaker-diarization-3.1"
+    assert config["transcription_cost_usd"] == "0.10"
+    assert config["diarization_cost_usd"] == "0.20"
+    configuration_events = [
+        event
+        for event in read_jsonl(workspace / "audit/events.jsonl")
+        if event["stage"] == "configuration"
+    ]
+    assert len(configuration_events) == 1
+    assert configuration_events[0]["details"]["stage"] == "process"
+    assert set(configuration_events[0]["details"]["changes"]) == set(options)
 
 
 def test_cli_loads_dotenv_without_overriding_process_environment(
@@ -871,7 +1004,6 @@ def test_reference_budget_is_reserved_before_model_initialization(
             supplied_files=[str(reference_audio)],
             supplied_role=MaterialRole.REFERENCE_VOICE,
             output_dir=str(output),
-            embedding_model="fixture-model",
         ),
     )
     source = next(
@@ -901,6 +1033,9 @@ def test_reference_budget_is_reserved_before_model_initialization(
 
     class GuardedProvider:
         def __init__(self, *args, **kwargs):
+            config = read_json(output / "michael-hyatt/config_snapshot.json")
+            assert config["embedding_model"] == "fixture-model"
+            assert config["embedding_cost_usd"] == "0.30"
             rows = read_jsonl(costs_path)
             assert rows[-1]["kind"] == "reservation"
             assert rows[-1]["provider"] == "pyannote"
@@ -916,6 +1051,8 @@ def test_reference_budget_is_reserved_before_model_initialization(
             reviewer="reviewer",
             start_seconds=0,
             end_seconds=10,
+            embedding_model="fixture-model",
+            embedding_cost_usd=Decimal("0.30"),
         )
 
     rows = read_jsonl(costs_path)

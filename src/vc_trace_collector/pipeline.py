@@ -6,6 +6,7 @@ import os
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -177,6 +178,35 @@ class Pipeline:
                 )
             )
         return RuleSet(self.rules.rules + additions)
+
+    def _configure_stage(
+        self, workspace: Path, stage: str, **updates: object | None
+    ) -> RunConfig:
+        config_path = workspace / "config_snapshot.json"
+        config = RunConfig.model_validate(read_json(config_path))
+        supplied = {key: value for key, value in updates.items() if value is not None}
+        if not supplied:
+            return config
+        payload = config.model_dump()
+        payload.update(supplied)
+        updated = RunConfig.model_validate(payload)
+        changes = {
+            key: {"from": getattr(config, key), "to": getattr(updated, key)}
+            for key in supplied
+            if getattr(config, key) != getattr(updated, key)
+        }
+        if not changes:
+            return config
+        write_json(config_path, updated)
+        summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        self._event(
+            workspace,
+            summary.run_id,
+            "configuration",
+            f"Updated {stage} configuration",
+            details={"stage": stage, "changes": changes},
+        )
+        return updated
 
     def _provider_for(self, model: str | None):
         if self.discovery_provider:
@@ -564,6 +594,9 @@ class Pipeline:
         reviewer: str,
         start_seconds: float | None = None,
         end_seconds: float | None = None,
+        diarization_model: str | None = None,
+        embedding_model: str | None = None,
+        embedding_cost_usd: Decimal | None = None,
     ) -> ReferenceVoiceProfile:
         """Human-approve a public clip and persist its reproducible voice embedding."""
         workspace = self.workspace(investor_slug)
@@ -593,7 +626,13 @@ class Pipeline:
             raise FileNotFoundError(
                 "Reference voice raw artifact is missing"
             ) from error
-        config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
+        config = self._configure_stage(
+            workspace,
+            "review_voice",
+            diarization_model=diarization_model,
+            embedding_model=embedding_model,
+            embedding_cost_usd=embedding_cost_usd,
+        )
         source_path = workspace / artifact.relative_path
         if (start_seconds is None) != (end_seconds is None):
             raise ValueError("Both reference start and end seconds are required")
@@ -771,11 +810,26 @@ class Pipeline:
             )
         return transcript, diarization
 
-    def process(self, investor_slug: str) -> list[CanonicalDocument]:
+    def process(
+        self,
+        investor_slug: str,
+        *,
+        transcription_model: str | None = None,
+        diarization_model: str | None = None,
+        transcription_cost_usd: Decimal | None = None,
+        diarization_cost_usd: Decimal | None = None,
+    ) -> list[CanonicalDocument]:
         workspace = self.workspace(investor_slug)
         identity = self._load_identity(investor_slug)
         plan = self._load_plan(investor_slug)
-        config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
+        config = self._configure_stage(
+            workspace,
+            "process",
+            transcription_model=transcription_model,
+            diarization_model=diarization_model,
+            transcription_cost_usd=transcription_cost_usd,
+            diarization_cost_usd=diarization_cost_usd,
+        )
         artifacts = load_artifact_records(workspace)
         documents = process_artifacts(
             workspace,

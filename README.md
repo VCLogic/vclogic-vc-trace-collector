@@ -60,13 +60,10 @@ paid-provider SDKs.
 Discovery always creates a reviewable plan before collection:
 
 ```bash
-uv run vc-trace-collector collect \
+uv run vc-trace-collector discover \
   --name "Michael Hyatt" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --source-url "https://tanktalks.substack.com/p/tank-talk-michael-hyatt-hyatt-family" \
-  --transcription-model small.en \
-  --diarization-model "operator-selected-pyannote-pipeline" \
-  --embedding-model "operator-selected-pyannote-embedding"
+  --source-url "https://tanktalks.substack.com/p/tank-talk-michael-hyatt-hyatt-family"
 
 uv run vc-trace-collector status --investor michael-hyatt
 uv run vc-trace-collector review \
@@ -76,11 +73,11 @@ uv run vc-trace-collector review \
 uv run vc-trace-collector collect \
   --name "Michael Hyatt" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --resume latest
+  --resume latest \
+  --collection-only
 ```
 
-The first `collect` command stops with exit code 3 after writing the discovery
-plan. The supplied Michael Hyatt profile is retained as identity evidence and
+The supplied Michael Hyatt profile is retained as identity evidence and
 rejected from corpus collection because it is on `thepitch.show`. This is the
 generalized evaluation-leakage firewall working as intended.
 
@@ -135,7 +132,6 @@ directly, matching the discovery behavior of the reference collector:
 uv sync --extra youtube
 uv run vc-trace-collector discover \
   --name "Michael Hyatt" \
-  --firm "Hyatt Family Office" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt"
 ```
 
@@ -210,11 +206,20 @@ uv run vc-trace-collector review-voice \
   --candidate-id 'voice:<id from the JSONL file>' \
   --reviewer 'analyst@example.com' \
   --start-seconds 120 \
-  --end-seconds 165
+  --end-seconds 165 \
+  --diarization-model "pyannote/speaker-diarization-3.1"
 
-uv run vc-trace-collector process --investor michael-hyatt
+uv run vc-trace-collector process \
+  --investor michael-hyatt \
+  --transcription-model turbo \
+  --diarization-model "pyannote/speaker-diarization-3.1"
+
 uv run vc-trace-collector export --investor michael-hyatt
 ```
+
+Stage-specific model and cost selections update `config_snapshot.json` and
+append a structured configuration event to the audit trace. Options omitted at
+a later invocation retain their previously saved values.
 
 Use a decision-file entry with `"material_role": "spoken_by_target"` for an
 appearance that should enter target-speech processing. A separate clean

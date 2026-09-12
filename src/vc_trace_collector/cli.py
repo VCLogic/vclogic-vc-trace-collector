@@ -65,12 +65,6 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         exclude_domain: list[str] | None = typer.Option(None),
         exclude_channel: list[str] | None = typer.Option(None),
         discovery_model: str | None = typer.Option(None),
-        transcription_model: str | None = typer.Option(None),
-        diarization_model: str | None = typer.Option(None),
-        embedding_model: str | None = typer.Option(None),
-        transcription_cost_usd: str = typer.Option("0"),
-        diarization_cost_usd: str = typer.Option("0"),
-        embedding_cost_usd: str = typer.Option("0"),
         search_operation_cost_usd: str = typer.Option("0"),
         max_cost_usd: str = typer.Option("10.00"),
         discovery_call_budget_usd: str | None = typer.Option(
@@ -99,12 +93,6 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             excluded_channels=exclude_channel or [],
             exclusion_rules=_rules_from_file(exclusion_file),
             discovery_model=discovery_model,
-            transcription_model=transcription_model,
-            diarization_model=diarization_model,
-            embedding_model=embedding_model,
-            transcription_cost_usd=Decimal(transcription_cost_usd),
-            diarization_cost_usd=Decimal(diarization_cost_usd),
-            embedding_cost_usd=Decimal(embedding_cost_usd),
             search_operation_cost_usd=Decimal(search_operation_cost_usd),
             maximum_cost_usd=Decimal(max_cost_usd),
             discovery_call_budget_usd=(
@@ -303,9 +291,27 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
     @app.command("process")
     def process_command(
         investor: str = typer.Option(...),
+        transcription_model: str | None = typer.Option(None),
+        diarization_model: str | None = typer.Option(None),
+        transcription_cost_usd: str | None = typer.Option(None),
+        diarization_cost_usd: str | None = typer.Option(None),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        documents = make_pipeline(output_dir).process(investor)
+        documents = make_pipeline(output_dir).process(
+            investor,
+            transcription_model=transcription_model,
+            diarization_model=diarization_model,
+            transcription_cost_usd=(
+                Decimal(transcription_cost_usd)
+                if transcription_cost_usd is not None
+                else None
+            ),
+            diarization_cost_usd=(
+                Decimal(diarization_cost_usd)
+                if diarization_cost_usd is not None
+                else None
+            ),
+        )
         typer.echo(f"Processed {len(documents)} documents.")
 
     @app.command()
@@ -328,6 +334,9 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         reviewer: str = typer.Option("human", help="Reviewer identifier"),
         start_seconds: float | None = typer.Option(None),
         end_seconds: float | None = typer.Option(None),
+        diarization_model: str | None = typer.Option(None),
+        embedding_model: str | None = typer.Option(None),
+        embedding_cost_usd: str | None = typer.Option(None),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
         profile = make_pipeline(output_dir).approve_reference_voice(
@@ -336,6 +345,13 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             reviewer=reviewer,
             start_seconds=start_seconds,
             end_seconds=end_seconds,
+            diarization_model=diarization_model,
+            embedding_model=embedding_model,
+            embedding_cost_usd=(
+                Decimal(embedding_cost_usd)
+                if embedding_cost_usd is not None
+                else None
+            ),
         )
         typer.echo(
             f"Approved reference voice with {len(profile.embedding)} embedding dimensions."
