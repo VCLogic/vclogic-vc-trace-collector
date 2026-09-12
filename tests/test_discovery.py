@@ -138,6 +138,54 @@ def test_duplicate_search_results_are_merged_with_all_queries() -> None:
     assert len(youtube[0].discovery_queries) >= 1
 
 
+def test_namesake_result_without_target_affiliation_stays_below_auto_approval() -> None:
+    class NamesakeSearch:
+        provider_name = "fixture-search"
+
+        def search(self, query: str, limit: int = 10):
+            if "YouTube" not in query:
+                return []
+            return [
+                SearchResult(
+                    url="https://www.youtube.com/watch?v=correct",
+                    title="Michael Hyatt BlueCat interview",
+                    snippet="The Hyatt Family Office investor discusses BlueCat.",
+                    rank=1,
+                    query=query,
+                    provider=self.provider_name,
+                ),
+                SearchResult(
+                    url="https://www.youtube.com/watch?v=namesake",
+                    title="The Double Win with Michael Hyatt",
+                    snippet="A productivity and leadership podcast from Full Focus.",
+                    rank=2,
+                    query=query,
+                    provider=self.provider_name,
+                ),
+            ]
+
+    result = DiscoveryService(
+        fetcher=profile_fetcher(), search_provider=NamesakeSearch()
+    ).discover(
+        name="Michael Hyatt",
+        firm="Hyatt Family Office",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+    )
+    by_url = {
+        candidate.canonical_url: candidate
+        for candidate in result.source_plan.candidates
+    }
+
+    assert (
+        by_url["https://www.youtube.com/watch?v=correct"].identity_confidence.score
+        >= 0.8
+    )
+    assert (
+        by_url["https://www.youtube.com/watch?v=namesake"].identity_confidence.score
+        < 0.8
+    )
+
+
 def test_discovery_caps_total_search_operations() -> None:
     search = StaticSearch()
     DiscoveryService(

@@ -615,11 +615,21 @@ class DiscoveryService:
                             set(existing.discovery_queries + [result.query])
                         )
                         continue
+                    search_context = f"{result.title} {result.snippet}".casefold()
+                    name_matches = name.casefold() in search_context
+                    affiliation_matches = any(
+                        affiliation.firm.casefold() in search_context
+                        for affiliation in affiliations
+                    )
                     identity_score = (
-                        0.8
-                        if name.casefold()
-                        in f"{result.title} {result.snippet}".casefold()
-                        else 0.3
+                        0.9
+                        if name_matches and affiliation_matches
+                        else (0.6 if name_matches else 0.3)
+                    )
+                    identity_method = (
+                        "search_name_affiliation_anchor"
+                        if affiliation_matches
+                        else "search_name_only"
                     )
                     candidates_by_url[canonical] = SourceCandidate(
                         candidate_id=stable_id("candidate", canonical),
@@ -633,7 +643,7 @@ class DiscoveryService:
                         discovery_queries=[result.query],
                         identity_confidence=Confidence(
                             score=identity_score,
-                            method="search_name_anchor",
+                            method=identity_method,
                             version="1",
                         ),
                         source_confidence=Confidence(
