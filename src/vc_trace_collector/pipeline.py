@@ -228,7 +228,9 @@ class Pipeline:
             )
         service = DiscoveryService(
             fetcher=self.fetcher,
-            search_provider=self.search_provider,
+            search_provider=(
+                self.search_provider if config.public_search_enabled else None
+            ),
             discovery_provider=discovery_provider,
             rules=run_rules,
             maximum_search_operations=config.maximum_search_operations,

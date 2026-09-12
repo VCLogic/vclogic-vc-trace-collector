@@ -15,6 +15,7 @@ from vc_trace_collector.discovery import (
 )
 from vc_trace_collector.fetch import Fetcher
 from vc_trace_collector.models import ApprovalStatus, MaterialRole, SourceType
+from vc_trace_collector.public_search import CompositeSearchProvider
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -192,6 +193,38 @@ def test_failed_discovery_provider_call_is_conservatively_settled(tmp_path) -> N
 
     assert ledger.provider_operations == 1
     assert ledger.spent == Decimal("0.25")
+
+
+def test_search_adapter_diagnostics_are_preserved_in_provider_operations() -> None:
+    class FailingWeb:
+        provider_name = "fixture-web"
+
+        def search(self, query: str, limit: int = 10):
+            raise RuntimeError("private provider detail")
+
+    class EmptyYoutube:
+        provider_name = "fixture-youtube"
+
+        def search(self, query: str, limit: int = 10):
+            return []
+
+    search = CompositeSearchProvider(web=FailingWeb(), youtube=EmptyYoutube())
+    result = DiscoveryService(
+        fetcher=profile_fetcher(), search_provider=search
+    ).discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+    )
+
+    failures = [
+        operation
+        for operation in result.provider_operations
+        if operation.get("diagnostics")
+    ]
+    assert failures
+    assert failures[0]["diagnostics"][0]["provider"] == "fixture-web"
+    assert failures[0]["diagnostics"][0]["error"] == "RuntimeError"
+    assert "private provider detail" not in str(failures)
 
 
 def test_operator_supplied_podcast_url_becomes_voice_candidate() -> None:

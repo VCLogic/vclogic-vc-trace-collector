@@ -13,6 +13,7 @@ from vc_trace_collector.av import (
     TimedText,
     TranscriptResult,
 )
+import vc_trace_collector.cli as cli_module
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.collectors import CollectorRegistry, ReviewRequired
 from vc_trace_collector.config import RunConfig
@@ -217,6 +218,66 @@ def test_cli_discover_accepts_additional_source_url(tmp_path) -> None:
     assert result.exit_code == 0
     rows = read_jsonl(tmp_path / "michael-hyatt/discovery/source_candidates.jsonl")
     assert any(row["url"] == podcast_url for row in rows)
+
+
+def test_default_cli_constructs_credential_free_public_search(
+    tmp_path, monkeypatch
+) -> None:
+    marker = object()
+    created: list[tuple[Path, object]] = []
+
+    class FakePipeline:
+        def __init__(self, output_dir, *, search_provider=None):
+            created.append((Path(output_dir), search_provider))
+
+        def status(self, investor):
+            return {"investor": investor}
+
+    monkeypatch.delenv("VC_TRACE_SEARCH_ENDPOINT", raising=False)
+    monkeypatch.setattr(cli_module, "Pipeline", FakePipeline)
+    monkeypatch.setattr(
+        cli_module, "default_public_search_provider", lambda **kwargs: marker
+    )
+
+    result = CliRunner().invoke(
+        create_app(),
+        ["status", "--investor", "michael-hyatt", "--output-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert created == [(tmp_path, marker)]
+
+
+def test_cli_can_disable_public_search_for_discovery(tmp_path) -> None:
+    collector = pipeline(tmp_path)
+
+    class ExplodingSearch:
+        provider_name = "must-not-run"
+
+        def search(self, query, limit=10):
+            raise AssertionError("public search was not disabled")
+
+    collector.search_provider = ExplodingSearch()
+    app = create_app(lambda _output_dir: collector)
+    result = CliRunner().invoke(
+        app,
+        [
+            "discover",
+            "--name",
+            "Michael Hyatt",
+            "--known-profile-url",
+            "https://www.thepitch.show/investors/michael-hyatt",
+            "--disable-public-search",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = read_json(tmp_path / "michael-hyatt/config_snapshot.json")
+    assert config["public_search_enabled"] is False
+    event = read_jsonl(tmp_path / "michael-hyatt/audit/events.jsonl")[0]
+    assert event["details"]["provider_operations"] == []
 
 
 def test_collected_voice_audio_is_linked_to_reference_candidate(tmp_path) -> None:

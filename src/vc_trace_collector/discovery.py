@@ -550,6 +550,7 @@ class DiscoveryService:
         firm_names = [item.firm for item in affiliations]
         queries = generate_queries(name, firm_names)
         provider_operations: list[dict[str, object]] = []
+        reported_diagnostics = 0
 
         if self.search_provider:
             for query in queries[: self.maximum_search_operations]:
@@ -586,13 +587,16 @@ class DiscoveryService:
                         self.search_operation_cost_usd,
                         provider=self.search_provider.provider_name,
                     )
-                provider_operations.append(
-                    {
-                        "provider": self.search_provider.provider_name,
-                        "query": query,
-                        "results": len(results),
-                    }
-                )
+                operation: dict[str, object] = {
+                    "provider": self.search_provider.provider_name,
+                    "query": query,
+                    "results": len(results),
+                }
+                diagnostics = getattr(self.search_provider, "diagnostics", [])
+                if len(diagnostics) > reported_diagnostics:
+                    operation["diagnostics"] = diagnostics[reported_diagnostics:]
+                    reported_diagnostics = len(diagnostics)
+                provider_operations.append(operation)
                 for result in results:
                     canonical = canonicalize_url(result.url)
                     source_type = _source_type(

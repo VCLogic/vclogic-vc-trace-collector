@@ -44,6 +44,7 @@ class RunConfig(BaseModel):
     maximum_media_minutes: float = Field(default=120, ge=0)
     maximum_download_bytes: int = Field(default=1_000_000_000, gt=0)
     maximum_provider_operations: int = Field(default=100, ge=0)
+    public_search_enabled: bool = True
     automatic_discovery: bool = False
     allow_partial_run: bool = False
     resume: str | None = None

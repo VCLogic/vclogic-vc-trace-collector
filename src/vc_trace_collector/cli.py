@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +16,7 @@ from .config import RunConfig
 from .models import ApprovalStatus, MaterialRole, SourceDecision
 from .pipeline import Pipeline
 from .policy import RuleSet
+from .public_search import default_public_search_provider
 from .storage import read_json
 
 PipelineFactory = Callable[[Path], Pipeline]
@@ -24,7 +26,18 @@ def _rules_from_file(path: Path | None):
     return RuleSet.from_toml(path).rules if path else []
 
 
-def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
+def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
+    def make_pipeline(output_dir: Path) -> Pipeline:
+        if pipeline_factory is not None:
+            return pipeline_factory(output_dir)
+        endpoint = os.environ.get("VC_TRACE_SEARCH_ENDPOINT", "").strip()
+        return Pipeline(
+            output_dir,
+            search_provider=default_public_search_provider(
+                searxng_endpoint=endpoint or None
+            ),
+        )
+
     app = typer.Typer(
         name="vc-trace-collector",
         help="Build auditable, source-linked public-trace corpora for investors.",
@@ -64,6 +77,10 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         max_media_minutes: float = typer.Option(120),
         max_download_bytes: int = typer.Option(1_000_000_000),
         max_provider_operations: int = typer.Option(100),
+        disable_public_search: bool = typer.Option(
+            False,
+            help="Use only supplied profiles, URLs, and files during discovery",
+        ),
         allow_partial_run: bool = typer.Option(False),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
@@ -96,9 +113,10 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
             maximum_media_minutes=max_media_minutes,
             maximum_download_bytes=max_download_bytes,
             maximum_provider_operations=max_provider_operations,
+            public_search_enabled=not disable_public_search,
             allow_partial_run=allow_partial_run,
         )
-        result = pipeline_factory(output_dir).discover(
+        result = make_pipeline(output_dir).discover(
             name=name,
             firm=firm,
             known_profile_url=known_profile_url,
@@ -127,7 +145,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
             False, help="Explicitly confirm the resolved person and affiliations"
         ),
     ) -> None:
-        pipeline = pipeline_factory(output_dir)
+        pipeline = make_pipeline(output_dir)
         plan = pipeline._load_plan(investor)
         decisions: list[SourceDecision] = []
         if decision_file:
@@ -212,6 +230,10 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         max_media_minutes: float = typer.Option(120),
         max_download_bytes: int = typer.Option(1_000_000_000),
         max_provider_operations: int = typer.Option(100),
+        disable_public_search: bool = typer.Option(
+            False,
+            help="Use only supplied profiles, URLs, and files during discovery",
+        ),
         auto_approve_discovery: bool = typer.Option(False),
         resume: str | None = typer.Option(None),
         collection_only: bool = typer.Option(False),
@@ -225,7 +247,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         if sum((collection_only, processing_only, export_only)) > 1:
             raise typer.BadParameter("Only one execution-only mode may be selected")
         try:
-            result = pipeline_factory(output_dir).collect(
+            result = make_pipeline(output_dir).collect(
                 name=name,
                 firm=firm,
                 known_profile_url=known_profile_url,
@@ -259,6 +281,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
                 maximum_media_minutes=max_media_minutes,
                 maximum_download_bytes=max_download_bytes,
                 maximum_provider_operations=max_provider_operations,
+                public_search_enabled=not disable_public_search,
                 allow_partial_run=allow_partial_run,
             )
         except ReviewRequired as error:
@@ -279,7 +302,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         investor: str = typer.Option(...),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        documents = pipeline_factory(output_dir).process(investor)
+        documents = make_pipeline(output_dir).process(investor)
         typer.echo(f"Processed {len(documents)} documents.")
 
     @app.command()
@@ -287,7 +310,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         investor: str = typer.Option(...),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        pipeline = pipeline_factory(output_dir)
+        pipeline = make_pipeline(output_dir)
         manifest = pipeline.export(investor)
         verification = pipeline.verify(investor)
         typer.echo(f"Exported {manifest.corpus_documents} corpus documents.")
@@ -304,7 +327,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         end_seconds: float | None = typer.Option(None),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        profile = pipeline_factory(output_dir).approve_reference_voice(
+        profile = make_pipeline(output_dir).approve_reference_voice(
             investor,
             candidate_id=candidate_id,
             reviewer=reviewer,
@@ -322,7 +345,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
     ) -> None:
         typer.echo(
             json.dumps(
-                pipeline_factory(output_dir).status(investor), indent=2, default=str
+                make_pipeline(output_dir).status(investor), indent=2, default=str
             )
         )
 
@@ -331,7 +354,7 @@ def create_app(pipeline_factory: PipelineFactory = Pipeline) -> typer.Typer:
         investor: str = typer.Option(...),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        result = pipeline_factory(output_dir).verify(investor)
+        result = make_pipeline(output_dir).verify(investor)
         typer.echo(json.dumps(result.model_dump(mode="json"), indent=2))
         if not result.passed:
             raise typer.Exit(1)
