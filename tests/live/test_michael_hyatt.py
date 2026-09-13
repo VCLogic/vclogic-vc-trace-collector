@@ -43,7 +43,9 @@ def test_michael_hyatt_profile_resolves_identity_but_is_firewalled(tmp_path) -> 
         if candidate.canonical_url == VOICE_SOURCE_URL
     )
     assert voice_source.source_type == "podcast"
-    assert voice_source.material_role == "reference_voice"
+    # The source is target speech and is also proposed as a voice-reference
+    # candidate; the human chooses its final role during review.
+    assert voice_source.material_role == "spoken_by_target"
     assert voice_source.identity_confidence.score == 0.9
     assert any(
         item.source_candidate_id == voice_source.candidate_id
