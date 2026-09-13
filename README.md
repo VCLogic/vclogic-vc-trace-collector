@@ -9,6 +9,8 @@ legacy `blog.jsonl`, `talks.jsonl`, and `_manifest.json` files.
 This repository does **not** generate an Investment Memory, score pitches,
 predict investment decisions, or run founder rehearsals.
 
+See [CHANGELOG.md](CHANGELOG.md) for release history.
+
 ## Status
 
 The MVP is a modular Python package with:
@@ -46,7 +48,10 @@ uv run vc-trace-collector --help
 Install only the optional capabilities you need:
 
 ```bash
+# YouTube discovery/download plus local Whisper and pyannote processing
 uv sync --extra youtube --extra av --extra av-local
+
+# Optional browser-backed web collection
 uv sync --extra browser
 ```
 
@@ -68,35 +73,170 @@ each channel. It does not search for an investor and it does not install tools.
 Use Agent Reach's explicit `--system` installer only if you intend it to modify
 your user-level tool configuration.
 
-## Quick start
+Set local model configuration in `.env`; the CLI loads it automatically from
+the repository's current working directory:
 
-Discovery always creates a reviewable plan before collection:
+```bash
+cp .env.example .env
+chmod 600 .env
+# Edit .env and set HF_TOKEN and VC_TRACE_AV_DEVICE as needed.
+```
+
+Do not copy `.env` to another filename and commit it. Existing shell variables
+take precedence over values in `.env`.
+
+## Michael Hyatt: complete staged workflow
+
+Run these stages from the repository root. Each stage is resumable; rerunning a
+completed operation uses its audited cache.
+
+### 1. Check dependencies
+
+```bash
+uv run vc-trace-collector doctor --json
+```
+
+For the complete audiovisual path, `ffmpeg`, `ffprobe`, and `yt-dlp` should be
+reported as ready. Agent Reach web discovery additionally needs `agent-reach`
+and `mcporter`; `doctor` only reports their status and never installs them.
+
+### 2. Resolve the identity
 
 ```bash
 uv run vc-trace-collector discover \
   --name "Michael Hyatt" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --source-url "https://tanktalks.substack.com/p/tank-talk-michael-hyatt-hyatt-family"
+  --disable-public-search
+```
 
-uv run vc-trace-collector status --investor michael-hyatt
+`--disable-public-search` affects this `discover` invocation only: it prevents
+the built-in DDG/YouTube search while the known profile is used to resolve the
+identity. It does not disable any later `search-source` command. Keeping the
+steps separate makes platform searches explicit, independently resumable, and
+easy to audit.
+
+The supplied profile is retained as identity evidence but excluded from corpus
+material by the configurable `thepitch.show` leakage firewall.
+
+### 3. Search each source family
+
+```bash
+uv run vc-trace-collector search-source --investor michael-hyatt --source youtube --backend agent-reach
+uv run vc-trace-collector search-source --investor michael-hyatt --source podcast --backend agent-reach
+uv run vc-trace-collector search-source --investor michael-hyatt --source web_article --backend agent-reach
+uv run vc-trace-collector search-source --investor michael-hyatt --source web_profile --backend agent-reach
+uv run vc-trace-collector search-source --investor michael-hyatt --source rss_feed --backend agent-reach
+uv run vc-trace-collector search-source --investor michael-hyatt --source substack --backend agent-reach
+uv run vc-trace-collector search-source --investor michael-hyatt --source medium --backend agent-reach
+uv run vc-trace-collector list-sources --investor michael-hyatt
+```
+
+Search only discovers URLs and appends candidates. It does not download media,
+run Whisper, or run pyannote.
+
+### 4. Review the proposed sources
+
+Copy the real candidate IDs from `list-sources` into `decisions.json`. Mark a
+clean recording intended for voice comparison as `reference_voice`; mark each
+appearance whose target speech should enter the corpus as `spoken_by_target`:
+
+```json
+[
+  {
+    "candidate_id": "candidate:<reference-id>",
+    "status": "approved",
+    "reason": "Human confirmed identity and suitability as a voice reference",
+    "decided_by": "human",
+    "material_role": "reference_voice"
+  },
+  {
+    "candidate_id": "candidate:<appearance-id>",
+    "status": "approved",
+    "reason": "Human confirmed the target investor appears in this recording",
+    "decided_by": "human",
+    "material_role": "spoken_by_target"
+  }
+]
+```
+
+Then record the identity and source decisions:
+
+```bash
 uv run vc-trace-collector review \
   --investor michael-hyatt \
-  --confirm-identity
+  --confirm-identity \
+  --decision-file decisions.json
+```
 
+Do not approve a namesake or uncertain source merely to continue the run.
+
+### 5. Fetch approved material
+
+Fetch one platform or candidate at a time:
+
+```bash
+uv run vc-trace-collector fetch-source --investor michael-hyatt --source youtube
+uv run vc-trace-collector fetch-source --investor michael-hyatt --source podcast
+uv run vc-trace-collector fetch-source --investor michael-hyatt --candidate-id 'candidate:<id>'
+```
+
+YouTube collection downloads metadata and audio. Platform captions are not used
+for target-speech extraction.
+
+### 6. Approve a clean reference-voice interval
+
+After fetching the reference recording, take its `voice:` ID from
+`outputs/michael-hyatt/identity/reference_voice_candidates.jsonl`. Listen to the
+recording and select an interval containing Michael Hyatt alone—no host,
+crosstalk, or music:
+
+```bash
+uv run vc-trace-collector review-voice \
+  --investor michael-hyatt \
+  --candidate-id 'voice:<actual-id>' \
+  --reviewer human \
+  --start-seconds 120 \
+  --end-seconds 165 \
+  --diarization-model pyannote/speaker-diarization-3.1
+```
+
+### 7. Process each target appearance
+
+```bash
+uv run vc-trace-collector process-source \
+  --investor michael-hyatt \
+  --candidate-id 'candidate:<appearance-id>' \
+  --transcription-model turbo \
+  --diarization-model pyannote/speaker-diarization-3.1
+```
+
+This stage extracts audio, diarizes speakers, compares them with the approved
+voice reference, transcribes target turns, and flags uncertain attribution for
+review.
+
+### 8. Export and verify
+
+```bash
+uv run vc-trace-collector export --investor michael-hyatt
+uv run vc-trace-collector verify --investor michael-hyatt
+uv run vc-trace-collector status --investor michael-hyatt
+```
+
+The run is complete only when `verify` passes. Outputs are under
+`outputs/michael-hyatt/`, including the compatibility files `blog.jsonl`,
+`talks.jsonl`, and `_manifest.json`.
+
+## Alternative all-in-one run
+
+After discovery and review, the higher-level command can resume and execute the
+remaining stages:
+
+```bash
 uv run vc-trace-collector collect \
   --name "Michael Hyatt" \
   --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --resume latest \
-  --collection-only
+  --resume latest
 ```
-
-The supplied Michael Hyatt profile is retained as identity evidence and
-rejected from corpus collection because it is on `thepitch.show`. This is the
-generalized evaluation-leakage firewall working as intended.
-
-`--source-url` is repeatable. It seeds an independently discovered page or
-recording into the same identity validation and review workflow; it never
-bypasses confidence checks or exclusion rules.
 
 For a non-interactive run, `--auto-approve-discovery` accepts only candidates
 above the configured confidence thresholds. A remaining namesake hypothesis,
@@ -111,6 +251,10 @@ uv run vc-trace-collector collect \
   --max-search-operations 20 \
   --max-media-minutes 60
 ```
+
+`--source-url` is repeatable. It seeds an independently discovered page or
+recording into the same identity validation and review workflow; it never
+bypasses confidence checks or exclusion rules.
 
 When an LLM discovery provider is enabled, also pass a conservative upper-bound
 reservation for its single refinement call. The call will not start without it:
