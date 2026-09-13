@@ -3,10 +3,59 @@ from types import SimpleNamespace
 
 from vc_trace_collector.discovery import SearchResult
 from vc_trace_collector.public_search import (
+    AgentReachWebSearchProvider,
     CompositeSearchProvider,
     DdgSearchProvider,
     YtDlpSearchProvider,
 )
+
+
+def test_agent_reach_exa_backend_uses_mcporter_and_parses_json() -> None:
+    calls: list[tuple[list[str], dict]] = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "results": [
+                        {
+                            "url": "https://example.test/michael-hyatt",
+                            "title": "Michael Hyatt interview",
+                            "text": "Hyatt Family Office investor",
+                        }
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    provider = AgentReachWebSearchProvider(runner=runner, timeout=19)
+    results = provider.search('"Michael Hyatt" podcast', limit=4)
+
+    command, kwargs = calls[0]
+    assert command == [
+        "mcporter",
+        "call",
+        "exa.web_search_exa",
+        'query="Michael Hyatt" podcast',
+        "numResults=4",
+    ]
+    assert kwargs["shell"] is False
+    assert kwargs["timeout"] == 19
+    assert results[0].provider == "agent-reach:exa"
+    assert results[0].snippet == "Hyatt Family Office investor"
+
+
+def test_agent_reach_exa_backend_isolates_missing_mcporter() -> None:
+    def runner(*args, **kwargs):
+        raise FileNotFoundError
+
+    provider = AgentReachWebSearchProvider(runner=runner)
+
+    assert provider.search("Michael Hyatt") == []
+    assert provider.diagnostics[-1]["error"] == "mcporter is not installed"
 
 
 def test_ddg_normalizes_and_bounds_public_results() -> None:

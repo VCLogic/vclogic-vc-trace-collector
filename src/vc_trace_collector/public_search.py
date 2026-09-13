@@ -49,6 +49,101 @@ class DdgSearchProvider:
         return results
 
 
+class AgentReachWebSearchProvider:
+    """Call the Exa backend configured by Agent Reach through mcporter."""
+
+    provider_name = "agent-reach:exa"
+
+    def __init__(
+        self,
+        runner: Callable[..., Any] = subprocess.run,
+        *,
+        timeout: float = 120,
+    ) -> None:
+        self._runner = runner
+        self.timeout = timeout
+        self.diagnostics: list[dict[str, str]] = []
+
+    def _diagnose(self, query: str, error: str) -> None:
+        self.diagnostics.append(
+            {"provider": self.provider_name, "query": query, "error": error}
+        )
+
+    @staticmethod
+    def _rows(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, dict):
+            results = payload.get("results")
+            if isinstance(results, list):
+                return [row for row in results if isinstance(row, dict)]
+            data = payload.get("data")
+            if isinstance(data, dict):
+                return AgentReachWebSearchProvider._rows(data)
+            content = payload.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                        continue
+                    try:
+                        nested = json.loads(item["text"])
+                    except json.JSONDecodeError:
+                        continue
+                    rows = AgentReachWebSearchProvider._rows(nested)
+                    if rows:
+                        return rows
+        return []
+
+    def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+        command = [
+            "mcporter",
+            "call",
+            "exa.web_search_exa",
+            f"query={query}",
+            f"numResults={limit}",
+        ]
+        try:
+            completed = self._runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                shell=False,
+            )
+        except FileNotFoundError:
+            self._diagnose(query, "mcporter is not installed")
+            return []
+        except subprocess.TimeoutExpired:
+            self._diagnose(query, "Exa search command timed out")
+            return []
+        if completed.returncode != 0:
+            self._diagnose(query, "Exa search command failed")
+            return []
+        try:
+            rows = self._rows(json.loads(completed.stdout))
+        except (json.JSONDecodeError, TypeError):
+            self._diagnose(query, "Exa search returned invalid JSON")
+            return []
+        results: list[SearchResult] = []
+        for row in rows:
+            url = str(row.get("url") or "").strip()
+            if not url:
+                continue
+            results.append(
+                SearchResult(
+                    url=url,
+                    title=str(row.get("title") or ""),
+                    snippet=str(
+                        row.get("text") or row.get("snippet") or row.get("content") or ""
+                    ),
+                    rank=len(results) + 1,
+                    query=query,
+                    provider=self.provider_name,
+                )
+            )
+            if len(results) >= limit:
+                break
+        return results
+
+
 class YtDlpSearchProvider:
     """Search YouTube metadata directly using yt-dlp's ytsearch extractor."""
 
@@ -168,3 +263,10 @@ def default_public_search_provider(
         else DdgSearchProvider()
     )
     return CompositeSearchProvider(web=web, youtube=YtDlpSearchProvider())
+
+
+def agent_reach_public_search_provider() -> CompositeSearchProvider:
+    """Use Agent Reach's configured Exa backend and its normal yt-dlp backend."""
+    return CompositeSearchProvider(
+        web=AgentReachWebSearchProvider(), youtube=YtDlpSearchProvider()
+    )

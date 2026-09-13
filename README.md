@@ -46,14 +46,27 @@ uv run vc-trace-collector --help
 Install only the optional capabilities you need:
 
 ```bash
-uv sync --extra youtube
-uv sync --extra av
-uv sync --extra av-local
+uv sync --extra youtube --extra av --extra av-local
 uv sync --extra browser
 ```
 
 The core web workflow does not install GPU frameworks, browser binaries, or
 paid-provider SDKs.
+
+Agent Reach is an optional external capability checker and router. Install it
+in an isolated tool environment, then inspect (but do not modify) available
+backends:
+
+```bash
+pipx install "https://github.com/Panniantong/agent-reach/archive/main.zip"
+agent-reach install --env=auto
+uv run vc-trace-collector doctor --json
+```
+
+`doctor` reports executables and the active backend Agent Reach selected for
+each channel. It does not search for an investor and it does not install tools.
+Use Agent Reach's explicit `--system` installer only if you intend it to modify
+your user-level tool configuration.
 
 ## Quick start
 
@@ -111,9 +124,12 @@ Stage commands are available independently:
 ```bash
 uv run vc-trace-collector discover --help
 uv run vc-trace-collector review --help
+uv run vc-trace-collector search-source --help
+uv run vc-trace-collector fetch-source --help
 uv run vc-trace-collector review-voice --help
 uv run vc-trace-collector collect --help
 uv run vc-trace-collector process --help
+uv run vc-trace-collector process-source --help
 uv run vc-trace-collector export --help
 uv run vc-trace-collector status --help
 uv run vc-trace-collector verify --help
@@ -121,6 +137,48 @@ uv run vc-trace-collector verify --help
 
 `collect` also accepts `--collection-only`, `--processing-only`, and
 `--export-only`. Only one may be selected at a time.
+
+## Agent Reach staged workflow
+
+Agent Reach does not replace collectors. It identifies working upstream
+backends: the staged CLI uses `yt-dlp` for YouTube and the Agent Reach Exa
+configuration through `mcporter` for web, blog, and podcast URL discovery.
+Each search appends to the same reviewable plan without removing prior human
+decisions:
+
+```bash
+uv run vc-trace-collector search-source \
+  --investor michael-hyatt --source youtube --backend agent-reach
+uv run vc-trace-collector search-source \
+  --investor michael-hyatt --source podcast --backend agent-reach
+uv run vc-trace-collector search-source \
+  --investor michael-hyatt --source web_article --backend agent-reach
+```
+
+After reviewing the plan, download one platform or one item at a time:
+
+```bash
+uv run vc-trace-collector fetch-source \
+  --investor michael-hyatt --source youtube
+uv run vc-trace-collector fetch-source \
+  --investor michael-hyatt --candidate-id 'candidate:<id>'
+```
+
+Run pyannote, reference-voice matching, target-turn extraction, and Whisper for
+one approved appearance with:
+
+```bash
+uv run vc-trace-collector process-source \
+  --investor michael-hyatt \
+  --candidate-id 'candidate:<id>' \
+  --transcription-model turbo \
+  --diarization-model pyannote/speaker-diarization-3.1
+```
+
+The project-local agent skill at
+`.agents/skills/vc-trace-collector/SKILL.md` instructs compatible coding agents
+to use these same public, audited commands. It never grants credentials or
+bypasses human review.
 
 ## Discovery providers
 

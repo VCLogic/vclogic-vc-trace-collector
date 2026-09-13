@@ -230,6 +230,70 @@ def test_cli_discover_accepts_additional_source_url(tmp_path) -> None:
     assert any(row["url"] == podcast_url for row in rows)
 
 
+def test_cli_fetch_source_collects_one_approved_candidate(tmp_path) -> None:
+    collector = pipeline(tmp_path)
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=["https://blog.example.test/michael-hyatt-bluecat"],
+    )
+    article = next(
+        item
+        for item in discovered.source_plan.candidates
+        if item.canonical_url.startswith("https://blog.example.test/")
+    )
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=article.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human confirmed authorship",
+                decided_by="reviewer",
+                material_role=MaterialRole.AUTHORED_BY_TARGET,
+            )
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    app = create_app(lambda _output_dir: collector)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "fetch-source",
+            "--investor",
+            "michael-hyatt",
+            "--candidate-id",
+            article.candidate_id,
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Collected 1 source" in result.stdout
+
+
+def test_fetch_source_rejects_pending_candidate(tmp_path) -> None:
+    collector = pipeline(tmp_path)
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=["https://blog.example.test/michael-hyatt-bluecat"],
+    )
+    article = next(
+        item
+        for item in discovered.source_plan.candidates
+        if item.canonical_url.startswith("https://blog.example.test/")
+    )
+
+    with pytest.raises(ReviewRequired, match="not approved"):
+        collector.fetch_source(
+            "michael-hyatt", candidate_ids={article.candidate_id}
+        )
+
+
 def test_default_cli_constructs_credential_free_public_search(
     tmp_path, monkeypatch
 ) -> None:
@@ -785,6 +849,164 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
     assert [item["text"] for item in talks] == ["I invest in durable customer value."]
     summary = read_json(output / "michael-hyatt/run_summary.json")
     assert Decimal(summary["cost_usd"]) == Decimal("0.60")
+
+
+def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> None:
+    reference_audio = tmp_path / "known-michael-hyatt.wav"
+    reference_audio.write_bytes(b"reference voice fixture")
+    first_video = tmp_path / "michael-hyatt-first.mp4"
+    first_video.write_bytes(b"first interview fixture")
+    second_video = tmp_path / "michael-hyatt-second.mp4"
+    second_video.write_bytes(b"second interview fixture")
+    output = tmp_path / "outputs"
+    base = pipeline(output)
+
+    class CountingTranscript(FixtureTranscript):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def transcribe(self, audio_path):
+            self.calls += 1
+            return super().transcribe(audio_path)
+
+    class CountingDiarization(FixtureDiarization):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def diarize(self, audio_path):
+            self.calls += 1
+            return super().diarize(audio_path)
+
+    transcript = CountingTranscript()
+    diarization = CountingDiarization()
+
+    def fixture_audio_extractor(source, destination, **kwargs):
+        destination.write_bytes(b"extracted audio fixture")
+        return destination
+
+    collector = Pipeline(
+        output,
+        fetcher=base.fetcher,
+        transcript_provider=transcript,
+        diarization_provider=diarization,
+        audio_extractor=fixture_audio_extractor,
+        media_probe=lambda _path: 5.0,
+    )
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        supplied_files=[reference_audio, first_video, second_video],
+        config=RunConfig(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            supplied_files=[str(reference_audio), str(first_video), str(second_video)],
+            output_dir=str(output),
+            transcription_model="fixture-transcript",
+            diarization_model="fixture-diarization",
+            maximum_cost_usd=Decimal("1.00"),
+        ),
+    )
+    supplied = [
+        item for item in discovered.source_plan.candidates if item.source_type == "supplied"
+    ]
+    reference = next(item for item in supplied if "known-" in item.url)
+    interviews = sorted(
+        (item for item in supplied if "michael-hyatt-" in item.url and "known-" not in item.url),
+        key=lambda item: item.url,
+    )
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=reference.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human verified reference",
+                decided_by="reviewer",
+                material_role=MaterialRole.REFERENCE_VOICE,
+            ),
+            *[
+                SourceDecision(
+                    candidate_id=item.candidate_id,
+                    status=ApprovalStatus.APPROVED,
+                    reason="Human verified interview",
+                    decided_by="reviewer",
+                    material_role=MaterialRole.SPOKEN_BY_TARGET,
+                )
+                for item in interviews
+            ],
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    collector.collect_sources("michael-hyatt")
+    voice = next(
+        row
+        for row in read_jsonl(
+            output / "michael-hyatt/identity/reference_voice_candidates.jsonl"
+        )
+        if row["source_candidate_id"] == reference.candidate_id
+    )
+    collector.approve_reference_voice(
+        "michael-hyatt", candidate_id=voice["candidate_id"], reviewer="reviewer"
+    )
+
+    first = collector.process_source(
+        "michael-hyatt", candidate_id=interviews[0].candidate_id
+    )
+    second = collector.process_source(
+        "michael-hyatt", candidate_id=interviews[1].candidate_id
+    )
+
+    assert {item.source_candidate_id for item in first} == {
+        interviews[0].candidate_id
+    }
+    assert {item.source_candidate_id for item in second} == {
+        interviews[0].candidate_id,
+        interviews[1].candidate_id,
+    }
+    assert diarization.calls == 2
+    assert transcript.calls == 4  # one call for each diarized speaker turn
+
+
+def test_cli_process_source_passes_models_to_one_candidate(tmp_path) -> None:
+    calls = []
+
+    class FakePipeline:
+        def process_source(self, investor, **kwargs):
+            calls.append((investor, kwargs))
+            return []
+
+    app = create_app(lambda _output_dir: FakePipeline())
+    result = CliRunner().invoke(
+        app,
+        [
+            "process-source",
+            "--investor",
+            "michael-hyatt",
+            "--candidate-id",
+            "candidate:abc",
+            "--transcription-model",
+            "turbo",
+            "--diarization-model",
+            "pyannote/speaker-diarization-3.1",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        (
+            "michael-hyatt",
+            {
+                "candidate_id": "candidate:abc",
+                "transcription_model": "turbo",
+                "diarization_model": "pyannote/speaker-diarization-3.1",
+                "transcription_cost_usd": None,
+                "diarization_cost_usd": None,
+            },
+        )
+    ]
 
 
 def test_failed_approved_av_source_prevents_otherwise_nonempty_export(tmp_path) -> None:

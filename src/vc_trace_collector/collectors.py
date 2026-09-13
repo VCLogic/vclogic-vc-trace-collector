@@ -78,6 +78,7 @@ class CollectionContext:
     audit: AuditLog | None = None
     budget: BudgetLedger | None = None
     approved_source_types: set[SourceType] | None = None
+    candidate_ids: set[str] | None = None
     maximum_media_seconds: float | None = None
     media_seconds_used: float = 0
     maximum_download_bytes: int | None = None
@@ -842,6 +843,18 @@ def collect_approved_sources(
             ApprovalStatus.APPROVED,
             ApprovalStatus.AUTO_APPROVED,
         }:
+            continue
+        if (
+            context.candidate_ids is not None
+            and candidate.candidate_id not in context.candidate_ids
+        ):
+            result.skipped += 1
+            _audit(
+                context,
+                candidate=candidate,
+                status=EventStatus.SKIPPED,
+                summary="Source is outside the requested candidate filter",
+            )
             continue
         if (
             context.approved_source_types is not None

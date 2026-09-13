@@ -73,6 +73,11 @@ from .process import (
     process_artifacts,
     target_speech_document,
 )
+from .source_search import (
+    SourceSearchSummary,
+    build_source_queries,
+    candidate_from_search_result,
+)
 from .storage import (
     ArtifactStore,
     StateStore,
@@ -373,6 +378,86 @@ class Pipeline:
             read_json(self.workspace(slug) / "discovery/source_plan.json")
         )
 
+    def _save_plan(self, slug: str, plan: SourcePlan) -> None:
+        workspace = self.workspace(slug)
+        write_json(workspace / "discovery/source_plan.json", plan)
+        self._write_candidate_views(workspace, plan)
+
+    def search_source(
+        self,
+        investor_slug: str,
+        source_type: SourceType,
+        *,
+        search_provider=None,
+        maximum_queries: int | None = None,
+        limit_per_query: int = 10,
+    ) -> SourceSearchSummary:
+        """Append candidates found by one source-specific search operation."""
+        provider = search_provider or self.search_provider
+        if provider is None:
+            raise RuntimeError("No public search provider is configured")
+        workspace = self.workspace(investor_slug)
+        identity = self._load_identity(investor_slug)
+        plan = self._load_plan(investor_slug)
+        config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
+        queries = build_source_queries(
+            identity.canonical_name,
+            [affiliation.firm for affiliation in identity.affiliations],
+            source_type,
+        )
+        query_limit = (
+            config.maximum_search_operations
+            if maximum_queries is None
+            else min(maximum_queries, config.maximum_search_operations)
+        )
+        selected_queries = queries[: max(0, query_limit)]
+        by_url = {candidate.canonical_url: candidate for candidate in plan.candidates}
+        summary = SourceSearchSummary(source_type=source_type, queries=selected_queries)
+        operations: list[dict[str, object]] = []
+        updated_urls: set[str] = set()
+        for query in selected_queries:
+            results = provider.search(query, limit=limit_per_query)
+            summary.result_count += len(results)
+            operations.append(
+                {
+                    "provider": provider.provider_name,
+                    "query": query,
+                    "results": len(results),
+                }
+            )
+            for result in results:
+                candidate = candidate_from_search_result(
+                    identity=identity,
+                    source_type=source_type,
+                    result=result,
+                    rules=self._rules_for(config),
+                )
+                existing = by_url.get(candidate.canonical_url)
+                if existing:
+                    existing.discovery_queries = sorted(
+                        set(existing.discovery_queries + candidate.discovery_queries)
+                    )
+                    updated_urls.add(candidate.canonical_url)
+                    continue
+                by_url[candidate.canonical_url] = candidate
+                summary.added += 1
+        summary.updated = len(updated_urls)
+        plan.queries = sorted(set(plan.queries + selected_queries))
+        plan.candidates = sorted(by_url.values(), key=lambda item: item.canonical_url)
+        self._save_plan(investor_slug, plan)
+        run_summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        self._event(
+            workspace,
+            run_summary.run_id,
+            "source_search",
+            f"Searched {source_type.value} and updated the source plan",
+            details={
+                **summary.model_dump(mode="json"),
+                "provider_operations": operations,
+            },
+        )
+        return summary
+
     def review(
         self,
         investor_slug: str,
@@ -506,7 +591,13 @@ class Pipeline:
         )
         return ReviewResult(identity=identity, source_plan=plan)
 
-    def collect_sources(self, investor_slug: str) -> CollectionResult:
+    def collect_sources(
+        self,
+        investor_slug: str,
+        *,
+        source_types: set[SourceType] | None = None,
+        candidate_ids: set[str] | None = None,
+    ) -> CollectionResult:
         workspace = self.workspace(investor_slug)
         identity = self._load_identity(investor_slug)
         plan = self._load_plan(investor_slug)
@@ -543,10 +634,18 @@ class Pipeline:
                 maximum_media_seconds=config.maximum_media_minutes * 60,
             ),
             approved_source_types=(
-                {SourceType(value) for value in config.approved_source_types}
-                if config.approved_source_types
-                else None
+                (
+                    {SourceType(value) for value in config.approved_source_types}
+                    & source_types
+                )
+                if config.approved_source_types and source_types is not None
+                else (
+                    {SourceType(value) for value in config.approved_source_types}
+                    if config.approved_source_types
+                    else source_types
+                )
             ),
+            candidate_ids=candidate_ids,
             maximum_media_seconds=config.maximum_media_minutes * 60,
             media_seconds_used=already_collected_media,
             maximum_download_bytes=config.maximum_download_bytes,
@@ -574,8 +673,9 @@ class Pipeline:
             ):
                 voice.artifact_id = artifact.artifact_id
         write_jsonl(voice_path, voice_candidates)
-        summary.stages["collection"] = "complete"
-        summary.status = "collected"
+        partial = source_types is not None or candidate_ids is not None
+        summary.stages["collection"] = "partial" if partial else "complete"
+        summary.status = "collecting" if partial else "collected"
         summary.collected += result.collected
         summary.collection_failures = result.failed
         summary.collection_review_required = result.review_required
@@ -585,6 +685,34 @@ class Pipeline:
         summary.cost_usd = context.budget.spent
         write_json(workspace / "run_summary.json", summary)
         return result
+
+    def fetch_source(
+        self,
+        investor_slug: str,
+        *,
+        source_type: SourceType | None = None,
+        candidate_ids: set[str] | None = None,
+    ) -> CollectionResult:
+        """Collect an approved platform subset or explicit candidate subset."""
+        if source_type is None and not candidate_ids:
+            raise ValueError("Provide a source type or at least one candidate ID")
+        plan = self._load_plan(investor_slug)
+        by_id = {candidate.candidate_id: candidate for candidate in plan.candidates}
+        requested_ids = candidate_ids or set()
+        unknown = sorted(requested_ids - by_id.keys())
+        if unknown:
+            raise KeyError(f"Unknown candidate: {unknown[0]}")
+        for candidate_id in requested_ids:
+            if by_id[candidate_id].approval_status not in {
+                ApprovalStatus.APPROVED,
+                ApprovalStatus.AUTO_APPROVED,
+            }:
+                raise ReviewRequired(f"Candidate is not approved: {candidate_id}")
+        return self.collect_sources(
+            investor_slug,
+            source_types={source_type} if source_type is not None else None,
+            candidate_ids=candidate_ids,
+        )
 
     def approve_reference_voice(
         self,
@@ -814,6 +942,7 @@ class Pipeline:
         self,
         investor_slug: str,
         *,
+        candidate_ids: set[str] | None = None,
         transcription_model: str | None = None,
         diarization_model: str | None = None,
         transcription_cost_usd: Decimal | None = None,
@@ -830,11 +959,23 @@ class Pipeline:
             transcription_cost_usd=transcription_cost_usd,
             diarization_cost_usd=diarization_cost_usd,
         )
-        artifacts = load_artifact_records(workspace)
+        all_artifacts = load_artifact_records(workspace)
+        active_candidates = [
+            candidate
+            for candidate in plan.candidates
+            if candidate_ids is None or candidate.candidate_id in candidate_ids
+        ]
+        artifacts = [
+            artifact
+            for artifact in all_artifacts
+            if candidate_ids is None
+            or str(artifact.original_metadata.get("candidate_id", ""))
+            in candidate_ids
+        ]
         documents = process_artifacts(
             workspace,
             artifacts,
-            plan.candidates,
+            active_candidates,
             investor_slug=investor_slug,
             target_name=identity.canonical_name,
             rules=self._rules_for(config),
@@ -845,14 +986,14 @@ class Pipeline:
             if profile_path.exists()
             else None
         )
-        candidate_map = {item.candidate_id: item for item in plan.candidates}
+        candidate_map = {item.candidate_id: item for item in active_candidates}
         outcomes = {
             item.candidate_id: AVCandidateOutcome(
                 candidate_id=item.candidate_id,
                 status="not_collected",
                 reason="No collected audiovisual artifact was available",
             )
-            for item in plan.candidates
+            for item in active_candidates
             if item.approval_status
             in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
             and item.material_role == MaterialRole.SPOKEN_BY_TARGET
@@ -1254,6 +1395,27 @@ class Pipeline:
                     "media_seconds": result.media_seconds,
                 },
             )
+        if candidate_ids is not None:
+            prior_documents = [
+                CanonicalDocument.model_validate(row)
+                for row in read_jsonl(workspace / "processed/documents.jsonl")
+                if row.get("source_candidate_id") not in candidate_ids
+            ]
+            documents = [*prior_documents, *documents]
+            prior_av_rows = [
+                row
+                for row in read_jsonl(
+                    workspace / "processed/av_attribution_results.jsonl"
+                )
+                if row.get("candidate_id") not in candidate_ids
+            ]
+            av_rows = [*prior_av_rows, *av_rows]
+            for row in read_jsonl(
+                workspace / "processed/av_candidate_outcomes.jsonl"
+            ):
+                candidate_id = str(row.get("candidate_id", ""))
+                if candidate_id not in candidate_ids:
+                    outcomes[candidate_id] = AVCandidateOutcome.model_validate(row)
         documents = deduplicate(documents)
         write_jsonl(workspace / "processed/av_attribution_results.jsonl", av_rows)
         write_jsonl(
@@ -1278,8 +1440,10 @@ class Pipeline:
             ],
         )
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
-        summary.stages["processing"] = "complete"
-        summary.status = "processed"
+        summary.stages["processing"] = (
+            "partial" if candidate_ids is not None else "complete"
+        )
+        summary.status = "processing" if candidate_ids is not None else "processed"
         summary.processed = len(documents)
         summary.media_seconds = processed_seconds
         summary.processing_failures = sum(
@@ -1292,6 +1456,42 @@ class Pipeline:
         summary.cost_usd = cost.spent
         write_json(workspace / "run_summary.json", summary)
         return documents
+
+    def process_source(
+        self,
+        investor_slug: str,
+        *,
+        candidate_id: str,
+        transcription_model: str | None = None,
+        diarization_model: str | None = None,
+        transcription_cost_usd: Decimal | None = None,
+        diarization_cost_usd: Decimal | None = None,
+    ) -> list[CanonicalDocument]:
+        """Run the AV pipeline for one approved source-plan candidate."""
+        plan = self._load_plan(investor_slug)
+        try:
+            candidate = next(
+                item for item in plan.candidates if item.candidate_id == candidate_id
+            )
+        except StopIteration as error:
+            raise KeyError(f"Unknown candidate: {candidate_id}") from error
+        if candidate.approval_status not in {
+            ApprovalStatus.APPROVED,
+            ApprovalStatus.AUTO_APPROVED,
+        }:
+            raise ReviewRequired(f"Candidate is not approved: {candidate_id}")
+        if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET:
+            raise ReviewRequired(
+                "Per-source AV processing requires spoken_by_target material"
+            )
+        return self.process(
+            investor_slug,
+            candidate_ids={candidate_id},
+            transcription_model=transcription_model,
+            diarization_model=diarization_model,
+            transcription_cost_usd=transcription_cost_usd,
+            diarization_cost_usd=diarization_cost_usd,
+        )
 
     def export(self, investor_slug: str) -> CollectionManifest:
         workspace = self.workspace(investor_slug)

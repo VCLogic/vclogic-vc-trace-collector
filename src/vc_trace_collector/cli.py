@@ -12,12 +12,16 @@ import typer
 from dotenv import load_dotenv
 
 from .audit import BudgetExceeded
+from .capabilities import run_doctor
 from .collectors import ReviewRequired
 from .config import RunConfig
-from .models import ApprovalStatus, MaterialRole, SourceDecision
+from .models import ApprovalStatus, MaterialRole, SourceDecision, SourceType
 from .pipeline import Pipeline
 from .policy import RuleSet
-from .public_search import default_public_search_provider
+from .public_search import (
+    agent_reach_public_search_provider,
+    default_public_search_provider,
+)
 from .storage import read_json
 
 PipelineFactory = Callable[[Path], Pipeline]
@@ -46,6 +50,22 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         help="Build auditable, source-linked public-trace corpora for investors.",
         no_args_is_help=True,
     )
+
+    @app.command()
+    def doctor(
+        json_output: bool = typer.Option(False, "--json", help="Emit JSON"),
+    ) -> None:
+        """Inspect installed tools and Agent Reach backends without changing them."""
+        report = run_doctor()
+        if json_output:
+            typer.echo(json.dumps(report.model_dump(mode="json"), indent=2))
+            return
+        for name, capability in report.tools.items():
+            requirement = "required" if capability.required else "optional"
+            typer.echo(f"{name}: {capability.status} ({requirement})")
+        for channel, capability in report.backends.items():
+            backend = capability.active_backend or "none"
+            typer.echo(f"{channel}: {capability.status} (backend: {backend})")
 
     @app.command()
     def discover(
@@ -190,6 +210,62 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             f"Identity confirmed; {sum(c.approval_status == ApprovalStatus.APPROVED for c in result.source_plan.candidates)} sources approved."
         )
 
+    @app.command("search-source")
+    def search_source(
+        investor: str = typer.Option(..., help="Investor workspace slug"),
+        source: SourceType = typer.Option(..., help="Source platform/type to search"),
+        backend: str = typer.Option(
+            "default", help="Search backend: default or agent-reach"
+        ),
+        max_queries: int | None = typer.Option(None, min=1),
+        limit_per_query: int = typer.Option(10, min=1, max=100),
+        output_dir: Path = typer.Option(Path("outputs")),
+    ) -> None:
+        """Find URLs for one source type and append them to the review plan."""
+        if backend not in {"default", "agent-reach"}:
+            raise typer.BadParameter("--backend must be default or agent-reach")
+        result = make_pipeline(output_dir).search_source(
+            investor,
+            source,
+            search_provider=(
+                agent_reach_public_search_provider()
+                if backend == "agent-reach"
+                else None
+            ),
+            maximum_queries=max_queries,
+            limit_per_query=limit_per_query,
+        )
+        noun = "candidate" if result.added == 1 else "candidates"
+        typer.echo(
+            f"Added {result.added} {source.value} {noun}; "
+            f"updated {result.updated}; review required before fetching."
+        )
+
+    @app.command("fetch-source")
+    def fetch_source(
+        investor: str = typer.Option(..., help="Investor workspace slug"),
+        source: SourceType | None = typer.Option(
+            None, help="Collect all approved candidates of this source type"
+        ),
+        candidate_id: list[str] | None = typer.Option(
+            None, help="Collect this approved candidate; repeat for multiple items"
+        ),
+        output_dir: Path = typer.Option(Path("outputs")),
+    ) -> None:
+        """Download one approved source type or explicit source-plan items."""
+        if source is None and not candidate_id:
+            raise typer.BadParameter("Provide --source or --candidate-id")
+        result = make_pipeline(output_dir).fetch_source(
+            investor,
+            source_type=source,
+            candidate_ids=set(candidate_id or []) or None,
+        )
+        noun = "source" if result.collected == 1 else "sources"
+        typer.echo(
+            f"Collected {result.collected} {noun}; failed {result.failed}; "
+            f"skipped {result.skipped}."
+        )
+
     @app.command()
     def collect(
         name: str = typer.Option(..., help="Investor name"),
@@ -313,6 +389,38 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             ),
         )
         typer.echo(f"Processed {len(documents)} documents.")
+
+    @app.command("process-source")
+    def process_source(
+        investor: str = typer.Option(..., help="Investor workspace slug"),
+        candidate_id: str = typer.Option(..., help="Approved source candidate ID"),
+        transcription_model: str | None = typer.Option(None),
+        diarization_model: str | None = typer.Option(None),
+        transcription_cost_usd: str | None = typer.Option(None),
+        diarization_cost_usd: str | None = typer.Option(None),
+        output_dir: Path = typer.Option(Path("outputs")),
+    ) -> None:
+        """Run pyannote, voice matching, and Whisper for one media item."""
+        documents = make_pipeline(output_dir).process_source(
+            investor,
+            candidate_id=candidate_id,
+            transcription_model=transcription_model,
+            diarization_model=diarization_model,
+            transcription_cost_usd=(
+                Decimal(transcription_cost_usd)
+                if transcription_cost_usd is not None
+                else None
+            ),
+            diarization_cost_usd=(
+                Decimal(diarization_cost_usd)
+                if diarization_cost_usd is not None
+                else None
+            ),
+        )
+        typer.echo(
+            f"Processed candidate {candidate_id}; workspace now has "
+            f"{len(documents)} documents."
+        )
 
     @app.command()
     def export(

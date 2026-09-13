@@ -174,6 +174,22 @@ def test_collection_skips_source_types_outside_run_allowlist(tmp_path) -> None:
     assert collector.calls == []
 
 
+def test_collection_runs_only_requested_candidate_ids(tmp_path) -> None:
+    collector = StaticCollector()
+    run_context = context(tmp_path)
+    run_context.candidate_ids = {"second"}
+
+    result = collect_approved_sources(
+        plan(candidate("first"), candidate("second")),
+        context=run_context,
+        registry=CollectorRegistry([collector]),
+    )
+
+    assert result.collected == 1
+    assert result.skipped == 1
+    assert collector.calls == ["second"]
+
+
 def test_collection_stops_before_exceeding_reserved_provider_budget(tmp_path) -> None:
     collector = StaticCollector()
     run_context = context(tmp_path)
