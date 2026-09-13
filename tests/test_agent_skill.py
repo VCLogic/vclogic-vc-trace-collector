@@ -16,5 +16,8 @@ def test_project_agent_skill_teaches_audited_staged_workflow() -> None:
     assert "vc-trace-collector process-source" in text
     assert "Do not use platform captions" in text
     assert "Do not bypass identity or source review" in text
+    assert '"material_role": "reference_voice"' in text
+    assert "identity/reference_voice_candidates.jsonl" in text
+    assert "no music, crosstalk" in text
     assert "HF_TOKEN=" not in text
     assert "cookie=" not in text.casefold()

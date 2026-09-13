@@ -29,7 +29,16 @@ uv run vc-trace-collector search-source --investor michael-hyatt --source podcas
 uv run vc-trace-collector list-sources --investor michael-hyatt
 ```
 
-Show the `list-sources` output to the human. Do not bypass identity or source review. The human must approve each source and label clean reference material `reference_voice` and target appearances `spoken_by_target`. Record decisions through `review --decision-file`; use `review --help` for its schema and options.
+Show the `list-sources` output to the human. Do not bypass identity or source review. Write their decisions to a JSON array such as:
+
+```json
+[
+  {"candidate_id": "candidate:<actual-id>", "status": "approved", "reason": "Human verified identity and clean voice sample", "decided_by": "human", "material_role": "reference_voice"},
+  {"candidate_id": "candidate:<actual-id>", "status": "approved", "reason": "Human verified target interview", "decided_by": "human", "material_role": "spoken_by_target"}
+]
+```
+
+Pass it to `review --confirm-identity --decision-file decisions.json`. Include a decision for every pending item being fetched.
 
 Fetch platforms separately, or fetch one candidate ID:
 
@@ -39,7 +48,7 @@ uv run vc-trace-collector fetch-source --investor michael-hyatt --source podcast
 uv run vc-trace-collector fetch-source --investor michael-hyatt --candidate-id 'candidate:<id>'
 ```
 
-For a human-selected clean interval, create the voice reference:
+After fetching, obtain the actual `voice:` ID from `outputs/michael-hyatt/identity/reference_voice_candidates.jsonl`. The human must listen and select an interval containing only the target: no music, crosstalk, host speech, or unidentified panel speech. Then create the reference:
 
 ```bash
 uv run vc-trace-collector review-voice \
@@ -60,4 +69,4 @@ uv run vc-trace-collector process-source \
   --diarization-model pyannote/speaker-diarization-3.1
 ```
 
-Finish with `export`, `verify`, and `status`. Do not use platform captions. Do not claim uncertain speaker attribution is verified. Never place credentials or cookies in commands, logs, decisions, or committed files.
+Finish with `export`, then `verify` and `status`; stop and report any verification failure. Do not use platform captions. Do not claim uncertain speaker attribution is verified. Never place credentials or cookies in commands, logs, decisions, or committed files.
