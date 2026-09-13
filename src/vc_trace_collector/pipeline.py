@@ -506,6 +506,7 @@ class Pipeline:
                     append_jsonl(
                         workspace / "discovery/search_observations.jsonl",
                         SourceSearchObservation(
+                            operation_id=operation_id,
                             source_type=source_type,
                             query=query,
                             requested_provider=provider.provider_name,
@@ -521,6 +522,7 @@ class Pipeline:
                 append_jsonl(
                     workspace / "discovery/search_observations.jsonl",
                     SourceSearchObservation(
+                        operation_id=operation_id,
                         source_type=source_type,
                         query=query,
                         requested_provider=provider.provider_name,

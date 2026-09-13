@@ -271,6 +271,21 @@ class StateStore:
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
+    def operation_records(self, prefix: str | None = None) -> list[dict[str, object]]:
+        """Return public operation state for audit reconciliation."""
+        with self._connect() as connection:
+            if prefix is None:
+                rows = connection.execute(
+                    "SELECT * FROM operations ORDER BY updated_at, operation_id"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM operations WHERE operation_id LIKE ? "
+                    "ORDER BY updated_at, operation_id",
+                    (f"{prefix}%",),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
     def retry_count(self) -> int:
         with self._connect() as connection:
             row = connection.execute(

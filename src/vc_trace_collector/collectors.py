@@ -39,6 +39,7 @@ from .storage import (
     append_jsonl,
     canonical_json,
     read_json,
+    read_jsonl,
     write_json,
 )
 
@@ -108,7 +109,7 @@ class CollectionCandidateOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     candidate_id: str
-    status: str
+    status: str = Field(pattern=r"^(succeeded|excluded|review_required|failed)$")
     reason: str
     artifact_ids: list[str] = Field(default_factory=list)
 
@@ -838,6 +839,96 @@ def _audit(
         )
 
 
+def _recover_legacy_collection_outcome(
+    candidate: SourceCandidate,
+    context: CollectionContext,
+    operation_id: str,
+    input_hash: str,
+) -> CollectionCandidateOutcome:
+    """Recover pre-outcome-cache state without silently assuming success."""
+    persisted_path = context.workspace / "processed/collection_candidate_outcomes.jsonl"
+    for row in reversed(read_jsonl(persisted_path)):
+        try:
+            outcome = CollectionCandidateOutcome.model_validate(row)
+        except Exception as error:
+            _audit(
+                context,
+                candidate=candidate,
+                status=EventStatus.FAILED,
+                summary="Ignored invalid legacy collection outcome during recovery",
+                details=redact(
+                    {"error_type": type(error).__name__, "message": str(error)}
+                ),
+            )
+            continue
+        if outcome.candidate_id == candidate.candidate_id:
+            return outcome
+
+    legacy_output = context.state.output_id(operation_id, input_hash) or ""
+    output_ids = {
+        value
+        for value in legacy_output.split(",")
+        if value.startswith("sha256:")
+    }
+    records: list[RawArtifact] = []
+    for metadata_path in sorted((context.workspace / "raw").rglob("*.metadata.json")):
+        try:
+            record = RawArtifact.model_validate(read_json(metadata_path))
+        except Exception as error:
+            _audit(
+                context,
+                candidate=candidate,
+                status=EventStatus.FAILED,
+                summary="Ignored invalid raw metadata during legacy recovery",
+                details=redact(
+                    {"error_type": type(error).__name__, "message": str(error)}
+                ),
+            )
+            continue
+        if (
+            record.original_metadata.get("candidate_id") == candidate.candidate_id
+            or record.artifact_id in output_ids
+        ):
+            records.append(record)
+    artifact_ids = sorted({record.artifact_id for record in records} | output_ids)
+    if records:
+        excluded = any(
+            record.original_metadata.get("collection_exclusion", {}).get("status")
+            == InclusionStatus.EXCLUDED
+            for record in records
+        )
+        review_required = any(
+            record.original_metadata.get("collection_exclusion", {}).get("status")
+            == InclusionStatus.REVIEW_REQUIRED
+            and not record.original_metadata.get("review_override_applied", False)
+            for record in records
+        )
+        return CollectionCandidateOutcome(
+            candidate_id=candidate.candidate_id,
+            status=(
+                "excluded"
+                if excluded
+                else ("review_required" if review_required else "succeeded")
+            ),
+            reason=(
+                "Recovered exclusion from legacy artifact metadata"
+                if excluded
+                else (
+                    "Recovered review requirement from legacy artifact metadata"
+                    if review_required
+                    else "Recovered completed collection from legacy artifact lineage"
+                )
+            ),
+            artifact_ids=artifact_ids,
+        )
+    return CollectionCandidateOutcome(
+        candidate_id=candidate.candidate_id,
+        status="review_required",
+        reason="Legacy completed collection lacks reconstructable outcome evidence",
+        artifact_ids=artifact_ids,
+    )
+
+
 def collect_approved_sources(
     plan: SourcePlan,
     *,
@@ -923,13 +1014,10 @@ def collect_approved_sources(
                     read_json(outcome_cache_path)
                 )
             else:
-                # Compatibility with state created before collection outcomes
-                # were cached independently from artifact identifiers.
-                cached_outcome = CollectionCandidateOutcome(
-                    candidate_id=candidate.candidate_id,
-                    status="succeeded",
-                    reason="Previously completed collection reused",
+                cached_outcome = _recover_legacy_collection_outcome(
+                    candidate, context, operation_id, input_hash
                 )
+                write_json(outcome_cache_path, cached_outcome)
             result.outcomes.append(cached_outcome)
             if cached_outcome.status == "excluded":
                 result.excluded += 1

@@ -251,6 +251,12 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         if not ledger.trace_consistent():
             errors.append("Public cost trace does not match transactional ledger")
 
+    state_path = workspace / "state/state.sqlite"
+    latest_operations: dict[str, dict[str, object]] = {}
+    if state_path.exists():
+        for operation in StateStore(state_path).operation_records():
+            latest_operations[str(operation["operation_id"])] = operation
+
     effective_rules = None
     try:
         rules_payload: Any = read_json(workspace / "exclusion_rules_snapshot.json")
@@ -352,11 +358,46 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                     f"{candidate.candidate_id}"
                 )
 
+    search_observations: list[SourceSearchObservation] = []
     for row in read_jsonl(workspace / "discovery/search_observations.jsonl"):
         try:
-            SourceSearchObservation.model_validate(row)
+            search_observations.append(SourceSearchObservation.model_validate(row))
         except Exception as error:
             errors.append(f"Invalid source search observation: {error}")
+    search_operations = {
+        operation_id: operation
+        for operation_id, operation in latest_operations.items()
+        if operation_id.startswith("search-source:")
+    }
+    observations_by_operation: dict[str, list[SourceSearchObservation]] = {}
+    for observation in search_observations:
+        if observation.operation_id is None:
+            if search_operations:
+                errors.append("Source search observation lacks operation lineage")
+            continue
+        observations_by_operation.setdefault(observation.operation_id, []).append(
+            observation
+        )
+        if observation.operation_id not in search_operations:
+            errors.append(
+                f"Source search observation names unknown operation: "
+                f"{observation.operation_id}"
+            )
+    for operation_id, operation in search_operations.items():
+        observations = observations_by_operation.get(operation_id, [])
+        if not observations:
+            errors.append(
+                f"Missing source search observation for operation: {operation_id}"
+            )
+            continue
+        operation_status = str(operation["status"])
+        expected_status = "failed" if operation_status == "failed" else "succeeded"
+        if operation_status not in {"complete", "failed"}:
+            errors.append(f"Source search operation is incomplete: {operation_id}")
+        elif observations[-1].status != expected_status:
+            errors.append(
+                f"Source search observation status disagrees with state: {operation_id}"
+            )
 
     reference_candidates: dict[str, ReferenceVoiceCandidate] = {}
     for row in read_jsonl(workspace / "identity/reference_voice_candidates.jsonl"):
@@ -410,6 +451,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         except Exception as error:
             errors.append(f"Invalid collection outcome: {error}")
     collection_outcome_ids: set[str] = set()
+    collection_outcomes_by_id: dict[str, CollectionCandidateOutcome] = {}
     for outcome in collection_outcomes:
         if outcome.candidate_id not in candidates:
             errors.append(
@@ -420,11 +462,44 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 f"Duplicate collection outcome: {outcome.candidate_id}"
             )
         collection_outcome_ids.add(outcome.candidate_id)
+        collection_outcomes_by_id[outcome.candidate_id] = outcome
         if any(artifact_id not in artifacts for artifact_id in outcome.artifact_ids):
             errors.append(
                 f"Collection outcome references missing raw artifact: "
                 f"{outcome.candidate_id}"
             )
+        for artifact_id in outcome.artifact_ids:
+            if artifact_id in artifacts and not any(
+                record.original_metadata.get("candidate_id") == outcome.candidate_id
+                for record in artifacts[artifact_id]
+            ):
+                errors.append(
+                    f"Collection outcome artifact belongs to another candidate: "
+                    f"{outcome.candidate_id}"
+                )
+    collection_operations = {
+        operation_id.removeprefix("collect:"): operation
+        for operation_id, operation in latest_operations.items()
+        if operation_id.startswith("collect:")
+    }
+    for candidate_id, operation in collection_operations.items():
+        outcome = collection_outcomes_by_id.get(candidate_id)
+        if outcome is None:
+            errors.append(
+                f"Missing collection outcome for operation: collect:{candidate_id}"
+            )
+            continue
+        operation_status = str(operation["status"])
+        if operation_status == "failed" and outcome.status != "failed":
+            errors.append(
+                f"Collection outcome status disagrees with failed state: {candidate_id}"
+            )
+        elif operation_status == "complete" and outcome.status == "failed":
+            errors.append(
+                f"Collection outcome status disagrees with completed state: {candidate_id}"
+            )
+        elif operation_status not in {"complete", "failed"}:
+            errors.append(f"Collection operation is incomplete: {candidate_id}")
 
     profile = None
     profile_path = workspace / "identity/reference_voice_profile.json"
@@ -712,6 +787,25 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 errors.append("Run summary failure totals are inconsistent")
             if incomplete and not (config and config.allow_partial_run):
                 errors.append("Run summary contains unresolved required work")
+            if summary.collection_failures != sum(
+                item.status == "failed" for item in collection_outcomes
+            ):
+                errors.append("Run summary collection failure count is inconsistent")
+            if summary.collection_review_required != sum(
+                item.status == "review_required" for item in collection_outcomes
+            ):
+                errors.append("Run summary collection review count is inconsistent")
+            if summary.stages.get("collection") == "complete":
+                approved_candidates = {
+                    item.candidate_id
+                    for item in candidates.values()
+                    if item.approval_status
+                    in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+                }
+                if approved_candidates != collection_outcome_ids:
+                    errors.append(
+                        "Collection outcomes do not cover every approved source"
+                    )
     if quality is not None:
         corpus_speech = [
             item for item in documents if item.material_role == "spoken_by_target"

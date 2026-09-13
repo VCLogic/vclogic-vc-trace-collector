@@ -29,7 +29,7 @@ from vc_trace_collector.models import (
     SourceType,
 )
 from vc_trace_collector.policy import ExclusionRule, RuleSet
-from vc_trace_collector.storage import ArtifactStore, StateStore
+from vc_trace_collector.storage import ArtifactStore, StateStore, write_jsonl
 
 
 def candidate(
@@ -179,6 +179,30 @@ def test_cached_collection_preserves_post_metadata_review_status(tmp_path) -> No
     assert first.outcomes[0].status == "review_required"
     assert second.outcomes[0].status == "review_required"
     assert second.review_required == 1
+    assert collector.calls == 1
+
+
+def test_legacy_cached_collection_recovers_persisted_review_status(tmp_path) -> None:
+    collector = PostMetadataReviewCollector()
+    registry = CollectorRegistry([collector])
+    run_context = context(tmp_path)
+    source_plan = plan(candidate("review"))
+    first = collect_approved_sources(
+        source_plan, context=run_context, registry=registry
+    )
+    write_jsonl(
+        tmp_path / "processed/collection_candidate_outcomes.jsonl",
+        first.outcomes,
+    )
+    for cache_path in (tmp_path / "state/collection_results").glob("*.json"):
+        cache_path.unlink()
+
+    resumed = collect_approved_sources(
+        source_plan, context=run_context, registry=registry
+    )
+
+    assert resumed.outcomes[0].status == "review_required"
+    assert resumed.review_required == 1
     assert collector.calls == 1
 
 

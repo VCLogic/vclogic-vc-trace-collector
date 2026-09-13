@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .discovery import SearchResult, stable_id
 from .models import (
@@ -30,11 +30,12 @@ class SourceSearchSummary(BaseModel):
 class SourceSearchObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    operation_id: str | None = None
     source_type: SourceType
     query: str
     requested_provider: str
     result_provider: str | None = None
-    status: str
+    status: str = Field(pattern=r"^(succeeded|failed)$")
     cached: bool = False
     rank: int | None = None
     url: str | None = None

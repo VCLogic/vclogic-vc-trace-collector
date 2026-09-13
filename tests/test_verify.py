@@ -16,6 +16,7 @@ from vc_trace_collector.models import (
 from vc_trace_collector.source_search import SourceSearchObservation
 from vc_trace_collector.storage import (
     ArtifactStore,
+    StateStore,
     canonical_json,
     read_json,
     write_json,
@@ -25,7 +26,12 @@ from vc_trace_collector.verify import verify_workspace
 
 
 def exported_workspace(
-    tmp_path, *, empty: bool = False, outcome_candidate_id: str = "candidate:blog"
+    tmp_path,
+    *,
+    empty: bool = False,
+    outcome_candidate_id: str = "candidate:blog",
+    include_search_observations: bool = True,
+    include_collection_outcomes: bool = True,
 ):
     config = RunConfig(name="Michael Hyatt")
     write_json(tmp_path / "config_snapshot.json", config)
@@ -92,31 +98,42 @@ def exported_workspace(
         mime_type="text/html",
         original_metadata={"candidate_id": candidate.candidate_id},
     )
-    write_jsonl(
-        tmp_path / "discovery/search_observations.jsonl",
-        [
-            SourceSearchObservation(
-                source_type="web_article",
-                query="query",
-                requested_provider="test-search",
-                result_provider="test-search",
-                status="succeeded",
-                rank=1,
-                url=candidate.url,
-            )
-        ],
+    search_operation_id = "search-source:web_article:test"
+    state = StateStore(tmp_path / "state/state.sqlite")
+    state.start_operation(search_operation_id, "search-hash")
+    state.finish_operation(search_operation_id, "search-hash", "search-output")
+    state.start_operation("collect:candidate:blog", "collect-hash")
+    state.finish_operation(
+        "collect:candidate:blog", "collect-hash", artifact.record.artifact_id
     )
-    write_jsonl(
-        tmp_path / "processed/collection_candidate_outcomes.jsonl",
-        [
-            CollectionCandidateOutcome(
-                candidate_id=outcome_candidate_id,
-                status="succeeded",
-                reason="Source collected",
-                artifact_ids=[artifact.record.artifact_id],
-            )
-        ],
-    )
+    if include_search_observations:
+        write_jsonl(
+            tmp_path / "discovery/search_observations.jsonl",
+            [
+                SourceSearchObservation(
+                    operation_id=search_operation_id,
+                    source_type="web_article",
+                    query="query",
+                    requested_provider="test-search",
+                    result_provider="test-search",
+                    status="succeeded",
+                    rank=1,
+                    url=candidate.url,
+                )
+            ],
+        )
+    if include_collection_outcomes:
+        write_jsonl(
+            tmp_path / "processed/collection_candidate_outcomes.jsonl",
+            [
+                CollectionCandidateOutcome(
+                    candidate_id=outcome_candidate_id,
+                    status="succeeded",
+                    reason="Source collected",
+                    artifact_ids=[artifact.record.artifact_id],
+                )
+            ],
+        )
     documents = []
     if not empty:
         item = document("blog", "public writing")
@@ -156,6 +173,28 @@ def test_exported_workspace_verifies(tmp_path) -> None:
 
 def test_verification_rejects_unknown_collection_outcome_candidate(tmp_path) -> None:
     exported_workspace(tmp_path, outcome_candidate_id="candidate:unknown")
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("collection outcome" in error.casefold() for error in result.errors)
+
+
+def test_verification_requires_search_observations_for_search_operations(
+    tmp_path,
+) -> None:
+    exported_workspace(tmp_path, include_search_observations=False)
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("search observation" in error.casefold() for error in result.errors)
+
+
+def test_verification_requires_collection_outcomes_for_collection_operations(
+    tmp_path,
+) -> None:
+    exported_workspace(tmp_path, include_collection_outcomes=False)
 
     result = verify_workspace(tmp_path)
 
