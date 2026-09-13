@@ -15,7 +15,7 @@ from vc_trace_collector.fetch import Fetcher
 from vc_trace_collector.models import ApprovalStatus, SourceType
 from vc_trace_collector.pipeline import Pipeline
 from vc_trace_collector.source_search import build_source_queries
-from vc_trace_collector.storage import read_jsonl
+from vc_trace_collector.storage import read_json, read_jsonl
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -27,8 +27,10 @@ def public_resolver(host: str, port: int):
 class SearchFixture:
     provider_name = "agent-reach:yt-dlp"
 
-    def __init__(self) -> None:
+    def __init__(self, *, cache_identity: str | None = None) -> None:
         self.queries: list[str] = []
+        if cache_identity is not None:
+            self.cache_identity = cache_identity
 
     def search(self, query: str, limit: int = 10):
         self.queries.append(query)
@@ -121,6 +123,26 @@ def test_search_source_appends_and_deduplicates_candidates(tmp_path) -> None:
     assert observations[0]["result_provider"] == "agent-reach:yt-dlp"
 
 
+def test_search_cache_isolated_by_backend_identity(tmp_path) -> None:
+    first = SearchFixture(cache_identity="composite:ddg:yt-dlp")
+    collector = pipeline(tmp_path, first)
+    initialize(collector, tmp_path)
+    collector.search_source(
+        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
+    )
+
+    second = SearchFixture(cache_identity="composite:agent-reach:exa:yt-dlp")
+    collector.search_source(
+        "michael-hyatt",
+        SourceType.YOUTUBE,
+        maximum_queries=1,
+        search_provider=second,
+    )
+
+    assert len(first.queries) == 1
+    assert len(second.queries) == 1
+
+
 def test_search_source_preserves_existing_review_decision(tmp_path) -> None:
     provider = SearchFixture()
     collector = pipeline(tmp_path, provider)
@@ -160,6 +182,30 @@ def test_search_source_reserves_budget_before_backend_call(tmp_path) -> None:
         )
 
     assert provider.queries == []
+
+
+def test_search_source_updates_run_cost_summary(tmp_path) -> None:
+    provider = SearchFixture()
+    collector = pipeline(tmp_path, provider)
+    collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        config=RunConfig(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            output_dir=str(tmp_path),
+            public_search_enabled=False,
+            search_operation_cost_usd=Decimal("0.02"),
+            maximum_cost_usd=Decimal("1.00"),
+        ),
+    )
+
+    collector.search_source(
+        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
+    )
+
+    summary = read_json(tmp_path / "michael-hyatt/run_summary.json")
+    assert Decimal(summary["cost_usd"]) == Decimal("0.02")
 
 
 def test_search_source_records_backend_diagnostics_as_failures(tmp_path) -> None:

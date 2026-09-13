@@ -1,5 +1,6 @@
 from test_process_export import document
 
+from vc_trace_collector.collectors import CollectionCandidateOutcome
 from vc_trace_collector.config import RunConfig
 from vc_trace_collector.export import export_workspace
 from vc_trace_collector.models import (
@@ -12,6 +13,7 @@ from vc_trace_collector.models import (
     SourcePlan,
     utc_now,
 )
+from vc_trace_collector.source_search import SourceSearchObservation
 from vc_trace_collector.storage import (
     ArtifactStore,
     canonical_json,
@@ -22,7 +24,9 @@ from vc_trace_collector.storage import (
 from vc_trace_collector.verify import verify_workspace
 
 
-def exported_workspace(tmp_path, *, empty: bool = False):
+def exported_workspace(
+    tmp_path, *, empty: bool = False, outcome_candidate_id: str = "candidate:blog"
+):
     config = RunConfig(name="Michael Hyatt")
     write_json(tmp_path / "config_snapshot.json", config)
     identity = ResolvedIdentity(
@@ -88,6 +92,31 @@ def exported_workspace(tmp_path, *, empty: bool = False):
         mime_type="text/html",
         original_metadata={"candidate_id": candidate.candidate_id},
     )
+    write_jsonl(
+        tmp_path / "discovery/search_observations.jsonl",
+        [
+            SourceSearchObservation(
+                source_type="web_article",
+                query="query",
+                requested_provider="test-search",
+                result_provider="test-search",
+                status="succeeded",
+                rank=1,
+                url=candidate.url,
+            )
+        ],
+    )
+    write_jsonl(
+        tmp_path / "processed/collection_candidate_outcomes.jsonl",
+        [
+            CollectionCandidateOutcome(
+                candidate_id=outcome_candidate_id,
+                status="succeeded",
+                reason="Source collected",
+                artifact_ids=[artifact.record.artifact_id],
+            )
+        ],
+    )
     documents = []
     if not empty:
         item = document("blog", "public writing")
@@ -115,11 +144,23 @@ def exported_workspace(tmp_path, *, empty: bool = False):
 
 
 def test_exported_workspace_verifies(tmp_path) -> None:
-    exported_workspace(tmp_path)
+    manifest, _artifact = exported_workspace(tmp_path)
 
     result = verify_workspace(tmp_path)
     assert result.passed is True
     assert result.errors == []
+    paths = {item.path for item in manifest.files}
+    assert "discovery/search_observations.jsonl" in paths
+    assert "processed/collection_candidate_outcomes.jsonl" in paths
+
+
+def test_verification_rejects_unknown_collection_outcome_candidate(tmp_path) -> None:
+    exported_workspace(tmp_path, outcome_candidate_id="candidate:unknown")
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("collection outcome" in error.casefold() for error in result.errors)
 
 
 def test_verification_detects_tampered_corpus(tmp_path) -> None:

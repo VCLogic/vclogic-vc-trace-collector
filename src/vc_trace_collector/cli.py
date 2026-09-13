@@ -238,7 +238,8 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         noun = "candidate" if result.added == 1 else "candidates"
         typer.echo(
             f"Added {result.added} {source.value} {noun}; "
-            f"updated {result.updated}; review required before fetching."
+            f"updated {result.updated}; failed queries {result.failed}; "
+            "review required before fetching."
         )
 
     @app.command("list-sources")

@@ -33,7 +33,14 @@ from .models import (
     utc_now,
 )
 from .policy import InclusionStatus, RuleSet
-from .storage import ArtifactStore, StateStore, append_jsonl, canonical_json
+from .storage import (
+    ArtifactStore,
+    StateStore,
+    append_jsonl,
+    canonical_json,
+    read_json,
+    write_json,
+)
 
 
 class ReviewRequired(RuntimeError):
@@ -906,15 +913,28 @@ def collect_approved_sources(
             canonical_json(candidate.model_dump(mode="json")).encode("utf-8")
         ).hexdigest()
         operation_id = f"collect:{candidate.candidate_id}"
+        outcome_cache_path = (
+            context.workspace / "state/collection_results" / f"{input_hash}.json"
+        )
         if context.state.is_complete(operation_id, input_hash):
             result.skipped += 1
-            result.outcomes.append(
-                CollectionCandidateOutcome(
+            if outcome_cache_path.exists():
+                cached_outcome = CollectionCandidateOutcome.model_validate(
+                    read_json(outcome_cache_path)
+                )
+            else:
+                # Compatibility with state created before collection outcomes
+                # were cached independently from artifact identifiers.
+                cached_outcome = CollectionCandidateOutcome(
                     candidate_id=candidate.candidate_id,
                     status="succeeded",
                     reason="Previously completed collection reused",
                 )
-            )
+            result.outcomes.append(cached_outcome)
+            if cached_outcome.status == "excluded":
+                result.excluded += 1
+            elif cached_outcome.status == "review_required":
+                result.review_required += 1
             _audit(
                 context,
                 candidate=candidate,
@@ -991,35 +1011,33 @@ def collect_approved_sources(
             result.excluded += 1
         if post_collection_review:
             result.review_required += 1
+        outcome = CollectionCandidateOutcome(
+            candidate_id=candidate.candidate_id,
+            status=(
+                "excluded"
+                if post_collection_excluded
+                else ("review_required" if post_collection_review else "succeeded")
+            ),
+            reason=(
+                "Excluded by post-metadata rules"
+                if post_collection_excluded
+                else (
+                    "Human review required after metadata collection"
+                    if post_collection_review
+                    else "Source collected"
+                )
+            ),
+            artifact_ids=output_ids,
+        )
+        write_json(outcome_cache_path, outcome)
         if context.budget:
             context.budget.settle(operation_id, candidate.estimated_cost_usd)
-        context.state.finish_operation(operation_id, input_hash, ",".join(output_ids))
+        context.state.finish_operation(
+            operation_id, input_hash, str(outcome_cache_path)
+        )
         result.collected += 1
         result.artifacts.extend(records)
-        result.outcomes.append(
-            CollectionCandidateOutcome(
-                candidate_id=candidate.candidate_id,
-                status=(
-                    "excluded"
-                    if post_collection_excluded
-                    else (
-                        "review_required"
-                        if post_collection_review
-                        else "succeeded"
-                    )
-                ),
-                reason=(
-                    "Excluded by post-metadata rules"
-                    if post_collection_excluded
-                    else (
-                        "Human review required after metadata collection"
-                        if post_collection_review
-                        else "Source collected"
-                    )
-                ),
-                artifact_ids=output_ids,
-            )
-        )
+        result.outcomes.append(outcome)
         _audit(
             context,
             candidate=candidate,

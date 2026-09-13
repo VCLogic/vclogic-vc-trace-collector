@@ -435,10 +435,13 @@ class Pipeline:
         )
         for query in selected_queries:
             new_diagnostics: list[dict[str, str]] = []
+            provider_cache_identity = getattr(
+                provider, "cache_identity", provider.provider_name
+            )
             input_hash = sha256(
                 canonical_json(
                     {
-                        "provider": provider.provider_name,
+                        "provider": provider_cache_identity,
                         "query": query,
                         "limit": limit_per_query,
                     }
@@ -533,6 +536,7 @@ class Pipeline:
             operations.append(
                 {
                     "provider": provider.provider_name,
+                    "provider_cache_identity": provider_cache_identity,
                     "query": query,
                     "results": len(results),
                     "cached": cached,
@@ -574,6 +578,8 @@ class Pipeline:
         )
         self._save_plan(investor_slug, plan)
         run_summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
+        run_summary.cost_usd = budget.spent
+        write_json(workspace / "run_summary.json", run_summary)
         self._event(
             workspace,
             run_summary.run_id,

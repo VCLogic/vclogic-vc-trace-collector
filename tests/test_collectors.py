@@ -81,6 +81,31 @@ class StaticCollector:
         ]
 
 
+class PostMetadataReviewCollector:
+    source_types: ClassVar[set[SourceType]] = {SourceType.WEB_ARTICLE}
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def collect(self, source: SourceCandidate, context: CollectionContext):
+        self.calls += 1
+        return [
+            context.artifacts.put_bytes(
+                b"collected",
+                category="web",
+                suffix=".html",
+                source_url=source.url,
+                original_metadata={
+                    "candidate_id": source.candidate_id,
+                    "collection_exclusion": {
+                        "status": "review_required",
+                        "reason": "metadata requires review",
+                    },
+                },
+            ).record
+        ]
+
+
 def context(tmp_path: Path) -> CollectionContext:
     return CollectionContext(
         workspace=tmp_path,
@@ -136,6 +161,25 @@ def test_completed_collection_is_skipped_on_resume(tmp_path) -> None:
     assert first.collected == 1
     assert second.skipped == 1
     assert collector.calls == ["success"]
+
+
+def test_cached_collection_preserves_post_metadata_review_status(tmp_path) -> None:
+    collector = PostMetadataReviewCollector()
+    registry = CollectorRegistry([collector])
+    run_context = context(tmp_path)
+    source_plan = plan(candidate("review"))
+
+    first = collect_approved_sources(
+        source_plan, context=run_context, registry=registry
+    )
+    second = collect_approved_sources(
+        source_plan, context=run_context, registry=registry
+    )
+
+    assert first.outcomes[0].status == "review_required"
+    assert second.outcomes[0].status == "review_required"
+    assert second.review_required == 1
+    assert collector.calls == 1
 
 
 def test_supplied_file_is_snapshotted(tmp_path) -> None:

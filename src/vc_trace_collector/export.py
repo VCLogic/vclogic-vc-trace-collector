@@ -364,6 +364,11 @@ def export_workspace(
     outcome_path = workspace / "processed/av_candidate_outcomes.jsonl"
     if outcome_path.exists():
         paths.append(outcome_path)
+    collection_outcome_path = (
+        workspace / "processed/collection_candidate_outcomes.jsonl"
+    )
+    if collection_outcome_path.exists():
+        paths.append(collection_outcome_path)
     provenance_paths = [
         workspace / "config_snapshot.json",
         workspace / "exclusion_rules_snapshot.json",
@@ -377,6 +382,7 @@ def export_workspace(
         workspace / "discovery/source_candidates.jsonl",
         workspace / "discovery/approved_sources.jsonl",
         workspace / "discovery/rejected_sources.jsonl",
+        workspace / "discovery/search_observations.jsonl",
     ]
     provenance_paths.extend((workspace / "raw").rglob("*"))
     paths.extend(path for path in provenance_paths if path.is_file())

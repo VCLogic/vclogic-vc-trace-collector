@@ -231,6 +231,9 @@ class CompositeSearchProvider:
     def __init__(self, *, web: SearchProvider, youtube: SearchProvider) -> None:
         self.web = web
         self.youtube = youtube
+        self.cache_identity = (
+            f"composite:{web.provider_name}:{youtube.provider_name}"
+        )
         self.diagnostics: list[dict[str, str]] = []
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:

@@ -14,6 +14,7 @@ from .audit import (
     attempted_media_seconds,
     provider_attempt_count,
 )
+from .collectors import CollectionCandidateOutcome
 from .config import RunConfig
 from .models import (
     ApprovalStatus,
@@ -34,6 +35,7 @@ from .models import (
     SpeakerStatus,
 )
 from .policy import ExclusionRule, RuleSet, eligible_for_corpus
+from .source_search import SourceSearchObservation
 from .storage import StateStore, canonical_json, read_json, read_jsonl
 
 
@@ -345,10 +347,16 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             item.decided_by for item in history if item.speaker_verified
         ]
         if speaker_reviewers and candidate.speaker_verified_by != speaker_reviewers[-1]:
-            errors.append(
-                f"Source speaker verification lacks decision provenance: "
-                f"{candidate.candidate_id}"
-            )
+                errors.append(
+                    f"Source speaker verification lacks decision provenance: "
+                    f"{candidate.candidate_id}"
+                )
+
+    for row in read_jsonl(workspace / "discovery/search_observations.jsonl"):
+        try:
+            SourceSearchObservation.model_validate(row)
+        except Exception as error:
+            errors.append(f"Invalid source search observation: {error}")
 
     reference_candidates: dict[str, ReferenceVoiceCandidate] = {}
     for row in read_jsonl(workspace / "identity/reference_voice_candidates.jsonl"):
@@ -391,6 +399,32 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                     errors.append(
                         f"Raw artifact references missing parent: {artifact.artifact_id}"
                     )
+
+    collection_outcomes: list[CollectionCandidateOutcome] = []
+    for row in read_jsonl(
+        workspace / "processed/collection_candidate_outcomes.jsonl"
+    ):
+        try:
+            outcome = CollectionCandidateOutcome.model_validate(row)
+            collection_outcomes.append(outcome)
+        except Exception as error:
+            errors.append(f"Invalid collection outcome: {error}")
+    collection_outcome_ids: set[str] = set()
+    for outcome in collection_outcomes:
+        if outcome.candidate_id not in candidates:
+            errors.append(
+                f"Collection outcome names unknown candidate: {outcome.candidate_id}"
+            )
+        if outcome.candidate_id in collection_outcome_ids:
+            errors.append(
+                f"Duplicate collection outcome: {outcome.candidate_id}"
+            )
+        collection_outcome_ids.add(outcome.candidate_id)
+        if any(artifact_id not in artifacts for artifact_id in outcome.artifact_ids):
+            errors.append(
+                f"Collection outcome references missing raw artifact: "
+                f"{outcome.candidate_id}"
+            )
 
     profile = None
     profile_path = workspace / "identity/reference_voice_profile.json"
