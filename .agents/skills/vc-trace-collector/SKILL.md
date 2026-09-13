@@ -17,7 +17,8 @@ Work from the repository root. Read `.env` variable names only; never print thei
 uv run vc-trace-collector doctor --json
 uv run vc-trace-collector discover \
   --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt"
+  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --disable-public-search
 ```
 
 Search each platform independently. Repeat for `web_article`, `web_profile`, `rss_feed`, `substack`, and `medium` as needed:
@@ -25,9 +26,10 @@ Search each platform independently. Repeat for `web_article`, `web_profile`, `rs
 ```bash
 uv run vc-trace-collector search-source --investor michael-hyatt --source youtube --backend agent-reach
 uv run vc-trace-collector search-source --investor michael-hyatt --source podcast --backend agent-reach
+uv run vc-trace-collector list-sources --investor michael-hyatt
 ```
 
-Show `outputs/michael-hyatt/discovery/source_candidates.jsonl` to the human. Do not bypass identity or source review. The human must approve each source and label clean reference material `reference_voice` and target appearances `spoken_by_target`. Record decisions through `review --decision-file`; use `review --help` for its schema and options.
+Show the `list-sources` output to the human. Do not bypass identity or source review. The human must approve each source and label clean reference material `reference_voice` and target appearances `spoken_by_target`. Record decisions through `review --decision-file`; use `review --help` for its schema and options.
 
 Fetch platforms separately, or fetch one candidate ID:
 

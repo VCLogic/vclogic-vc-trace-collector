@@ -125,6 +125,7 @@ Stage commands are available independently:
 uv run vc-trace-collector discover --help
 uv run vc-trace-collector review --help
 uv run vc-trace-collector search-source --help
+uv run vc-trace-collector list-sources --help
 uv run vc-trace-collector fetch-source --help
 uv run vc-trace-collector review-voice --help
 uv run vc-trace-collector collect --help
@@ -147,12 +148,17 @@ Each search appends to the same reviewable plan without removing prior human
 decisions:
 
 ```bash
+uv run vc-trace-collector discover \
+  --name "Michael Hyatt" \
+  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --disable-public-search
 uv run vc-trace-collector search-source \
   --investor michael-hyatt --source youtube --backend agent-reach
 uv run vc-trace-collector search-source \
   --investor michael-hyatt --source podcast --backend agent-reach
 uv run vc-trace-collector search-source \
   --investor michael-hyatt --source web_article --backend agent-reach
+uv run vc-trace-collector list-sources --investor michael-hyatt
 ```
 
 After reviewing the plan, download one platform or one item at a time:

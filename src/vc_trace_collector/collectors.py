@@ -827,10 +827,22 @@ def collect_approved_sources(
     context: CollectionContext,
     registry: CollectorRegistry | None = None,
 ) -> CollectionResult:
+    def selected(candidate: SourceCandidate) -> bool:
+        return not (
+            (
+                context.candidate_ids is not None
+                and candidate.candidate_id not in context.candidate_ids
+            )
+            or (
+                context.approved_source_types is not None
+                and candidate.source_type not in context.approved_source_types
+            )
+        )
+
     pending = [
         candidate
         for candidate in plan.candidates
-        if candidate.approval_status == ApprovalStatus.PENDING
+        if candidate.approval_status == ApprovalStatus.PENDING and selected(candidate)
     ]
     if plan.requires_review and pending:
         raise ReviewRequired(f"Source-plan review required: {plan.plan_id}")
@@ -844,29 +856,13 @@ def collect_approved_sources(
             ApprovalStatus.AUTO_APPROVED,
         }:
             continue
-        if (
-            context.candidate_ids is not None
-            and candidate.candidate_id not in context.candidate_ids
-        ):
+        if not selected(candidate):
             result.skipped += 1
             _audit(
                 context,
                 candidate=candidate,
                 status=EventStatus.SKIPPED,
-                summary="Source is outside the requested candidate filter",
-            )
-            continue
-        if (
-            context.approved_source_types is not None
-            and candidate.source_type not in context.approved_source_types
-        ):
-            result.skipped += 1
-            _audit(
-                context,
-                candidate=candidate,
-                status=EventStatus.SKIPPED,
-                summary="Source type is outside the run allowlist",
-                details={"source_type": candidate.source_type.value},
+                summary="Source is outside the requested collection filter",
             )
             continue
         exclusion = context.rules.evaluate(

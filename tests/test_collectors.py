@@ -190,6 +190,24 @@ def test_collection_runs_only_requested_candidate_ids(tmp_path) -> None:
     assert collector.calls == ["second"]
 
 
+def test_candidate_filter_ignores_unreviewed_items_outside_selection(tmp_path) -> None:
+    collector = StaticCollector()
+    run_context = context(tmp_path)
+    run_context.candidate_ids = {"approved"}
+
+    result = collect_approved_sources(
+        plan(
+            candidate("pending", status=ApprovalStatus.PENDING),
+            candidate("approved"),
+        ),
+        context=run_context,
+        registry=CollectorRegistry([collector]),
+    )
+
+    assert result.collected == 1
+    assert collector.calls == ["approved"]
+
+
 def test_collection_stops_before_exceeding_reserved_provider_budget(tmp_path) -> None:
     collector = StaticCollector()
     run_context = context(tmp_path)

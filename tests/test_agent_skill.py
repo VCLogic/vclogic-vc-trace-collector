@@ -8,6 +8,8 @@ def test_project_agent_skill_teaches_audited_staged_workflow() -> None:
     text = path.read_text(encoding="utf-8")
     assert "vc-trace-collector doctor" in text
     assert "vc-trace-collector search-source" in text
+    assert "--disable-public-search" in text
+    assert "vc-trace-collector list-sources" in text
     assert "vc-trace-collector review" in text
     assert "vc-trace-collector fetch-source" in text
     assert "vc-trace-collector review-voice" in text

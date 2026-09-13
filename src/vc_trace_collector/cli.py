@@ -241,6 +241,39 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             f"updated {result.updated}; review required before fetching."
         )
 
+    @app.command("list-sources")
+    def list_sources(
+        investor: str = typer.Option(..., help="Investor workspace slug"),
+        source: SourceType | None = typer.Option(None),
+        status_filter: ApprovalStatus | None = typer.Option(None, "--status"),
+        json_output: bool = typer.Option(False, "--json"),
+        output_dir: Path = typer.Option(Path("outputs")),
+    ) -> None:
+        """List source-plan candidate IDs, decisions, roles, and URLs."""
+        plan = make_pipeline(output_dir)._load_plan(investor)
+        candidates = [
+            candidate
+            for candidate in plan.candidates
+            if (source is None or candidate.source_type == source)
+            and (
+                status_filter is None
+                or candidate.approval_status == status_filter
+            )
+        ]
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    [item.model_dump(mode="json") for item in candidates], indent=2
+                )
+            )
+            return
+        for candidate in candidates:
+            typer.echo(
+                f"{candidate.candidate_id}\t{candidate.source_type.value}\t"
+                f"{candidate.approval_status.value}\t{candidate.material_role.value}\t"
+                f"{candidate.canonical_url}"
+            )
+
     @app.command("fetch-source")
     def fetch_source(
         investor: str = typer.Option(..., help="Investor workspace slug"),

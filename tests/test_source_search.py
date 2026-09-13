@@ -186,3 +186,29 @@ def test_cli_search_source_can_select_agent_reach_backends(
     assert result.exit_code == 0
     assert original.queries == []
     assert len(agent_reach.queries) == 1
+
+
+def test_cli_list_sources_exposes_candidate_ids_and_urls(tmp_path) -> None:
+    provider = SearchFixture()
+    collector = pipeline(tmp_path, provider)
+    initialize(collector, tmp_path)
+    collector.search_source("michael-hyatt", SourceType.YOUTUBE, maximum_queries=1)
+    app = create_app(lambda _output_dir: collector)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "list-sources",
+            "--investor",
+            "michael-hyatt",
+            "--source",
+            "youtube",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "candidate:" in result.stdout
+    assert "https://www.youtube.com/watch?v=voice123" in result.stdout
+    assert "pending" in result.stdout
