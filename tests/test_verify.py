@@ -32,6 +32,7 @@ def exported_workspace(
     outcome_candidate_id: str = "candidate:blog",
     outcome_status: str = "succeeded",
     observation_url: str | None = None,
+    search_source_type: str = "web_article",
     include_search_observations: bool = True,
     include_collection_outcomes: bool = True,
 ):
@@ -100,7 +101,7 @@ def exported_workspace(
         mime_type="text/html",
         original_metadata={"candidate_id": candidate.candidate_id},
     )
-    search_operation_id = "search-source:web_article:test"
+    search_operation_id = f"search-source:{search_source_type}:test"
     search_cache_path = tmp_path / "state/source_search/search-hash.json"
     write_json(
         search_cache_path,
@@ -135,7 +136,7 @@ def exported_workspace(
             [
                 SourceSearchObservation(
                     operation_id=search_operation_id,
-                    source_type="web_article",
+                    source_type=search_source_type,
                     query="query",
                     requested_provider="test-search",
                     result_provider="test-search",
@@ -246,6 +247,14 @@ def test_verification_reconciles_search_observations_with_cached_results(
 
     assert result.passed is False
     assert any("search observation" in error.casefold() for error in result.errors)
+
+
+def test_verification_allows_cross_source_type_url_deduplication(tmp_path) -> None:
+    exported_workspace(tmp_path, search_source_type="podcast")
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is True
 
 
 def test_verification_detects_tampered_corpus(tmp_path) -> None:

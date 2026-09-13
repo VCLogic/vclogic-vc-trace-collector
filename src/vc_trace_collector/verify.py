@@ -468,6 +468,13 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         except (IndexError, ValueError):
             errors.append(f"Invalid source search operation id: {operation_id}")
             continue
+        if any(
+            item.source_type != operation_source_type for item in observations
+        ):
+            errors.append(
+                f"Source search observation type disagrees with operation: "
+                f"{operation_id}"
+            )
         for item in cached_results:
             candidate = candidates.get(
                 next(
@@ -481,7 +488,6 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             )
             if (
                 candidate is None
-                or candidate.source_type != operation_source_type
                 or item.query not in candidate.discovery_queries
             ):
                 errors.append(
