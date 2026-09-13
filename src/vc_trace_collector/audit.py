@@ -22,6 +22,8 @@ _SECRET_KEYS = {
     "access_token",
     "refresh_token",
     "bearer_token",
+    "credential",
+    "credentials",
 }
 
 
@@ -54,7 +56,7 @@ def redact(value: Any) -> Any:
             cleaned,
         )
         return re.sub(
-            r"(?i)(api[_-]?key|access[_-]?token|token|secret|password)="
+            r"(?i)(api[_-]?key|access[_-]?token|token|secret|password|credential)="
             r"[^&\s]+",
             r"\1=[REDACTED]",
             cleaned,

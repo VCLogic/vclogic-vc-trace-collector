@@ -97,6 +97,15 @@ class CollectionContext:
         return max(0, self.maximum_download_bytes - self.downloaded_bytes_used)
 
 
+class CollectionCandidateOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    status: str
+    reason: str
+    artifact_ids: list[str] = Field(default_factory=list)
+
+
 class CollectionResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -109,6 +118,7 @@ class CollectionResult(BaseModel):
     downloaded_bytes: int = 0
     artifacts: list[RawArtifact] = Field(default_factory=list)
     failures: list[dict[str, str]] = Field(default_factory=list)
+    outcomes: list[CollectionCandidateOutcome] = Field(default_factory=list)
 
 
 class Collector(Protocol):
@@ -876,6 +886,13 @@ def collect_approved_sources(
         )
         if exclusion.status == InclusionStatus.EXCLUDED:
             result.excluded += 1
+            result.outcomes.append(
+                CollectionCandidateOutcome(
+                    candidate_id=candidate.candidate_id,
+                    status="excluded",
+                    reason=exclusion.reason or "Excluded before collection",
+                )
+            )
             _audit(
                 context,
                 candidate=candidate,
@@ -891,6 +908,13 @@ def collect_approved_sources(
         operation_id = f"collect:{candidate.candidate_id}"
         if context.state.is_complete(operation_id, input_hash):
             result.skipped += 1
+            result.outcomes.append(
+                CollectionCandidateOutcome(
+                    candidate_id=candidate.candidate_id,
+                    status="succeeded",
+                    reason="Previously completed collection reused",
+                )
+            )
             _audit(
                 context,
                 candidate=candidate,
@@ -923,6 +947,13 @@ def collect_approved_sources(
             )
             result.failed += 1
             result.failures.append(failure)
+            result.outcomes.append(
+                CollectionCandidateOutcome(
+                    candidate_id=candidate.candidate_id,
+                    status="failed",
+                    reason=str(failure["message"]),
+                )
+            )
             append_jsonl(context.workspace / "audit/failures.jsonl", failure)
             _audit(
                 context,
@@ -965,6 +996,30 @@ def collect_approved_sources(
         context.state.finish_operation(operation_id, input_hash, ",".join(output_ids))
         result.collected += 1
         result.artifacts.extend(records)
+        result.outcomes.append(
+            CollectionCandidateOutcome(
+                candidate_id=candidate.candidate_id,
+                status=(
+                    "excluded"
+                    if post_collection_excluded
+                    else (
+                        "review_required"
+                        if post_collection_review
+                        else "succeeded"
+                    )
+                ),
+                reason=(
+                    "Excluded by post-metadata rules"
+                    if post_collection_excluded
+                    else (
+                        "Human review required after metadata collection"
+                        if post_collection_review
+                        else "Source collected"
+                    )
+                ),
+                artifact_ids=output_ids,
+            )
+        )
         _audit(
             context,
             candidate=candidate,

@@ -1,10 +1,13 @@
 import socket
+from decimal import Decimal
 from pathlib import Path
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 import vc_trace_collector.cli as cli_module
+from vc_trace_collector.audit import BudgetExceeded
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.config import RunConfig
 from vc_trace_collector.discovery import SearchResult
@@ -94,6 +97,7 @@ def test_search_source_appends_and_deduplicates_candidates(tmp_path) -> None:
     initialize(collector, tmp_path)
 
     first = collector.search_source("michael-hyatt", SourceType.YOUTUBE)
+    first_plan_id = collector._load_plan("michael-hyatt").plan_id
     second = collector.search_source("michael-hyatt", SourceType.YOUTUBE)
 
     assert first.added == 1
@@ -107,6 +111,14 @@ def test_search_source_appends_and_deduplicates_candidates(tmp_path) -> None:
     assert videos[0]["discovered_via"] == "agent-reach:yt-dlp"
     assert len(videos[0]["discovery_queries"]) == len(set(provider.queries))
     assert videos[0]["approval_status"] == ApprovalStatus.PENDING
+    assert len(provider.queries) == 3  # second invocation reuses cached observations
+    assert first_plan_id == collector._load_plan("michael-hyatt").plan_id
+    observations = read_jsonl(
+        tmp_path / "michael-hyatt/discovery/search_observations.jsonl"
+    )
+    assert observations[0]["url"] == "https://www.youtube.com/watch?v=voice123"
+    assert observations[0]["rank"] == 1
+    assert observations[0]["result_provider"] == "agent-reach:yt-dlp"
 
 
 def test_search_source_preserves_existing_review_decision(tmp_path) -> None:
@@ -124,6 +136,65 @@ def test_search_source_preserves_existing_review_decision(tmp_path) -> None:
     updated = collector._load_plan("michael-hyatt")
     video = next(item for item in updated.candidates if item.source_type == "youtube")
     assert video.approval_status == ApprovalStatus.APPROVED
+
+
+def test_search_source_reserves_budget_before_backend_call(tmp_path) -> None:
+    provider = SearchFixture()
+    collector = pipeline(tmp_path, provider)
+    collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        config=RunConfig(
+            name="Michael Hyatt",
+            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            output_dir=str(tmp_path),
+            public_search_enabled=False,
+            search_operation_cost_usd=Decimal("0.02"),
+            maximum_cost_usd=Decimal("0.01"),
+        ),
+    )
+
+    with pytest.raises(BudgetExceeded):
+        collector.search_source(
+            "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
+        )
+
+    assert provider.queries == []
+
+
+def test_search_source_records_backend_diagnostics_as_failures(tmp_path) -> None:
+    class BrokenSearch:
+        provider_name = "agent-reach"
+
+        def __init__(self) -> None:
+            self.diagnostics = []
+
+        def search(self, query: str, limit: int = 10):
+            self.diagnostics.append(
+                {
+                    "provider": "agent-reach:exa",
+                    "query": query,
+                    "error": "mcporter is not installed",
+                }
+            )
+            return []
+
+    provider = BrokenSearch()
+    collector = pipeline(tmp_path, provider)
+    initialize(collector, tmp_path)
+    original_plan_id = collector._load_plan("michael-hyatt").plan_id
+
+    result = collector.search_source(
+        "michael-hyatt", SourceType.WEB_ARTICLE, maximum_queries=1
+    )
+
+    assert result.failed == 1
+    assert collector._load_plan("michael-hyatt").plan_id != original_plan_id
+    observation = read_jsonl(
+        tmp_path / "michael-hyatt/discovery/search_observations.jsonl"
+    )[-1]
+    assert observation["status"] == "failed"
+    assert observation["error"] == "mcporter is not installed"
 
 
 def test_cli_search_source_runs_one_platform(tmp_path) -> None:

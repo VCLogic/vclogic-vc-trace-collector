@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .audit import redact
+
 
 class Capability(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -28,19 +30,6 @@ class DoctorReport(BaseModel):
     schema_version: str = "1.0"
     tools: dict[str, Capability] = Field(default_factory=dict)
     backends: dict[str, Capability] = Field(default_factory=dict)
-
-
-_SENSITIVE_PARTS = ("token", "cookie", "password", "secret", "authorization")
-
-
-def _sanitize(value: Any, *, key: str = "") -> Any:
-    if any(part in key.casefold() for part in _SENSITIVE_PARTS):
-        return "[REDACTED]"
-    if isinstance(value, dict):
-        return {str(item_key): _sanitize(item, key=str(item_key)) for item_key, item in value.items()}
-    if isinstance(value, list):
-        return [_sanitize(item) for item in value]
-    return value
 
 
 class CapabilityDoctor:
@@ -94,7 +83,7 @@ class CapabilityDoctor:
                 {},
             )
         try:
-            payload = _sanitize(json.loads(completed.stdout))
+            payload = redact(json.loads(completed.stdout))
         except (json.JSONDecodeError, TypeError):
             return (
                 Capability(

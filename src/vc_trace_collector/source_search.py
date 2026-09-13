@@ -24,6 +24,22 @@ class SourceSearchSummary(BaseModel):
     added: int = 0
     updated: int = 0
     result_count: int = 0
+    failed: int = 0
+
+
+class SourceSearchObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: SourceType
+    query: str
+    requested_provider: str
+    result_provider: str | None = None
+    status: str
+    cached: bool = False
+    rank: int | None = None
+    url: str | None = None
+    title: str | None = None
+    error: str | None = None
 
 
 _SUFFIXES: dict[SourceType, tuple[str, ...]] = {

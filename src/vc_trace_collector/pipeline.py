@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from .audit import AuditLog, BudgetLedger, redact
+from .audit import AuditLog, BudgetExceeded, BudgetLedger, redact
 from .av import (
     DiarizationProvider,
     EmbeddingProvider,
@@ -28,6 +28,7 @@ from .av import (
 )
 from .collectors import (
     NETWORK_COLLECTION_METHODS,
+    CollectionCandidateOutcome,
     CollectionContext,
     CollectionResult,
     ReviewRequired,
@@ -42,7 +43,9 @@ from .discovery import (
     DiscoveryResult,
     DiscoveryService,
     OpenAICompatibleDiscoveryProvider,
+    SearchResult,
     SearxngSearchProvider,
+    stable_id,
 )
 from .export import export_workspace
 from .fetch import Fetcher
@@ -74,6 +77,7 @@ from .process import (
     target_speech_document,
 )
 from .source_search import (
+    SourceSearchObservation,
     SourceSearchSummary,
     build_source_queries,
     candidate_from_search_result,
@@ -415,14 +419,124 @@ class Pipeline:
         summary = SourceSearchSummary(source_type=source_type, queries=selected_queries)
         operations: list[dict[str, object]] = []
         updated_urls: set[str] = set()
+        state = StateStore(workspace / "state/state.sqlite")
+        budget = BudgetLedger(
+            workspace / "audit/costs.jsonl",
+            config.maximum_cost_usd,
+            maximum_provider_operations=config.maximum_provider_operations,
+        )
+        prior_cost_rows = read_jsonl(workspace / "audit/costs.jsonl")
+        search_attempts = sum(
+            row.get("kind") == "settlement"
+            and str(row.get("operation_id", "")).startswith(
+                ("search:", "search-source:")
+            )
+            for row in prior_cost_rows
+        )
         for query in selected_queries:
-            results = provider.search(query, limit=limit_per_query)
+            new_diagnostics: list[dict[str, str]] = []
+            input_hash = sha256(
+                canonical_json(
+                    {
+                        "provider": provider.provider_name,
+                        "query": query,
+                        "limit": limit_per_query,
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+            operation_id = f"search-source:{source_type.value}:{input_hash[:20]}"
+            cache_path = workspace / "state/source_search" / f"{input_hash}.json"
+            cached = state.is_complete(operation_id, input_hash) and cache_path.exists()
+            if cached:
+                results = [
+                    SearchResult.model_validate(row)
+                    for row in read_json(cache_path).get("results", [])
+                ]
+            else:
+                if search_attempts >= config.maximum_search_operations:
+                    raise BudgetExceeded(operation_id)
+                budget.reserve(
+                    operation_id,
+                    config.search_operation_cost_usd,
+                    provider=provider.provider_name,
+                )
+                state.start_operation(operation_id, input_hash)
+                diagnostics = getattr(provider, "diagnostics", [])
+                diagnostic_count = len(diagnostics)
+                try:
+                    results = provider.search(query, limit=limit_per_query)
+                except Exception as error:
+                    budget.settle(
+                        operation_id,
+                        config.search_operation_cost_usd,
+                        provider=provider.provider_name,
+                    )
+                    state.fail_operation(operation_id, input_hash, str(redact(str(error))))
+                    raise
+                budget.settle(
+                    operation_id,
+                    config.search_operation_cost_usd,
+                    provider=provider.provider_name,
+                )
+                search_attempts += 1
+                new_diagnostics = diagnostics[diagnostic_count:]
+                if new_diagnostics:
+                    summary.failed += 1
+                    state.fail_operation(
+                        operation_id,
+                        input_hash,
+                        str(new_diagnostics[0].get("error", "search failed")),
+                    )
+                else:
+                    write_json(
+                        cache_path,
+                        {
+                            "results": [
+                                result.model_dump(mode="json") for result in results
+                            ]
+                        },
+                    )
+                    state.finish_operation(operation_id, input_hash, str(cache_path))
             summary.result_count += len(results)
+            if results:
+                for result in results:
+                    append_jsonl(
+                        workspace / "discovery/search_observations.jsonl",
+                        SourceSearchObservation(
+                            source_type=source_type,
+                            query=query,
+                            requested_provider=provider.provider_name,
+                            result_provider=result.provider,
+                            status="succeeded",
+                            cached=cached,
+                            rank=result.rank,
+                            url=result.url,
+                            title=result.title,
+                        ),
+                    )
+            else:
+                append_jsonl(
+                    workspace / "discovery/search_observations.jsonl",
+                    SourceSearchObservation(
+                        source_type=source_type,
+                        query=query,
+                        requested_provider=provider.provider_name,
+                        status="failed" if new_diagnostics else "succeeded",
+                        cached=cached,
+                        error=(
+                            new_diagnostics[0].get("error")
+                            if new_diagnostics
+                            else None
+                        ),
+                    ),
+                )
             operations.append(
                 {
                     "provider": provider.provider_name,
                     "query": query,
                     "results": len(results),
+                    "cached": cached,
+                    "diagnostics": new_diagnostics,
                 }
             )
             for result in results:
@@ -442,8 +556,22 @@ class Pipeline:
                 by_url[candidate.canonical_url] = candidate
                 summary.added += 1
         summary.updated = len(updated_urls)
+        previous_plan_id = plan.plan_id
         plan.queries = sorted(set(plan.queries + selected_queries))
         plan.candidates = sorted(by_url.values(), key=lambda item: item.canonical_url)
+        plan.plan_id = stable_id(
+            "plan",
+            canonical_json(
+                {
+                    "investor_slug": plan.investor_slug,
+                    "queries": plan.queries,
+                    "candidates": [
+                        candidate.model_dump(mode="json")
+                        for candidate in plan.candidates
+                    ],
+                }
+            ),
+        )
         self._save_plan(investor_slug, plan)
         run_summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         self._event(
@@ -453,6 +581,8 @@ class Pipeline:
             f"Searched {source_type.value} and updated the source plan",
             details={
                 **summary.model_dump(mode="json"),
+                "previous_plan_id": previous_plan_id,
+                "plan_id": plan.plan_id,
                 "provider_operations": operations,
             },
         )
@@ -673,12 +803,28 @@ class Pipeline:
             ):
                 voice.artifact_id = artifact.artifact_id
         write_jsonl(voice_path, voice_candidates)
+        outcome_path = workspace / "processed/collection_candidate_outcomes.jsonl"
+        collection_outcomes = {
+            row["candidate_id"]: CollectionCandidateOutcome.model_validate(row)
+            for row in read_jsonl(outcome_path)
+        }
+        for outcome in result.outcomes:
+            collection_outcomes[outcome.candidate_id] = outcome
+        write_jsonl(
+            outcome_path,
+            sorted(collection_outcomes.values(), key=lambda item: item.candidate_id),
+        )
         partial = source_types is not None or candidate_ids is not None
         summary.stages["collection"] = "partial" if partial else "complete"
         summary.status = "collecting" if partial else "collected"
         summary.collected += result.collected
-        summary.collection_failures = result.failed
-        summary.collection_review_required = result.review_required
+        summary.collection_failures = sum(
+            item.status == "failed" for item in collection_outcomes.values()
+        )
+        summary.collection_review_required = sum(
+            item.status == "review_required"
+            for item in collection_outcomes.values()
+        )
         summary.failures = summary.collection_failures + summary.processing_failures
         summary.excluded += result.excluded
         summary.downloaded_bytes = context.downloaded_bytes_used
@@ -1396,10 +1542,15 @@ class Pipeline:
                 },
             )
         if candidate_ids is not None:
+            replace_candidate_ids = {
+                candidate_id
+                for candidate_id, outcome in outcomes.items()
+                if outcome.status not in {"failed", "not_collected"}
+            }
             prior_documents = [
                 CanonicalDocument.model_validate(row)
                 for row in read_jsonl(workspace / "processed/documents.jsonl")
-                if row.get("source_candidate_id") not in candidate_ids
+                if row.get("source_candidate_id") not in replace_candidate_ids
             ]
             documents = [*prior_documents, *documents]
             prior_av_rows = [
@@ -1407,7 +1558,7 @@ class Pipeline:
                 for row in read_jsonl(
                     workspace / "processed/av_attribution_results.jsonl"
                 )
-                if row.get("candidate_id") not in candidate_ids
+                if row.get("candidate_id") not in replace_candidate_ids
             ]
             av_rows = [*prior_av_rows, *av_rows]
             for row in read_jsonl(

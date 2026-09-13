@@ -348,6 +348,7 @@ outputs/<investor-slug>/
 ├── discovery/
 │   ├── source_plan.json
 │   ├── source_candidates.jsonl
+│   ├── search_observations.jsonl
 │   ├── approved_sources.jsonl
 │   └── rejected_sources.jsonl
 ├── raw/{web,social,video,podcast,supplied}/
@@ -356,6 +357,7 @@ outputs/<investor-slug>/
 │   ├── target_speech.jsonl
 │   ├── av_attribution_results.jsonl
 │   ├── av_candidate_outcomes.jsonl
+│   ├── collection_candidate_outcomes.jsonl
 │   └── excluded_documents.jsonl
 ├── corpus/
 │   ├── blog.jsonl

@@ -35,6 +35,9 @@ def test_doctor_parses_agent_reach_backends_and_redacts_secrets() -> None:
                         "status": "ready",
                         "active_backend": "twitter-cli",
                         "cookie": "secret-cookie",
+                        "api_key": "secret-key",
+                        "credential": "secret-credential",
+                        "message": "access_token=secret-token",
                     },
                 }
             ),
@@ -49,6 +52,9 @@ def test_doctor_parses_agent_reach_backends_and_redacts_secrets() -> None:
     assert calls[0] == ["agent-reach", "doctor", "--json"]
     assert report.backends["youtube"].active_backend == "yt-dlp"
     assert report.backends["twitter"].details["cookie"] == "[REDACTED]"
+    assert report.backends["twitter"].details["api_key"] == "[REDACTED]"
+    assert report.backends["twitter"].details["credential"] == "[REDACTED]"
+    assert report.backends["twitter"].message == "access_token=[REDACTED]"
 
 
 def test_cli_doctor_emits_json(monkeypatch) -> None:

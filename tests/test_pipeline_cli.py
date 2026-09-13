@@ -294,6 +294,77 @@ def test_fetch_source_rejects_pending_candidate(tmp_path) -> None:
         )
 
 
+def test_partial_fetch_preserves_and_then_clears_terminal_failure_counts(
+    tmp_path, monkeypatch
+) -> None:
+    collector = pipeline(tmp_path)
+    discovered = collector.discover(
+        name="Michael Hyatt",
+        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        source_urls=[
+            "https://blog.example.test/michael-hyatt-first",
+            "https://blog.example.test/michael-hyatt-second",
+        ],
+    )
+    articles = [
+        item
+        for item in discovered.source_plan.candidates
+        if item.canonical_url.startswith("https://blog.example.test/")
+    ]
+    collector.review(
+        "michael-hyatt",
+        decisions=[
+            SourceDecision(
+                candidate_id=item.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="Human confirmed source",
+                decided_by="reviewer",
+                material_role=MaterialRole.AUTHORED_BY_TARGET,
+            )
+            for item in articles
+        ],
+        reviewer="reviewer",
+        confirm_identity=True,
+    )
+    failing_id = articles[0].candidate_id
+
+    class SelectiveCollector:
+        source_types: ClassVar = {articles[0].source_type}
+        fail = True
+
+        def collect(self, source, context):
+            if source.candidate_id == failing_id and self.fail:
+                raise RuntimeError("fixture failure")
+            return [
+                context.artifacts.put_bytes(
+                    source.candidate_id.encode(),
+                    category="web",
+                    suffix=".html",
+                    source_url=source.url,
+                    collection_method="http",
+                    original_metadata={"candidate_id": source.candidate_id},
+                ).record
+            ]
+
+    fixture_collector = SelectiveCollector()
+    monkeypatch.setattr(
+        "vc_trace_collector.pipeline.default_registry",
+        lambda: CollectorRegistry([fixture_collector]),
+    )
+
+    collector.fetch_source("michael-hyatt", candidate_ids={failing_id})
+    collector.fetch_source(
+        "michael-hyatt", candidate_ids={articles[1].candidate_id}
+    )
+    after_success = read_json(tmp_path / "michael-hyatt/run_summary.json")
+    fixture_collector.fail = False
+    collector.fetch_source("michael-hyatt", candidate_ids={failing_id})
+    after_retry = read_json(tmp_path / "michael-hyatt/run_summary.json")
+
+    assert after_success["collection_failures"] == 1
+    assert after_retry["collection_failures"] == 0
+
+
 def test_default_cli_constructs_credential_free_public_search(
     tmp_path, monkeypatch
 ) -> None:
@@ -953,6 +1024,20 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
     first = collector.process_source(
         "michael-hyatt", candidate_id=interviews[0].candidate_id
     )
+
+    class FailingDiarization(CountingDiarization):
+        model_name = "fixture-diarization-v2"
+
+        def diarize(self, audio_path):
+            raise RuntimeError("new model failed")
+
+    collector.diarization_provider = FailingDiarization()
+    failed_retry = collector.process_source(
+        "michael-hyatt",
+        candidate_id=interviews[0].candidate_id,
+        diarization_model="fixture-diarization-v2",
+    )
+    collector.diarization_provider = diarization
     second = collector.process_source(
         "michael-hyatt", candidate_id=interviews[1].candidate_id
     )
@@ -963,6 +1048,9 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
     assert {item.source_candidate_id for item in second} == {
         interviews[0].candidate_id,
         interviews[1].candidate_id,
+    }
+    assert {item.source_candidate_id for item in failed_retry} == {
+        interviews[0].candidate_id
     }
     assert diarization.calls == 2
     assert transcript.calls == 4  # one call for each diarized speaker turn
