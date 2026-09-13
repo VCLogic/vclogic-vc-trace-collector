@@ -30,6 +30,8 @@ def exported_workspace(
     *,
     empty: bool = False,
     outcome_candidate_id: str = "candidate:blog",
+    outcome_status: str = "succeeded",
+    observation_url: str | None = None,
     include_search_observations: bool = True,
     include_collection_outcomes: bool = True,
 ):
@@ -99,9 +101,30 @@ def exported_workspace(
         original_metadata={"candidate_id": candidate.candidate_id},
     )
     search_operation_id = "search-source:web_article:test"
+    search_cache_path = tmp_path / "state/source_search/search-hash.json"
+    write_json(
+        search_cache_path,
+        {
+            "query": "query",
+            "requested_provider": "test-search",
+            "provider_cache_identity": "test-search",
+            "results": [
+                {
+                    "url": candidate.url,
+                    "title": "Michael Hyatt article",
+                    "snippet": "Michael Hyatt",
+                    "rank": 1,
+                    "query": "query",
+                    "provider": "test-search",
+                }
+            ]
+        },
+    )
     state = StateStore(tmp_path / "state/state.sqlite")
     state.start_operation(search_operation_id, "search-hash")
-    state.finish_operation(search_operation_id, "search-hash", "search-output")
+    state.finish_operation(
+        search_operation_id, "search-hash", str(search_cache_path)
+    )
     state.start_operation("collect:candidate:blog", "collect-hash")
     state.finish_operation(
         "collect:candidate:blog", "collect-hash", artifact.record.artifact_id
@@ -118,7 +141,8 @@ def exported_workspace(
                     result_provider="test-search",
                     status="succeeded",
                     rank=1,
-                    url=candidate.url,
+                    title="Michael Hyatt article",
+                    url=observation_url or candidate.url,
                 )
             ],
         )
@@ -128,7 +152,7 @@ def exported_workspace(
             [
                 CollectionCandidateOutcome(
                     candidate_id=outcome_candidate_id,
-                    status="succeeded",
+                    status=outcome_status,
                     reason="Source collected",
                     artifact_ids=[artifact.record.artifact_id],
                 )
@@ -200,6 +224,28 @@ def test_verification_requires_collection_outcomes_for_collection_operations(
 
     assert result.passed is False
     assert any("collection outcome" in error.casefold() for error in result.errors)
+
+
+def test_verification_reconstructs_collection_status_from_raw_metadata(
+    tmp_path,
+) -> None:
+    exported_workspace(tmp_path, outcome_status="review_required")
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("collection outcome status" in error.casefold() for error in result.errors)
+
+
+def test_verification_reconciles_search_observations_with_cached_results(
+    tmp_path,
+) -> None:
+    exported_workspace(tmp_path, observation_url="https://example.test/substituted")
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("search observation" in error.casefold() for error in result.errors)
 
 
 def test_verification_detects_tampered_corpus(tmp_path) -> None:

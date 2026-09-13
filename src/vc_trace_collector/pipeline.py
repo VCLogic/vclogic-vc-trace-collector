@@ -494,6 +494,9 @@ class Pipeline:
                     write_json(
                         cache_path,
                         {
+                            "query": query,
+                            "requested_provider": provider.provider_name,
+                            "provider_cache_identity": provider_cache_identity,
                             "results": [
                                 result.model_dump(mode="json") for result in results
                             ]

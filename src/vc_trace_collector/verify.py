@@ -16,6 +16,7 @@ from .audit import (
 )
 from .collectors import CollectionCandidateOutcome
 from .config import RunConfig
+from .discovery import SearchResult
 from .models import (
     ApprovalStatus,
     AVCandidateOutcome,
@@ -34,7 +35,7 @@ from .models import (
     SourceType,
     SpeakerStatus,
 )
-from .policy import ExclusionRule, RuleSet, eligible_for_corpus
+from .policy import ExclusionRule, RuleSet, canonicalize_url, eligible_for_corpus
 from .source_search import SourceSearchObservation
 from .storage import StateStore, canonical_json, read_json, read_jsonl
 
@@ -52,6 +53,19 @@ def _contained_path(root: Path, relative: str) -> Path | None:
     candidate = (root / relative).resolve()
     if candidate == root or root in candidate.parents:
         return candidate
+    return None
+
+
+def _state_output_path(root: Path, output_id: object) -> Path | None:
+    value = str(output_id or "")
+    if not value:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if resolved == root or root in resolved.parents:
+        return resolved
     return None
 
 
@@ -398,6 +412,81 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append(
                 f"Source search observation status disagrees with state: {operation_id}"
             )
+        if operation_status != "complete":
+            continue
+        cache_path = _state_output_path(workspace, operation.get("output_id"))
+        if cache_path is None or not cache_path.exists():
+            errors.append(f"Missing source search cache for operation: {operation_id}")
+            continue
+        try:
+            cache_payload = read_json(cache_path)
+            cached_query = str(cache_payload["query"])
+            cached_provider = str(cache_payload["requested_provider"])
+            cached_results = [
+                SearchResult.model_validate(row)
+                for row in cache_payload.get("results", [])
+            ]
+        except Exception as error:
+            errors.append(f"Invalid source search cache {operation_id}: {error}")
+            continue
+        expected_rows = {
+            (
+                item.query,
+                item.provider,
+                item.rank,
+                item.url,
+                item.title,
+            )
+            for item in cached_results
+        }
+        observed_rows = {
+            (
+                item.query,
+                item.result_provider,
+                item.rank,
+                item.url,
+                item.title,
+            )
+            for item in observations
+            if item.url is not None
+        }
+        if expected_rows != observed_rows:
+            errors.append(
+                f"Source search observations disagree with cached results: {operation_id}"
+            )
+        if any(
+            item.query != cached_query
+            or item.requested_provider != cached_provider
+            for item in observations
+        ):
+            errors.append(
+                f"Source search observation query/provider disagrees with cache: "
+                f"{operation_id}"
+            )
+        try:
+            operation_source_type = SourceType(operation_id.split(":", 2)[1])
+        except (IndexError, ValueError):
+            errors.append(f"Invalid source search operation id: {operation_id}")
+            continue
+        for item in cached_results:
+            candidate = candidates.get(
+                next(
+                    (
+                        candidate_id
+                        for candidate_id, candidate_item in candidates.items()
+                        if candidate_item.canonical_url == canonicalize_url(item.url)
+                    ),
+                    "",
+                )
+            )
+            if (
+                candidate is None
+                or candidate.source_type != operation_source_type
+                or item.query not in candidate.discovery_queries
+            ):
+                errors.append(
+                    f"Cached source search result lacks candidate lineage: {item.url}"
+                )
 
     reference_candidates: dict[str, ReferenceVoiceCandidate] = {}
     for row in read_jsonl(workspace / "identity/reference_voice_candidates.jsonl"):
@@ -500,6 +589,78 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             )
         elif operation_status not in {"complete", "failed"}:
             errors.append(f"Collection operation is incomplete: {candidate_id}")
+        if operation_status != "complete":
+            continue
+        state_output = str(operation.get("output_id") or "")
+        outcome_cache_path = _state_output_path(workspace, state_output)
+        cached_outcome = None
+        if outcome_cache_path is not None and outcome_cache_path.exists():
+            try:
+                cached_outcome = CollectionCandidateOutcome.model_validate(
+                    read_json(outcome_cache_path)
+                )
+            except Exception as error:
+                errors.append(
+                    f"Invalid state-linked collection outcome {candidate_id}: {error}"
+                )
+                continue
+            expected_artifact_ids = set(cached_outcome.artifact_ids)
+            if cached_outcome.candidate_id != candidate_id:
+                errors.append(
+                    f"State-linked collection outcome names wrong candidate: "
+                    f"{candidate_id}"
+                )
+        else:
+            expected_artifact_ids = {
+                value
+                for value in state_output.split(",")
+                if value.startswith("sha256:")
+            }
+        if not expected_artifact_ids:
+            errors.append(
+                f"Completed collection lacks state-linked artifacts: {candidate_id}"
+            )
+            continue
+        if set(outcome.artifact_ids) != expected_artifact_ids:
+            errors.append(
+                f"Collection outcome artifact set disagrees with state: {candidate_id}"
+            )
+        state_records = [
+            record
+            for artifact_id in expected_artifact_ids
+            for record in artifacts.get(artifact_id, [])
+            if record.original_metadata.get("candidate_id") == candidate_id
+        ]
+        if {record.artifact_id for record in state_records} != expected_artifact_ids:
+            errors.append(
+                f"Collection state artifacts lack candidate lineage: {candidate_id}"
+            )
+            continue
+        post_collection_excluded = any(
+            record.original_metadata.get("collection_exclusion", {}).get("status")
+            == "excluded"
+            for record in state_records
+        )
+        post_collection_review = any(
+            record.original_metadata.get("collection_exclusion", {}).get("status")
+            == "review_required"
+            and not record.original_metadata.get("review_override_applied", False)
+            for record in state_records
+        )
+        expected_collection_status = (
+            "excluded"
+            if post_collection_excluded
+            else ("review_required" if post_collection_review else "succeeded")
+        )
+        if outcome.status != expected_collection_status:
+            errors.append(
+                f"Collection outcome status disagrees with raw metadata: {candidate_id}"
+            )
+        if cached_outcome and cached_outcome.status != expected_collection_status:
+            errors.append(
+                f"State-linked collection status disagrees with raw metadata: "
+                f"{candidate_id}"
+            )
 
     profile = None
     profile_path = workspace / "identity/reference_voice_profile.json"
