@@ -19,6 +19,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Platform-specific downloads now collect approved candidates even when other
+  candidates on the same platform remain pending review.
 - Adding or changing a reference voice now recomputes only attribution when
   reusable diarization and transcription results exist; reprocessing replaces
   the candidate result instead of duplicating corpus documents.

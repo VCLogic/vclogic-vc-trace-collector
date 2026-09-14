@@ -1143,6 +1143,14 @@ class Pipeline:
                 ApprovalStatus.AUTO_APPROVED,
             }:
                 raise ReviewRequired(f"Candidate is not approved: {candidate_id}")
+        if candidate_ids is None and source_type is not None:
+            candidate_ids = {
+                candidate.candidate_id
+                for candidate in plan.candidates
+                if candidate.source_type == source_type
+                and candidate.approval_status
+                in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+            }
         return self.collect_sources(
             investor_slug,
             source_types={source_type} if source_type is not None else None,

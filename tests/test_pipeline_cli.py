@@ -289,12 +289,16 @@ def test_cli_discover_accepts_additional_source_url(tmp_path) -> None:
     assert any(row["url"] == podcast_url for row in rows)
 
 
-def test_cli_fetch_source_collects_one_approved_candidate(tmp_path) -> None:
+@pytest.mark.parametrize("by_source", [False, True])
+def test_cli_fetch_source_collects_one_approved_candidate(tmp_path, by_source) -> None:
     collector = pipeline(tmp_path)
     discovered = collector.discover(
         name="Michael Hyatt",
         known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
-        source_urls=["https://blog.example.test/michael-hyatt-bluecat"],
+        source_urls=[
+            "https://blog.example.test/michael-hyatt-bluecat",
+            "https://blog.example.test/michael-hyatt-pending",
+        ],
     )
     article = next(
         item
@@ -323,8 +327,8 @@ def test_cli_fetch_source_collects_one_approved_candidate(tmp_path) -> None:
             "fetch-source",
             "--investor",
             "michael-hyatt",
-            "--candidate-id",
-            article.candidate_id,
+            "--source" if by_source else "--candidate-id",
+            article.source_type.value if by_source else article.candidate_id,
             "--output-dir",
             str(tmp_path),
         ],
@@ -332,6 +336,11 @@ def test_cli_fetch_source_collects_one_approved_candidate(tmp_path) -> None:
 
     assert result.exit_code == 0
     assert "Collected 1 source" in result.stdout
+    pending = next(
+        item for item in collector._load_plan("michael-hyatt").candidates
+        if item.canonical_url.endswith("michael-hyatt-pending")
+    )
+    assert pending.approval_status == ApprovalStatus.PENDING
 
 
 def test_fetch_source_rejects_pending_candidate(tmp_path) -> None:
