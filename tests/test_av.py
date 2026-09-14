@@ -6,11 +6,13 @@ import pytest
 from vc_trace_collector.av import (
     DiarizationResult,
     DiarizedTurn,
+    ReferenceEmbedding,
     TimedText,
     TranscriptResult,
     align_transcript_to_speakers,
     extract_audio_segment,
     match_target_speaker,
+    match_target_speaker_references,
     probe_media_duration,
     process_target_speech,
 )
@@ -45,6 +47,45 @@ def test_clear_match_records_score_and_margin() -> None:
     assert decision.status == SpeakerStatus.ACCEPTED_MODEL
     assert decision.score == pytest.approx(1.0)
     assert decision.margin == pytest.approx(1.0)
+
+
+def test_multiple_references_use_best_trusted_recording_condition() -> None:
+    decision = match_target_speaker_references(
+        references=[
+            ReferenceEmbedding(profile_id="studio", embedding=[1.0, 0.0]),
+            ReferenceEmbedding(profile_id="zoom", embedding=[0.0, 1.0]),
+        ],
+        speakers={"VC": [0.0, 1.0], "HOST": [0.7, 0.7]},
+        minimum_score=0.75,
+        minimum_margin=0.10,
+    )
+
+    assert decision.status == SpeakerStatus.ACCEPTED_MODEL
+    assert decision.speaker_label == "VC"
+    assert decision.score == pytest.approx(1.0)
+    assert decision.matched_reference_profile_id == "zoom"
+    assert len(decision.score_evidence) == 2
+    assert {
+        item.speaker_label: {
+            score.reference_profile_id for score in item.reference_scores
+        }
+        for item in decision.score_evidence
+    } == {"VC": {"studio", "zoom"}, "HOST": {"studio", "zoom"}}
+
+
+def test_reference_ensemble_applies_margin_after_aggregation() -> None:
+    decision = match_target_speaker_references(
+        references=[
+            ReferenceEmbedding(profile_id="one", embedding=[1.0, 0.0]),
+            ReferenceEmbedding(profile_id="two", embedding=[0.0, 1.0]),
+        ],
+        speakers={"A": [1.0, 0.0], "B": [0.0, 1.0]},
+        minimum_score=0.75,
+        minimum_margin=0.10,
+    )
+
+    assert decision.status == SpeakerStatus.UNCERTAIN
+    assert decision.margin == pytest.approx(0.0)
 
 
 def test_zero_length_embedding_is_rejected() -> None:

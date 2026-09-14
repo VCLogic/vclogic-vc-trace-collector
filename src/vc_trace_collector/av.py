@@ -16,8 +16,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import (
+    ReferenceSimilarity,
     ReferenceVoiceProfile,
     SpeakerAttribution,
+    SpeakerScoreEvidence,
     SpeakerStatus,
     TranscriptInfo,
 )
@@ -90,6 +92,14 @@ class TargetSpeechResult(BaseModel):
     media_seconds: float = Field(ge=0)
 
 
+class ReferenceEmbedding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str
+    artifact_ids: list[str] = Field(default_factory=list)
+    embedding: list[float] = Field(min_length=1)
+
+
 class TranscriptProvider(Protocol):
     provider_name: str
     model_name: str
@@ -133,6 +143,33 @@ def match_target_speaker(
     embedding_model: str | None = None,
     reference_artifact_ids: list[str] | None = None,
 ) -> SpeakerAttribution:
+    return match_target_speaker_references(
+        references=[
+            ReferenceEmbedding(
+                profile_id="legacy-single-reference",
+                artifact_ids=reference_artifact_ids or [],
+                embedding=list(reference),
+            )
+        ],
+        speakers=speakers,
+        minimum_score=minimum_score,
+        minimum_margin=minimum_margin,
+        diarization_model=diarization_model,
+        embedding_model=embedding_model,
+    )
+
+
+def match_target_speaker_references(
+    references: Sequence[ReferenceEmbedding],
+    speakers: dict[str, Sequence[float]],
+    minimum_score: float,
+    minimum_margin: float,
+    *,
+    diarization_model: str | None = None,
+    embedding_model: str | None = None,
+) -> SpeakerAttribution:
+    if not references:
+        raise ValueError("At least one compatible reference embedding is required")
     if not speakers:
         return SpeakerAttribution(
             status=SpeakerStatus.UNAVAILABLE,
@@ -140,35 +177,64 @@ def match_target_speaker(
             minimum_margin=minimum_margin,
             diarization_model=diarization_model,
             embedding_model=embedding_model,
-            reference_artifact_ids=reference_artifact_ids or [],
+            reference_artifact_ids=[],
+            aggregation_method="max_verified_reference",
+            aggregation_version="1",
+        )
+    evidence: list[SpeakerScoreEvidence] = []
+    for label in sorted(speakers):
+        scores = [
+            ReferenceSimilarity(
+                reference_profile_id=reference_item.profile_id,
+                reference_artifact_ids=reference_item.artifact_ids,
+                score=cosine_similarity(reference_item.embedding, speakers[label]),
+            )
+            for reference_item in sorted(references, key=lambda item: item.profile_id)
+        ]
+        reference_winner = max(
+            scores, key=lambda item: (item.score, item.reference_profile_id)
+        )
+        evidence.append(
+            SpeakerScoreEvidence(
+                speaker_label=label,
+                aggregate_score=reference_winner.score,
+                matched_reference_profile_id=reference_winner.reference_profile_id,
+                reference_scores=scores,
+            )
         )
     ranked = sorted(
-        (
-            (label, cosine_similarity(reference, vector))
-            for label, vector in speakers.items()
-        ),
-        key=lambda item: item[1],
+        evidence,
+        key=lambda item: (item.aggregate_score, item.speaker_label),
         reverse=True,
     )
-    label, score = ranked[0]
-    runner_up = ranked[1][1] if len(ranked) > 1 else -1.0
-    margin = score - runner_up
+    winner = ranked[0]
+    runner_up = ranked[1].aggregate_score if len(ranked) > 1 else -1.0
+    margin = winner.aggregate_score - runner_up
     status = (
         SpeakerStatus.ACCEPTED_MODEL
-        if score >= minimum_score and margin >= minimum_margin
+        if winner.aggregate_score >= minimum_score and margin >= minimum_margin
         else SpeakerStatus.UNCERTAIN
+    )
+    matched_reference = next(
+        item
+        for item in winner.reference_scores
+        if item.reference_profile_id == winner.matched_reference_profile_id
     )
     return SpeakerAttribution(
         status=status,
-        speaker_label=label,
-        score=score,
+        speaker_label=winner.speaker_label,
+        score=winner.aggregate_score,
         runner_up_score=runner_up,
         margin=margin,
         minimum_score=minimum_score,
         minimum_margin=minimum_margin,
         diarization_model=diarization_model,
         embedding_model=embedding_model,
-        reference_artifact_ids=reference_artifact_ids or [],
+        reference_artifact_ids=matched_reference.reference_artifact_ids,
+        matched_reference_profile_id=winner.matched_reference_profile_id,
+        score_evidence=ranked,
+        aggregation_method="max_verified_reference",
+        aggregation_version="1",
     )
 
 

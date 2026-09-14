@@ -210,6 +210,19 @@ class TranscriptInfo(StrictModel):
     source_artifact_id: str | None = None
 
 
+class ReferenceSimilarity(StrictModel):
+    reference_profile_id: str
+    reference_artifact_ids: list[str] = Field(default_factory=list)
+    score: float = Field(ge=-1, le=1)
+
+
+class SpeakerScoreEvidence(StrictModel):
+    speaker_label: str
+    aggregate_score: float = Field(ge=-1, le=1)
+    matched_reference_profile_id: str
+    reference_scores: list[ReferenceSimilarity] = Field(min_length=1)
+
+
 class SpeakerAttribution(StrictModel):
     status: SpeakerStatus = SpeakerStatus.NOT_APPLICABLE
     speaker_label: str | None = None
@@ -221,6 +234,10 @@ class SpeakerAttribution(StrictModel):
     diarization_model: str | None = None
     embedding_model: str | None = None
     reference_artifact_ids: list[str] = Field(default_factory=list)
+    matched_reference_profile_id: str | None = None
+    score_evidence: list[SpeakerScoreEvidence] = Field(default_factory=list)
+    aggregation_method: str | None = None
+    aggregation_version: str | None = None
 
 
 class SpeechSegment(StrictModel):
