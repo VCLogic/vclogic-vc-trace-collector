@@ -22,6 +22,7 @@ av = [
     "soundfile>=0.12,<1",
 ]
 av-local = [
+    "huggingface-hub>=0.24,<1",
     "openai-whisper>=20250625",
     "pyannote-audio>=3.3,<4",
     "torch==2.8.0",
