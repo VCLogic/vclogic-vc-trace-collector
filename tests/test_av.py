@@ -10,11 +10,13 @@ from vc_trace_collector.av import (
     TimedText,
     TranscriptResult,
     align_transcript_to_speakers,
+    assemble_target_speech,
     extract_audio_segment,
     match_target_speaker,
     match_target_speaker_references,
     probe_media_duration,
     process_target_speech,
+    transcribe_diarized_turns,
 )
 from vc_trace_collector.models import (
     ReferenceVoiceProfile,
@@ -243,6 +245,39 @@ def test_target_speech_pipeline_extracts_only_clear_matched_speaker(tmp_path) ->
         (0, 2, "segment_HOST_00000.wav"),
         (2, 5, "segment_VC_00001.wav"),
     ]
+
+
+def test_independent_av_stages_assemble_without_rerunning_providers(tmp_path) -> None:
+    audio = tmp_path / "episode.wav"
+    audio.write_bytes(b"fixture")
+    diarization_provider = FakeDiarization()
+    diarization = diarization_provider.diarize(audio)
+    transcript_provider = FakeTranscript()
+
+    transcript = transcribe_diarized_turns(
+        audio,
+        diarization,
+        transcript_provider,
+        segment_extractor=lambda source, destination, **kwargs: (
+            destination.write_bytes(b"segment") or destination
+        ),
+    )
+    attribution = match_target_speaker_references(
+        references=[ReferenceEmbedding(profile_id="voice", embedding=[1.0, 0.0])],
+        speakers=diarization.speaker_embeddings,
+        minimum_score=0.75,
+        minimum_margin=0.10,
+    )
+    result = assemble_target_speech(
+        diarization=diarization,
+        transcript=transcript,
+        attribution=attribution,
+    )
+
+    assert [item.text for item in result.target_segments] == [
+        "I back durable firms."
+    ]
+    assert len(transcript_provider.calls) == 2
 
 
 def test_target_speech_pipeline_flags_weak_match_for_review(tmp_path) -> None:

@@ -274,6 +274,74 @@ def align_transcript_to_speakers(
     return aligned
 
 
+def transcribe_diarized_turns(
+    audio_path: Path,
+    diarization: DiarizationResult,
+    transcript_provider: TranscriptProvider,
+    segment_extractor: Callable[..., Path] | None = None,
+) -> TranscriptResult:
+    extractor = segment_extractor or extract_audio_segment
+    segments: list[TimedText] = []
+    transcript_info = TranscriptInfo(
+        method="speech_to_text",
+        provider=transcript_provider.provider_name,
+        model=transcript_provider.model_name,
+    )
+    with tempfile.TemporaryDirectory(prefix="vc-trace-segments-") as directory:
+        segment_dir = Path(directory)
+        for index, turn in enumerate(diarization.turns):
+            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", turn.speaker_label)
+            segment_path = segment_dir / f"segment_{safe_label}_{index:05d}.wav"
+            extractor(
+                audio_path,
+                segment_path,
+                start_seconds=turn.start_seconds,
+                end_seconds=turn.end_seconds,
+            )
+            segment_transcript = transcript_provider.transcribe(segment_path)
+            transcript_info = segment_transcript.info
+            for item in segment_transcript.segments:
+                start = turn.start_seconds + item.start_seconds
+                end = min(turn.end_seconds, turn.start_seconds + item.end_seconds)
+                if end <= start:
+                    continue
+                segments.append(
+                    TimedText(
+                        start_seconds=start,
+                        end_seconds=end,
+                        text=item.text,
+                    )
+                )
+    return TranscriptResult(info=transcript_info, segments=segments)
+
+
+def assemble_target_speech(
+    *,
+    diarization: DiarizationResult,
+    transcript: TranscriptResult,
+    attribution: SpeakerAttribution,
+) -> TargetSpeechResult:
+    aligned = align_transcript_to_speakers(transcript.segments, diarization.turns)
+    target = [
+        item
+        for item in aligned
+        if attribution.speaker_label is not None
+        and item.speaker_label == attribution.speaker_label
+    ]
+    media_seconds = max(
+        [item.end_seconds for item in aligned]
+        + [item.end_seconds for item in diarization.turns]
+        + [0.0]
+    )
+    return TargetSpeechResult(
+        transcript=transcript.info,
+        attribution=attribution,
+        aligned_segments=aligned,
+        target_segments=target,
+        media_seconds=media_seconds,
+    )
+
+
 def process_target_speech(
     audio_path: Path,
     *,
@@ -299,71 +367,18 @@ def process_target_speech(
     )
     if existing_transcript is not None:
         transcript = existing_transcript
-        aligned = align_transcript_to_speakers(transcript.segments, diarization.turns)
     else:
         assert transcript_provider is not None
-        extractor = segment_extractor or extract_audio_segment
-        aligned = []
-        transcript_info = TranscriptInfo(
-            method="speech_to_text",
-            provider=transcript_provider.provider_name,
-            model=transcript_provider.model_name,
+        transcript = transcribe_diarized_turns(
+            audio_path,
+            diarization,
+            transcript_provider,
+            segment_extractor,
         )
-        with tempfile.TemporaryDirectory(prefix="vc-trace-segments-") as directory:
-            segment_dir = Path(directory)
-            for index, turn in enumerate(diarization.turns):
-                safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", turn.speaker_label)
-                segment_path = segment_dir / f"segment_{safe_label}_{index:05d}.wav"
-                extractor(
-                    audio_path,
-                    segment_path,
-                    start_seconds=turn.start_seconds,
-                    end_seconds=turn.end_seconds,
-                )
-                segment_transcript = transcript_provider.transcribe(segment_path)
-                transcript_info = segment_transcript.info
-                for item in segment_transcript.segments:
-                    start = turn.start_seconds + item.start_seconds
-                    end = min(turn.end_seconds, turn.start_seconds + item.end_seconds)
-                    if end <= start:
-                        continue
-                    aligned.append(
-                        AlignedText(
-                            start_seconds=start,
-                            end_seconds=end,
-                            text=item.text,
-                            speaker_label=turn.speaker_label,
-                            overlap_seconds=end - start,
-                        )
-                    )
-        transcript = TranscriptResult(
-            info=transcript_info,
-            segments=[
-                TimedText(
-                    start_seconds=item.start_seconds,
-                    end_seconds=item.end_seconds,
-                    text=item.text,
-                )
-                for item in aligned
-            ],
-        )
-    target = [
-        item
-        for item in aligned
-        if attribution.speaker_label is not None
-        and item.speaker_label == attribution.speaker_label
-    ]
-    media_seconds = max(
-        [item.end_seconds for item in aligned]
-        + [item.end_seconds for item in diarization.turns]
-        + [0.0]
-    )
-    return TargetSpeechResult(
-        transcript=transcript.info,
+    return assemble_target_speech(
+        diarization=diarization,
+        transcript=transcript,
         attribution=attribution,
-        aligned_segments=aligned,
-        target_segments=target,
-        media_seconds=media_seconds,
     )
 
 
