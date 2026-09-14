@@ -29,7 +29,7 @@ from vc_trace_collector.models import (
 )
 from vc_trace_collector.pipeline import Pipeline
 from vc_trace_collector.policy import RuleSet
-from vc_trace_collector.storage import read_json, read_jsonl, write_json
+from vc_trace_collector.storage import ArtifactStore, read_json, read_jsonl, write_json
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -1107,6 +1107,16 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
     )
     first_diarization_calls = diarization.calls
     first_transcript_calls = transcript.calls
+    ArtifactStore(output / "michael-hyatt").put_bytes(
+        b"approved reference excerpt",
+        category="voice",
+        suffix=".wav",
+        source_url=interviews[0].url,
+        mime_type="audio/wav",
+        collection_method="human_selected_reference_segment",
+        original_metadata={"candidate_id": interviews[0].candidate_id},
+        parent_artifact_ids=[first[0].raw_artifact_ids[0]],
+    )
     collector._upsert_reference_profile(
         output / "michael-hyatt",
         ReferenceVoiceProfile(

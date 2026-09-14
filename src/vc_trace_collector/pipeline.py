@@ -1551,9 +1551,13 @@ class Pipeline:
             candidate_id = str(artifact.original_metadata.get("candidate_id", ""))
             candidate = candidate_map.get(candidate_id)
             path = workspace / artifact.relative_path
-            if artifact.collection_method == "ffmpeg_audio_extraction":
-                # This derivative is processed through its parent video branch.
-                # Treating it as a fresh source on resume duplicates the talk.
+            if artifact.collection_method in {
+                "ffmpeg_audio_extraction",
+                "human_selected_reference_segment",
+            }:
+                # Derived audio is processed through its parent media branch or
+                # exists only as identity evidence. Treating it as a fresh source
+                # on resume duplicates the talk.
                 continue
             is_audio = (
                 artifact.collection_method == "yt_dlp_audio"
