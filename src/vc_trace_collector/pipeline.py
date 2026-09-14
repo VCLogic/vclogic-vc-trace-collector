@@ -1192,6 +1192,7 @@ class Pipeline:
                 "Collect the reference source before approving its voice"
             )
         records = load_artifact_records(workspace)
+        records_by_id = {item.artifact_id: item for item in records}
         try:
             artifact = next(
                 item for item in records if item.artifact_id == selected.artifact_id
@@ -1200,6 +1201,23 @@ class Pipeline:
             raise FileNotFoundError(
                 "Reference voice raw artifact is missing"
             ) from error
+        source_artifact = artifact
+        visited_artifact_ids: set[str] = set()
+        while (
+            source_artifact.collection_method
+            == "human_selected_reference_segment"
+            and source_artifact.parent_artifact_ids
+        ):
+            if source_artifact.artifact_id in visited_artifact_ids:
+                raise ReviewRequired("Reference voice artifact lineage contains a cycle")
+            visited_artifact_ids.add(source_artifact.artifact_id)
+            parent_id = source_artifact.parent_artifact_ids[0]
+            parent = records_by_id.get(parent_id)
+            if parent is None:
+                raise FileNotFoundError(
+                    "Reference voice source artifact lineage is incomplete"
+                )
+            source_artifact = parent
         config = self._configure_stage(
             workspace,
             "review_voice",
@@ -1207,7 +1225,7 @@ class Pipeline:
             embedding_model=embedding_model,
             embedding_cost_usd=embedding_cost_usd,
         )
-        source_path = workspace / artifact.relative_path
+        source_path = workspace / source_artifact.relative_path
         if (start_seconds is None) != (end_seconds is None):
             raise ValueError("Both reference start and end seconds are required")
         source_duration = (
@@ -1231,7 +1249,9 @@ class Pipeline:
             raise ReviewRequired(
                 "Run-wide media processing budget exhausted before voice embedding"
             )
-        operation_id = f"reference-embedding:{candidate_id}:{artifact.artifact_id}"
+        operation_id = (
+            f"reference-embedding:{candidate_id}:{source_artifact.artifact_id}"
+        )
         provider = self.embedding_provider
         if (
             provider is None
@@ -1273,7 +1293,7 @@ class Pipeline:
                         token=os.environ.get("HF_TOKEN"),
                         device=os.environ.get("VC_TRACE_AV_DEVICE"),
                     )
-            reference_artifact = artifact
+            reference_artifact = source_artifact
             if start_seconds is not None or end_seconds is not None:
                 assert start_seconds is not None and end_seconds is not None
                 with tempfile.TemporaryDirectory(
@@ -1291,7 +1311,7 @@ class Pipeline:
                             extracted.read_bytes(),
                             category="voice",
                             suffix=".wav",
-                            source_url=artifact.source_url,
+                            source_url=source_artifact.source_url,
                             mime_type="audio/wav",
                             collection_method="human_selected_reference_segment",
                             original_metadata={
@@ -1302,7 +1322,7 @@ class Pipeline:
                                 "end_seconds": end_seconds,
                                 "duration_seconds": source_duration,
                             },
-                            parent_artifact_ids=[artifact.artifact_id],
+                            parent_artifact_ids=[source_artifact.artifact_id],
                         )
                         .record
                     )
@@ -1346,7 +1366,7 @@ class Pipeline:
             ),
             embedding=embedding,
             reference_candidate_id=selected.candidate_id,
-            source_artifact_id=artifact.artifact_id,
+            source_artifact_id=source_artifact.artifact_id,
             artifact_sha256=reference_artifact.sha256,
             start_seconds=start_seconds,
             end_seconds=end_seconds,

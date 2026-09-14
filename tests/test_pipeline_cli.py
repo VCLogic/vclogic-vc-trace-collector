@@ -943,6 +943,15 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
         "michael-hyatt",
         candidate_id=voice_candidate["candidate_id"],
         reviewer="reviewer",
+        start_seconds=1,
+        end_seconds=2,
+    )
+    collector.approve_reference_voice(
+        "michael-hyatt",
+        candidate_id=voice_candidate["candidate_id"],
+        reviewer="reviewer",
+        start_seconds=1,
+        end_seconds=2,
     )
     documents = collector.process("michael-hyatt")
     resumed_documents = collector.process("michael-hyatt")
@@ -975,10 +984,23 @@ def test_complete_supplied_video_pipeline_exports_verified_target_speech(
     ]
     assert len(derived) == 1
     assert derived[0]["artifact_id"] not in derived[0]["parent_artifact_ids"]
+    voice_profiles = read_jsonl(
+        output / "michael-hyatt/identity/reference_voice_profiles.jsonl"
+    )
+    assert len(voice_profiles) == 1
+    voice_artifact = next(
+        read_json(path)
+        for path in (output / "michael-hyatt/raw/voice").rglob("*.metadata.json")
+        if read_json(path)["artifact_id"] == voice_profiles[0]["artifact_ids"][0]
+    )
+    assert voice_artifact["parent_artifact_ids"] == [
+        voice_profiles[0]["source_artifact_id"]
+    ]
+    assert voice_artifact["artifact_id"] not in voice_artifact["parent_artifact_ids"]
     talks = read_jsonl(output / "michael-hyatt/talks.jsonl")
     assert [item["text"] for item in talks] == ["I invest in durable customer value."]
     summary = read_json(output / "michael-hyatt/run_summary.json")
-    assert Decimal(summary["cost_usd"]) == Decimal("0.60")
+    assert Decimal(summary["cost_usd"]) == Decimal("0.90")
 
 
 def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> None:
