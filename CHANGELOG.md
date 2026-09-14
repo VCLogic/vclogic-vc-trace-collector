@@ -9,6 +9,14 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Download-only `portfolio` command with Agent Reach search, resumable downloads,
+  source-linked readable pages, search budget accounting and audit manifests.
+  No corpus exclusions apply, including The Pitch. `handoff.json` and
+  `documents.jsonl` provide inputs for extraction in a separate repository.
+- Automatic download progress for `fetch-source`: selected-source counts,
+  failures/skips, and per-transfer bytes, speed and ETA for HTTP and YouTube.
+  Unknown lengths remain indeterminate and redirected output stays clean.
+
 - Terminal progress for processing: current recording and stage, elapsed time,
   pyannote batch progress, Whisper segment counts, and cache indicators.
 - Additive, human-verified reference voice profiles with deterministic profile
@@ -18,6 +26,14 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Repeatable `search-source --query` overrides for targeted source discovery.
 - Audited `--max-search-operations` increases for existing resumable runs.
 - Structured YouTube channel provenance in search observations and candidates.
+
+### Changed
+
+- Portfolio collection is strictly download-only: investment identification,
+  investment dates and company summaries belong to a downstream repository.
+  Removed portfolio LLM extraction and assessment import; no LLM key is needed.
+  Existing downloads and legacy extraction files are preserved, and the old
+  `--collect-only` option remains accepted for command compatibility.
 
 ### Fixed
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
@@ -18,7 +19,7 @@ from .config import RunConfig
 from .models import ApprovalStatus, MaterialRole, SourceDecision, SourceType
 from .pipeline import Pipeline
 from .policy import RuleSet
-from .progress import with_processing_progress
+from .progress import with_download_progress, with_processing_progress
 from .public_search import (
     agent_reach_public_search_provider,
     default_public_search_provider,
@@ -51,6 +52,79 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         help="Build auditable, source-linked public-trace corpora for investors.",
         no_args_is_help=True,
     )
+
+    @app.command()
+    @with_download_progress
+    def portfolio(
+        investor: str = typer.Option(..., help="Resolved investor workspace slug"),
+        output_dir: Path = typer.Option(Path("outputs")),
+        backend: str = typer.Option("agent-reach", help="agent-reach or default"),
+        source_url: list[str] | None = typer.Option(
+            None, help="Additional portfolio/announcement URL"
+        ),
+        collect_only: bool = typer.Option(
+            False,
+            hidden=True,
+            help="Compatibility flag; portfolio is always download-only",
+        ),
+        refresh: bool = typer.Option(
+            False,
+            help="Explicitly refetch within budgets, preserving prior cache versions",
+        ),
+        max_search_operations: int = typer.Option(20, min=0, max=1000),
+        max_pages: int = typer.Option(30, min=1, max=1000),
+        limit_per_query: int = typer.Option(10, min=1, max=100),
+        max_cost_usd: str = typer.Option(
+            "10", help="Cumulative portfolio budget, independent of corpus budget"
+        ),
+        search_operation_cost_usd: str = typer.Option("0"),
+    ) -> None:
+        """Download portfolio evidence for another tool to extract; no LLM or corpus filters."""
+        from .fetch import Fetcher
+        from .models import ResolvedIdentity
+        from .portfolio import PortfolioOptions, PortfolioService
+
+        if backend not in {"agent-reach", "default"}:
+            raise typer.BadParameter("--backend must be agent-reach or default")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", investor):
+            raise typer.BadParameter("--investor must be a single workspace slug")
+        workspace = output_dir / investor
+        identity_path = workspace / "identity/resolved_identity.json"
+        if not identity_path.exists():
+            raise typer.BadParameter("Resolve this investor with discover first")
+        identity = ResolvedIdentity.model_validate(read_json(identity_path))
+        options = PortfolioOptions(
+            refresh=refresh,
+            max_searches=max_search_operations,
+            max_pages=max_pages,
+            limit_per_query=limit_per_query,
+            max_cost_usd=Decimal(max_cost_usd),
+            search_cost_usd=Decimal(search_operation_cost_usd),
+        )
+        search = (
+            agent_reach_public_search_provider()
+            if backend == "agent-reach"
+            else default_public_search_provider(
+                searxng_endpoint=os.getenv("VC_TRACE_SEARCH_ENDPOINT", "").strip()
+                or None
+            )
+        )
+        with Fetcher(
+            trust_env=os.environ.get("VC_TRACE_ALLOW_ENV_PROXY") == "1"
+        ) as fetcher:
+            report = PortfolioService(
+                workspace, identity, search, fetcher, options
+            ).run(source_url)
+        typer.echo(
+            f"Portfolio: {report['documents']} downloaded pages available; "
+            f"{report['failures']} failures. Status: {report['status']}."
+        )
+        typer.echo(f"Output: {workspace / 'portfolio/documents.jsonl'}")
+        typer.echo(
+            "Download only. No corpus filters or LLM extraction; the downstream tool consumes handoff.json."
+        )
+        if report["status"] != "complete":
+            raise typer.Exit(code=2)
 
     @app.command()
     def doctor(
@@ -272,10 +346,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             candidate
             for candidate in plan.candidates
             if (source is None or candidate.source_type == source)
-            and (
-                status_filter is None
-                or candidate.approval_status == status_filter
-            )
+            and (status_filter is None or candidate.approval_status == status_filter)
         ]
         if json_output:
             typer.echo(
@@ -292,6 +363,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             )
 
     @app.command("fetch-source")
+    @with_download_progress
     def fetch_source(
         investor: str = typer.Option(..., help="Investor workspace slug"),
         source: SourceType | None = typer.Option(
@@ -508,9 +580,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             diarization_model=diarization_model,
             embedding_model=embedding_model,
             embedding_cost_usd=(
-                Decimal(embedding_cost_usd)
-                if embedding_cost_usd is not None
-                else None
+                Decimal(embedding_cost_usd) if embedding_cost_usd is not None else None
             ),
         )
         typer.echo(

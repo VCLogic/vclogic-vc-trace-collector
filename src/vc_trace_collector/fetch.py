@@ -16,6 +16,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from .policy import Resolver, UnsafeUrl, canonicalize_url, validate_public_url
+from .progress import download_bytes
 
 
 class FetchTooLarge(RuntimeError):
@@ -79,6 +80,8 @@ class Fetcher:
             for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")
         )
         self._last_request: dict[str, float] = {}
+        # Monotonic body-byte counter, including failed responses and redirects.
+        self.downloaded_bytes_total = 0
         self.client = httpx.Client(
             transport=transport,
             timeout=timeout,
@@ -114,10 +117,13 @@ class Fetcher:
         maximum_bytes: int,
     ) -> tuple[httpx.Response, bytes]:
         expected_addresses = self._public_addresses(url)
+        download_bytes(0, None)
         self._rate_limit(url)
         with self.client.stream("GET", url, headers=conditional_headers) as response:
             self._verify_connected_peer(url, response, expected_addresses)
             length = response.headers.get("content-length")
+            total = int(length) if length and not response.headers.get("content-encoding") else None
+            download_bytes(0, total)
             if length and int(length) > maximum_bytes:
                 raise FetchTooLarge(f"Response exceeds {maximum_bytes} bytes")
             chunks: list[bytes] = []
@@ -125,6 +131,8 @@ class Fetcher:
             try:
                 for chunk in response.iter_bytes():
                     size += len(chunk)
+                    self.downloaded_bytes_total += len(chunk)
+                    download_bytes(size, total)
                     if size > maximum_bytes:
                         raise FetchTooLarge(
                             f"Response exceeds {maximum_bytes} bytes",

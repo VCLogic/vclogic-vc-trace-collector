@@ -11,6 +11,66 @@ predict investment decisions, or run founder rehearsals.
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
 
+## Portfolio downloads
+
+Portfolio collection is **download-only**. It uses Agent Reach by default to find
+portfolio pages and funding announcements, then downloads and extracts readable
+page text deterministically. It does not identify investments, infer investment
+dates, summarize companies, call an extraction LLM, or import agent assessments.
+Those tasks belong to the downstream repository.
+
+```bash
+uv run vc-trace-collector portfolio --investor michael-hyatt
+```
+
+No LLM API key or portfolio model settings are required. `--collect-only` remains
+accepted as a compatibility no-op. The former `--model`, `--assessment-file` and
+`--llm-call-budget-usd` options have been removed.
+
+**No corpus exclusions apply**, including The Pitch, domains, companies, keywords
+or date cutoffs. Existing corpus rules/approvals are unchanged. Searches are
+generated from the resolved identity and affiliations; no manual queries are
+required. Additional known URLs can be supplied with repeatable `--source-url`.
+The default Agent Reach backend uses `mcporter`; `--backend default` selects the
+standard web-search backend.
+
+The downstream tool should start at:
+
+For Michael Hyatt, open `outputs/michael-hyatt/portfolio/handoff.json` and read
+`outputs/michael-hyatt/portfolio/documents.jsonl`. These files are written when
+the portfolio command runs; downloading does not invoke the Investment Memory
+builder or move files into its repository.
+
+```text
+outputs/<investor>/portfolio/
+├── handoff.json        # Dataset paths, identity and scope
+├── documents.jsonl     # All validated available pages: text, URLs, dates, hashes
+├── sources/*.json      # Per-page text and provenance
+├── raw/*.html          # Original downloaded content
+├── search/*.json       # Queries and search results
+├── audit/              # Actions, search cost bounds and transferred bytes
+├── run_summary.json    # Download status and failures
+└── manifest.json       # File hashes
+```
+
+`published_at` is the source page's publication date, **not an investment date**.
+Collected pages may concern namesakes or merely mention the VC. The downstream
+tool must assess identity, extract investment facts and create company summaries.
+
+Repeating the command reuses validated caches. The defaults are 20 search queries,
+30 attempted distinct pages, and 10 results per query. Use explicit limits for
+broader coverage; this is not guaranteed to discover a complete portfolio.
+The cumulative download budget is 100 MB with at most 5 MB per page.
+The separate search budget defaults to $10; search cost defaults to zero.
+Set `--search-operation-cost-usd` if your backend bills requests. There are no
+portfolio extraction-model charges.
+
+Corrupt caches fail validation. Explicit `--refresh` refetches within the same
+budgets and preserves overwritten cache versions under `cache_history/`.
+Previously created extraction outputs such as `portfolio.jsonl` and
+`assessment_schema.json` are left untouched but are not current handoff inputs.
+No corpus export, date snapshot filtering or Investment Memory generation runs here.
+
 ## Status
 
 The MVP is a modular Python package with:
@@ -426,6 +486,17 @@ chmod 600 .env
 The CLI automatically loads `.env` from the current working directory. Values
 already exported in the shell take precedence over values in `.env`. The file
 is ignored by Git and must never be force-added or committed.
+
+## Download progress
+
+`fetch-source` automatically shows two progress rows in an interactive terminal:
+selected sources completed (with failed/skipped counts), and the current item
+with downloaded bytes, transfer speed and ETA when its size is known. Web and
+podcast HTTP transfers and YouTube audio downloads report byte progress. Unknown
+sizes and metadata requests show an indeterminate bar. Each request or retry
+starts a fresh transfer count; cached sources advance the batch without downloading.
+Redirected logs contain no animated bars. No extra flag is required, and this
+display applies to newly started commands only.
 
 ## Reference voice and speaker attribution
 

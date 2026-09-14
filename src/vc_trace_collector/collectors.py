@@ -34,6 +34,7 @@ from .models import (
     utc_now,
 )
 from .policy import InclusionStatus, RuleSet
+from .progress import download_batch, download_item, run_download
 from .storage import (
     ArtifactStore,
     StateStore,
@@ -802,6 +803,10 @@ class YouTubeCollector:
             remaining_bytes = _remaining_bytes(context)
             download = [
                 "yt-dlp",
+                "--progress",
+                "--newline",
+                "--progress-template",
+                "download:VC_TRACE_PROGRESS:%(progress.downloaded_bytes)s:%(progress.total_bytes)s",
                 "--no-playlist",
                 *_YT_DLP_NO_RETRY_FLAGS,
                 "--max-filesize",
@@ -820,7 +825,8 @@ class YouTubeCollector:
             ]
             try:
                 try:
-                    downloaded = self.runner(
+                    download_runner = run_download if self.runner is subprocess.run else self.runner
+                    downloaded = download_runner(
                         download,
                         check=True,
                         capture_output=True,
@@ -1030,7 +1036,30 @@ def collect_approved_sources(
 
     registry = registry or default_registry()
     result = CollectionResult()
-    for candidate in plan.candidates:
+    approved = [candidate for candidate in plan.candidates if candidate.approval_status in {
+        ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED,
+    } and selected(candidate)]
+
+    def progressing_candidates():
+        completed = 0
+        skipped = 0
+        approved_ids = {candidate.candidate_id for candidate in approved}
+        download_batch(0, len(approved))
+        for candidate in plan.candidates:
+            tracked = candidate.candidate_id in approved_ids
+            previous_skipped, previous_excluded = result.skipped, result.excluded
+            if tracked:
+                download_item(candidate.title or candidate.candidate_id)
+            yield candidate
+            if tracked:
+                completed += 1
+                skipped += max(result.skipped - previous_skipped,
+                               result.excluded - previous_excluded)
+                download_batch(completed, len(approved), failed=result.failed,
+                               skipped=skipped)
+        download_item('Download batch finished')
+
+    for candidate in progressing_candidates():
         downloaded_at_start = context.downloaded_bytes_used
         if candidate.approval_status not in {
             ApprovalStatus.APPROVED,

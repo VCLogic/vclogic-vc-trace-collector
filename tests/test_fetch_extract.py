@@ -11,6 +11,25 @@ from vc_trace_collector.policy import UnsafeUrl
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.mark.parametrize('known_size', [True, False])
+def test_http_progress_reports_streamed_bytes(monkeypatch, known_size):
+    from vc_trace_collector import fetch
+    events = []
+    monkeypatch.setattr(fetch, 'download_bytes', lambda done, total: events.append((done, total)))
+
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'abc'
+            yield b'def'
+
+    with Fetcher(transport=httpx.MockTransport(lambda request: httpx.Response(
+        200, headers={'content-length': '6'} if known_size else {}, stream=Stream())),
+        resolver=public_resolver, minimum_interval=0) as fetcher:
+        assert fetcher.fetch('https://example.test/file').content == b'abcdef'
+    total = 6 if known_size else None
+    assert events[-2:] == [(3, total), (6, total)]
+
+
 def public_resolver(host: str, port: int):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 

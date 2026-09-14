@@ -116,6 +116,22 @@ def context(tmp_path: Path) -> CollectionContext:
     )
 
 
+def test_progress_counts_only_selected_sources_including_resume(tmp_path, monkeypatch):
+    from vc_trace_collector import collectors
+    events = []
+    monkeypatch.setattr(collectors, 'download_batch',
+        lambda done, total, **kw: events.append((done, total, kw)))
+    ctx = context(tmp_path)
+    ctx.candidate_ids = {'success', 'failure'}
+    sources = plan(candidate('outside'), candidate('success'), candidate('failure'))
+    registry = CollectorRegistry([StaticCollector()])
+    collect_approved_sources(sources, context=ctx, registry=registry)
+    assert events[-1] == (2, 2, {'failed': 1, 'skipped': 0})
+    events.clear()
+    collect_approved_sources(sources, context=ctx, registry=registry)
+    assert events[-1] == (2, 2, {'failed': 1, 'skipped': 1})
+
+
 def test_one_failed_source_does_not_remove_success(tmp_path) -> None:
     collector = StaticCollector()
     registry = CollectorRegistry([collector])

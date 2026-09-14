@@ -1,6 +1,6 @@
 ---
 name: vc-trace-collector
-description: Use when collecting, reviewing, downloading, diarizing, or exporting public traces for a venture investor with the vc-trace-collector repository.
+description: Use when collecting, reviewing, downloading, diarizing, or exporting public traces or portfolio investment evidence for a venture investor with the vc-trace-collector repository.
 ---
 
 # VC Trace Collector
@@ -10,6 +10,42 @@ description: Use when collecting, reviewing, downloading, diarizing, or exportin
 Drive the audited CLI one stage at a time. Agent Reach selects discovery backends; the repository remains authoritative for review, collection, hashing, exclusions, pyannote attribution, and export.
 
 ## Required order
+
+For **portfolio investments**, use the independent workflow below instead of
+source-plan review, corpus filtering, processing or corpus export.
+
+## Portfolio downloads (no corpus exclusions or LLM extraction)
+
+For an already resolved investor:
+
+```bash
+uv run vc-trace-collector portfolio --investor michael-hyatt
+```
+
+This automatically searches with Agent Reach and downloads evidence. No LLM key
+is required. The legacy `--collect-only` flag is accepted but unnecessary.
+Do not perform investment extraction or company summarization with this skill;
+that work belongs to another repository. There is no portfolio assessment-import
+or model-extraction command here.
+
+No corpus exclusions apply to this dataset, including The Pitch. Do not filter
+downloaded portfolio sources by programme, domain, company, keyword or date.
+Acquisition safety and configured request/byte/cost limits still apply.
+Do not change corpus approvals to collect portfolio evidence.
+
+Hand off `outputs/<investor>/portfolio/handoff.json` and
+`portfolio/documents.jsonl` to the downstream tool. The JSONL contains readable
+page text, source URLs, page publication dates, collection timestamps and hashes.
+Original content is in `portfolio/raw/`; per-page metadata/text is in
+`portfolio/sources/`. Source publication dates are not investment dates, and a
+download does not verify that the page concerns the intended investor.
+
+Check `portfolio/run_summary.json` and `portfolio/manifest.json`, not the corpus
+status or verify commands. Report failures and incomplete coverage. Explicit
+`--refresh` refetches within configured budgets while preserving prior cache
+versions. Legacy extraction files are preserved but are not current handoff inputs.
+
+## Public-trace corpus workflow
 
 Work from the repository root. Read `.env` variable names only; never print their values.
 
@@ -40,8 +76,9 @@ uv run vc-trace-collector search-source \
   --limit-per-query 100 --max-search-operations 100
 ```
 
-The default firewall must still retain The Pitch results as rejected discovery
-evidence, never as corpus inputs. If Agent Reach is unavailable, report the
+For the public-trace corpus, the default firewall retains The Pitch results as
+rejected discovery evidence, never as corpus inputs. This does not apply to the
+independent portfolio workflow above. If Agent Reach is unavailable, report the
 single actionable failure; do not repeatedly retry every generated query.
 
 Show the `list-sources` output to the human. Do not bypass identity or source review. Write their decisions to a JSON array such as:
