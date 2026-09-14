@@ -90,6 +90,7 @@ from .process import (
     process_artifacts,
     target_speech_document,
 )
+from .progress import recording, report
 from .source_search import (
     SourceSearchObservation,
     SourceSearchSummary,
@@ -1580,6 +1581,8 @@ class Pipeline:
                 continue
             if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET:
                 continue
+            recording(candidate.title or candidate.canonical_url)
+            report("Checking audio and reference profiles")
             if not profiles:
                 failure = {
                     "candidate_id": candidate_id,
@@ -1611,6 +1614,7 @@ class Pipeline:
                 continue
             processing_artifact = artifact
             if is_video or path.suffix.casefold() != ".wav":
+                report("Extracting audio with FFmpeg")
                 try:
                     with tempfile.TemporaryDirectory(
                         prefix="vc-trace-video-audio-"
@@ -1729,6 +1733,7 @@ class Pipeline:
                             }
                         )
                 if not diarization_hit:
+                    report("Loading diarization model")
                     if (
                         processed_seconds + probed_seconds
                         > config.maximum_media_minutes * 60
@@ -1793,6 +1798,7 @@ class Pipeline:
                     )
 
                 empty_diarization = not diarization_record.result.speaker_embeddings
+                report("Diarization cached" if diarization_hit else "Diarization complete")
                 transcript_provider_name = (
                     "none"
                     if empty_diarization
@@ -1897,6 +1903,7 @@ class Pipeline:
                         resolved_transcript_model = transcript_model_name
                         resolved_transcript_version = transcript_model_version
                     else:
+                        report("Loading Whisper transcription model")
                         transcript_provider, _ = self._av_providers(
                             config, needs_transcript=True
                         )
@@ -1974,6 +1981,8 @@ class Pipeline:
                     for embedding in diarization_record.result.speaker_embeddings.values()
                 }
                 compatible_profiles: list[ReferenceVoiceProfile] = []
+                report("Transcript cached; matching voice" if transcript_hit
+                       else "Transcript ready; matching voice")
                 for reference_profile in profiles:
                     if empty_diarization:
                         compatible_profiles.append(reference_profile)
@@ -2121,6 +2130,7 @@ class Pipeline:
                 )
                 continue
             processed_seconds = cost.media_seconds
+            report(f"Attribution: {result.attribution.status}", completed=1, total=1)
             av_rows.append(
                 {
                     "artifact_id": artifact.artifact_id,

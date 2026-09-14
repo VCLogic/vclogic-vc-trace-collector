@@ -429,6 +429,13 @@ is ignored by Git and must never be force-added or committed.
 
 ## Reference voice and speaker attribution
 
+`process` and `process-source` show a progress bar in an interactive terminal:
+the recording title, current stage, elapsed time, pyannote batch progress, and
+Whisper segment counts. Model loading and audio extraction show a spinner;
+cached stages are labelled. Redirected output does not include animated bars.
+An already-running command must finish before the new display takes effect on
+its next invocation.
+
 Discovery generates interview, podcast, and YouTube queries and records likely
 single-identity voice sources in
 `identity/reference_voice_candidates.jsonl`. A usable voice reference should:

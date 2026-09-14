@@ -23,6 +23,7 @@ from .models import (
     SpeakerStatus,
     TranscriptInfo,
 )
+from .progress import diarization_hook, report
 
 
 class TimedText(BaseModel):
@@ -291,6 +292,7 @@ def transcribe_diarized_turns(
     with tempfile.TemporaryDirectory(prefix="vc-trace-segments-") as directory:
         segment_dir = Path(directory)
         for index, turn in enumerate(diarization.turns):
+            report("Whisper: speech segments", completed=index, total=len(diarization.turns))
             safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", turn.speaker_label)
             segment_path = segment_dir / f"segment_{safe_label}_{index:05d}.wav"
             extractor(
@@ -313,6 +315,7 @@ def transcribe_diarized_turns(
                         text=item.text,
                     )
                 )
+    report("Whisper: speech segments", completed=len(diarization.turns), total=len(diarization.turns))
     return TranscriptResult(info=transcript_info, segments=segments)
 
 
@@ -540,7 +543,9 @@ class PyannoteDiarizationProvider:
             self._pipeline.to(torch.device(device))
 
     def diarize(self, audio_path: Path) -> DiarizationResult:
-        annotation, embeddings = self._pipeline(str(audio_path), return_embeddings=True)
+        annotation, embeddings = self._pipeline(
+            str(audio_path), return_embeddings=True, hook=diarization_hook
+        )
         labels = annotation.labels()
         turns = [
             DiarizedTurn(

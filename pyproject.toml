@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.27,<1",
     "pydantic>=2.10,<3",
     "python-dotenv>=1.1,<2",
+    "rich>=13,<16",
     "typer>=0.15,<1",
 ]
 

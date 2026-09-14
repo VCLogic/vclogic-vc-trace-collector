@@ -9,6 +9,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Terminal progress for processing: current recording and stage, elapsed time,
+  pyannote batch progress, Whisper segment counts, and cache indicators.
 - Additive, human-verified reference voice profiles with deterministic profile
   IDs and complete per-speaker/per-reference similarity evidence.
 - Independent content-addressed caches for diarization, timed transcription,

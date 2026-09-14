@@ -18,6 +18,7 @@ from .config import RunConfig
 from .models import ApprovalStatus, MaterialRole, SourceDecision, SourceType
 from .pipeline import Pipeline
 from .policy import RuleSet
+from .progress import with_processing_progress
 from .public_search import (
     agent_reach_public_search_provider,
     default_public_search_provider,
@@ -414,6 +415,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         typer.echo(f"Completed workspace: {output_dir / result.investor_slug}")
 
     @app.command("process")
+    @with_processing_progress
     def process_command(
         investor: str = typer.Option(...),
         transcription_model: str | None = typer.Option(None),
@@ -440,6 +442,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         typer.echo(f"Processed {len(documents)} documents.")
 
     @app.command("process-source")
+    @with_processing_progress
     def process_source(
         investor: str = typer.Option(..., help="Investor workspace slug"),
         candidate_id: str = typer.Option(..., help="Approved source candidate ID"),
