@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable
@@ -91,6 +92,25 @@ class AgentReachWebSearchProvider:
         return None
 
     @staticmethod
+    def _text_rows(text: str) -> list[dict[str, Any]]:
+        """Parse mcporter's rendered Exa records inside an MCP text block."""
+        rows: list[dict[str, Any]] = []
+        for block in re.split(r"\n\s*---\s*\n", text.strip()):
+            title = re.search(r"^Title:\s*(.+)$", block, flags=re.MULTILINE)
+            url = re.search(r"^URL:\s*(\S+)\s*$", block, flags=re.MULTILINE)
+            if url is None:
+                continue
+            highlights = block.partition("Highlights:")[2].strip()
+            rows.append(
+                {
+                    "url": url.group(1),
+                    "title": title.group(1).strip() if title else "",
+                    "text": highlights,
+                }
+            )
+        return rows
+
+    @staticmethod
     def _rows(payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             results = payload.get("results")
@@ -101,16 +121,20 @@ class AgentReachWebSearchProvider:
                 return AgentReachWebSearchProvider._rows(data)
             content = payload.get("content")
             if isinstance(content, list):
+                collected: list[dict[str, Any]] = []
                 for item in content:
                     if not isinstance(item, dict) or not isinstance(item.get("text"), str):
                         continue
                     try:
                         nested = json.loads(item["text"])
                     except json.JSONDecodeError:
+                        collected.extend(
+                            AgentReachWebSearchProvider._text_rows(item["text"])
+                        )
                         continue
-                    rows = AgentReachWebSearchProvider._rows(nested)
-                    if rows:
-                        return rows
+                    collected.extend(AgentReachWebSearchProvider._rows(nested))
+                if collected:
+                    return collected
         return []
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
@@ -120,6 +144,8 @@ class AgentReachWebSearchProvider:
             "exa.web_search_exa",
             f"query={query}",
             f"numResults={limit}",
+            "--output",
+            "json",
         ]
         try:
             completed = self._runner(

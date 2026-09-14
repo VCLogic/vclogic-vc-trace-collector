@@ -18,6 +18,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Agent Reach preflight now catches a missing `mcporter` before reserving
   budget, and unreachable Exa failures stop after one query without consuming
   the search-operation allowance.
+- Agent Reach Exa searches now request JSON output and parse Exa records
+  carried in MCP text content instead of incorrectly reporting invalid JSON.
 - Existing pending candidates are enriched with newly discovered channel
   metadata so channel-based leakage rules apply on incremental reruns.
 

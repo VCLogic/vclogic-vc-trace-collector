@@ -41,11 +41,83 @@ def test_agent_reach_exa_backend_uses_mcporter_and_parses_json() -> None:
         "exa.web_search_exa",
         'query="Michael Hyatt" podcast',
         "numResults=4",
+        "--output",
+        "json",
     ]
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 19
     assert results[0].provider == "agent-reach:exa"
     assert results[0].snippet == "Hyatt Family Office investor"
+
+
+def test_agent_reach_exa_backend_parses_mcporter_text_content() -> None:
+    text = """Title: Michael Hyatt on early-stage investing
+URL: https://example.test/first
+Published: 2025-12-22T00:00:00.000Z
+Author: Joe Chidley
+Highlights:
+Michael Hyatt discusses BlueCat and venture investing.
+
+---
+
+Title: A second Michael Hyatt interview
+URL: https://example.test/second
+Published: 2024-01-01T00:00:00.000Z
+Author: Example Author
+Highlights:
+An interview about Dyadem.
+"""
+    provider = AgentReachWebSearchProvider(
+        runner=lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"content": [{"type": "text", "text": text}]}),
+            stderr="",
+        )
+    )
+
+    results = provider.search('"Michael Hyatt" investor', limit=2)
+
+    assert [result.url for result in results] == [
+        "https://example.test/first",
+        "https://example.test/second",
+    ]
+    assert results[0].title == "Michael Hyatt on early-stage investing"
+    assert "BlueCat" in results[0].snippet
+
+
+def test_agent_reach_exa_backend_aggregates_multiple_text_content_blocks() -> None:
+    def record(title: str, url: str) -> str:
+        return f"Title: {title}\nURL: {url}\nHighlights:\nMichael Hyatt investor"
+
+    provider = AgentReachWebSearchProvider(
+        runner=lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": record("First result", "https://example.test/first"),
+                        },
+                        {
+                            "type": "text",
+                            "text": record(
+                                "Second result", "https://example.test/second"
+                            ),
+                        },
+                    ]
+                }
+            ),
+            stderr="",
+        )
+    )
+
+    results = provider.search('"Michael Hyatt" investor', limit=2)
+
+    assert [result.url for result in results] == [
+        "https://example.test/first",
+        "https://example.test/second",
+    ]
 
 
 def test_agent_reach_exa_backend_isolates_missing_mcporter() -> None:
