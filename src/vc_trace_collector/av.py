@@ -7,7 +7,8 @@ import os
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
@@ -419,6 +420,20 @@ class WhisperTranscriptProvider:
         )
 
 
+@contextmanager
+def _safe_pyannote_checkpoint_load() -> Iterator[None]:
+    """Allow only the installed legacy pyannote checkpoint metadata types."""
+    import torch
+    from pyannote.audio.core.task import Problem, Resolution, Specifications
+    from torch.torch_version import TorchVersion
+
+    required = [TorchVersion, Specifications, Problem, Resolution]
+    existing = set(torch.serialization.get_safe_globals())
+    missing = [item for item in required if item not in existing]
+    with torch.serialization.safe_globals(missing):
+        yield
+
+
 class PyannoteDiarizationProvider:
     provider_name = "pyannote"
 
@@ -430,10 +445,13 @@ class PyannoteDiarizationProvider:
             from pyannote.audio import Pipeline
         except ImportError as error:
             raise RuntimeError("Install the av-local extra to use pyannote") from error
-        try:
-            self._pipeline = Pipeline.from_pretrained(model, token=token)
-        except TypeError:
-            self._pipeline = Pipeline.from_pretrained(model, use_auth_token=token)
+        with _safe_pyannote_checkpoint_load():
+            try:
+                self._pipeline = Pipeline.from_pretrained(model, token=token)
+            except TypeError:
+                self._pipeline = Pipeline.from_pretrained(
+                    model, use_auth_token=token
+                )
         if device:
             import torch
 
@@ -485,10 +503,13 @@ class PyannoteEmbeddingProvider:
             from pyannote.audio import Inference
         except ImportError as error:
             raise RuntimeError("Install the av-local extra to use pyannote") from error
-        try:
-            self._inference = Inference(model, token=token, window="whole")
-        except TypeError:
-            self._inference = Inference(model, use_auth_token=token, window="whole")
+        with _safe_pyannote_checkpoint_load():
+            try:
+                self._inference = Inference(model, token=token, window="whole")
+            except TypeError:
+                self._inference = Inference(
+                    model, use_auth_token=token, window="whole"
+                )
         if device:
             import torch
 

@@ -20,6 +20,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and legacy resume.
 - The `av-local` extra now pins the compatible PyTorch and TorchAudio 2.8.0
   pair and Hugging Face Hub 0.x API required by pyannote 3.x.
+- Legacy pyannote checkpoints now load under PyTorch's secure weights-only
+  default using a scoped allowlist of four installed pyannote/PyTorch types.
 - Agent Reach preflight now catches a missing `mcporter` before reserving
   budget, and unreachable Exa failures stop after one query without consuming
   the search-operation allowance.
