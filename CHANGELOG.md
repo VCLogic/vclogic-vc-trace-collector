@@ -15,6 +15,11 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Artifact loading now distinguishes collector provenance sidecars from raw
+  yt-dlp `.metadata.json` payloads during processing, export, verification,
+  and legacy resume.
+- The `av-local` extra now pins the compatible PyTorch and TorchAudio 2.8.0
+  pair required by pyannote 3.x.
 - Agent Reach preflight now catches a missing `mcporter` before reserving
   budget, and unreachable Exa failures stop after one query without consuming
   the search-operation allowance.

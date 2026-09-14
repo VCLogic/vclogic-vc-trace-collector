@@ -24,7 +24,8 @@ av = [
 av-local = [
     "openai-whisper>=20250625",
     "pyannote-audio>=3.3,<4",
-    "torch>=2.4",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
 ]
 
 [project.scripts]
