@@ -377,6 +377,7 @@ def export_workspace(
         workspace / "identity/identity_review.json",
         workspace / "identity/identity_evidence.jsonl",
         workspace / "identity/reference_voice_candidates.jsonl",
+        workspace / "identity/reference_voice_profiles.jsonl",
         workspace / "identity/reference_voice_profile.json",
         workspace / "discovery/source_plan.json",
         workspace / "discovery/source_decisions.jsonl",
@@ -386,6 +387,8 @@ def export_workspace(
         workspace / "discovery/search_observations.jsonl",
     ]
     provenance_paths.extend((workspace / "raw").rglob("*"))
+    for stage in ("av_diarization", "av_transcripts", "av_attributions"):
+        provenance_paths.extend((workspace / "state" / stage).glob("*.json"))
     paths.extend(path for path in provenance_paths if path.is_file())
     files = [_file(path, workspace) for path in sorted(set(paths))]
     fingerprint_payload = {

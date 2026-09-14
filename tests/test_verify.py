@@ -1,6 +1,10 @@
 from test_process_export import document
 
-from vc_trace_collector.av_cache import AttributionCacheRecord
+from vc_trace_collector.av import DiarizationResult
+from vc_trace_collector.av_cache import (
+    AttributionCacheRecord,
+    DiarizationCacheRecord,
+)
 from vc_trace_collector.collectors import CollectionCandidateOutcome
 from vc_trace_collector.config import RunConfig
 from vc_trace_collector.export import export_workspace
@@ -343,6 +347,32 @@ def test_verification_rejects_attribution_cache_with_missing_diarization(
 
     assert result.passed is False
     assert any("attribution cache" in error.casefold() for error in result.errors)
+
+
+def test_verification_recomputes_diarization_cache_key(tmp_path) -> None:
+    _manifest, artifact = exported_workspace(tmp_path)
+    write_json(
+        tmp_path / "state/av_diarization/tampered.json",
+        DiarizationCacheRecord(
+            cache_key="av-diarization:tampered",
+            artifact_id=artifact.record.artifact_id,
+            artifact_sha256=artifact.record.sha256,
+            provider="fixture",
+            model="fixture",
+            model_version="1",
+            media_seconds=1.0,
+            result=DiarizationResult(
+                model="fixture",
+                turns=[],
+                speaker_embeddings={"SPEAKER_00": [1.0, 0.0]},
+            ),
+        ),
+    )
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("diarization cache key" in error.casefold() for error in result.errors)
 
 
 def test_verification_rejects_reference_profile_set_with_missing_artifact(

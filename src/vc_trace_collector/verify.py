@@ -14,10 +14,14 @@ from .audit import (
     attempted_media_seconds,
     provider_attempt_count,
 )
+from .av import cosine_similarity
 from .av_cache import (
     AttributionCacheRecord,
     DiarizationCacheRecord,
     TranscriptCacheRecord,
+    attribution_cache_key,
+    diarization_cache_key,
+    transcript_cache_key,
 )
 from .collectors import CollectionCandidateOutcome
 from .config import RunConfig
@@ -713,6 +717,18 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             )
             continue
         profiles_by_id[reference_profile.profile_id] = reference_profile
+        profile_payload = reference_profile.model_dump(
+            mode="json", exclude={"profile_id", "created_at"}
+        )
+        expected_profile_id = (
+            "voice-profile:"
+            + sha256(canonical_json(profile_payload).encode("utf-8")).hexdigest()[:20]
+        )
+        if reference_profile.profile_id != expected_profile_id:
+            errors.append(
+                f"Reference voice profile ID does not match its content: "
+                f"{reference_profile.profile_id}"
+            )
         if reference_profile.investor_slug != manifest.investor_slug:
             errors.append(
                 "Reference voice profile set investor does not match manifest"
@@ -721,6 +737,42 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append("Reference voice profile set entry is not human verified")
         if any(item not in artifacts for item in reference_profile.artifact_ids):
             errors.append("Reference voice profile set has missing raw lineage")
+        if any(
+            value is None
+            for value in (
+                reference_profile.reference_candidate_id,
+                reference_profile.source_artifact_id,
+                reference_profile.artifact_sha256,
+                reference_profile.reviewed_by,
+                reference_profile.reviewed_at,
+                reference_profile.embedding_provider,
+            )
+        ):
+            errors.append(
+                "Reference voice profile set lacks approval or provider provenance"
+            )
+        if reference_profile.reference_candidate_id not in set(
+            reference_profile.candidate_ids
+        ):
+            errors.append(
+                "Reference voice profile approval candidate differs from lineage"
+            )
+        profile_artifacts = [
+            item
+            for artifact_id in reference_profile.artifact_ids
+            for item in artifacts.get(artifact_id, [])
+        ]
+        if reference_profile.artifact_sha256 and not any(
+            item.sha256 == reference_profile.artifact_sha256
+            for item in profile_artifacts
+        ):
+            errors.append("Reference voice profile artifact hash differs from lineage")
+        if reference_profile.source_artifact_id and not any(
+            reference_profile.source_artifact_id == item.artifact_id
+            or reference_profile.source_artifact_id in item.parent_artifact_ids
+            for item in profile_artifacts
+        ):
+            errors.append("Reference voice profile source artifact differs from lineage")
         for candidate_id in reference_profile.candidate_ids:
             voice = reference_candidates.get(candidate_id)
             if voice is None:
@@ -728,6 +780,15 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             elif voice.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
                 errors.append(
                     "Reference voice profile set candidate is not human verified"
+                )
+            elif (
+                voice.artifact_id not in reference_profile.artifact_ids
+                or voice.reviewed_by != reference_profile.reviewed_by
+                or voice.start_seconds != reference_profile.start_seconds
+                or voice.end_seconds != reference_profile.end_seconds
+            ):
+                errors.append(
+                    "Reference voice profile approval snapshot differs from candidate"
                 )
 
     diarization_records: dict[str, DiarizationCacheRecord] = {}
@@ -738,6 +799,19 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append(f"Invalid diarization cache {cache_file.name}: {error}")
             continue
         diarization_records[record.cache_key] = record
+        expected_key = diarization_cache_key(
+            artifact_sha256=record.artifact_sha256,
+            provider=record.provider,
+            model=record.model,
+            model_version=record.model_version,
+        )
+        if record.cache_key != expected_key or cache_file.stem != expected_key.rsplit(
+            ":", 1
+        )[-1]:
+            errors.append(
+                f"Diarization cache key does not match its content: "
+                f"{record.cache_key}"
+            )
         if record.artifact_id not in artifacts or not any(
             item.sha256 == record.artifact_sha256
             for item in artifacts.get(record.artifact_id, [])
@@ -754,18 +828,56 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append(f"Invalid transcript cache {cache_file.name}: {error}")
             continue
         transcript_records[record.cache_key] = record
+        expected_key = transcript_cache_key(
+            artifact_sha256=record.artifact_sha256,
+            provider=record.provider,
+            model=record.model,
+            model_version=record.model_version,
+            diarization_cache_key=record.diarization_cache_key,
+            segmentation_version=record.segmentation_version,
+        )
+        if record.cache_key != expected_key or cache_file.stem != expected_key.rsplit(
+            ":", 1
+        )[-1]:
+            errors.append(
+                f"Transcript cache key does not match its content: {record.cache_key}"
+            )
         if record.diarization_cache_key not in diarization_records:
             errors.append(
                 f"Transcript cache references missing diarization cache: "
                 f"{record.cache_key}"
             )
+        if record.artifact_id not in artifacts or not any(
+            item.sha256 == record.artifact_sha256
+            for item in artifacts.get(record.artifact_id, [])
+        ):
+            errors.append(
+                f"Transcript cache has missing raw lineage: {record.cache_key}"
+            )
 
+    attribution_records: list[AttributionCacheRecord] = []
     for cache_file in sorted((workspace / "state/av_attributions").glob("*.json")):
         try:
             record = AttributionCacheRecord.model_validate(read_json(cache_file))
         except Exception as error:
             errors.append(f"Invalid attribution cache {cache_file.name}: {error}")
             continue
+        attribution_records.append(record)
+        expected_key = attribution_cache_key(
+            diarization_cache_key=record.diarization_cache_key,
+            reference_profile_ids=record.reference_profile_ids,
+            minimum_score=record.minimum_score,
+            minimum_margin=record.minimum_margin,
+            aggregation_method=record.aggregation_method,
+            aggregation_version=record.aggregation_version,
+        )
+        if record.cache_key != expected_key or cache_file.stem != expected_key.rsplit(
+            ":", 1
+        )[-1]:
+            errors.append(
+                f"Attribution cache key does not match its content: "
+                f"{record.cache_key}"
+            )
         if record.diarization_cache_key not in diarization_records:
             errors.append(
                 f"Attribution cache references missing diarization cache: "
@@ -777,6 +889,116 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         if missing_profiles:
             errors.append(
                 f"Attribution cache references missing reference voice profiles: "
+                f"{record.cache_key}"
+            )
+        diarization = diarization_records.get(record.diarization_cache_key)
+        evidence = record.attribution.score_evidence
+        if diarization is not None and diarization.result.speaker_embeddings:
+            if {item.speaker_label for item in evidence} != set(
+                diarization.result.speaker_embeddings
+            ):
+                errors.append(
+                    f"Attribution cache score evidence differs from diarization: "
+                    f"{record.cache_key}"
+                )
+            for speaker in evidence:
+                reference_ids = {
+                    item.reference_profile_id for item in speaker.reference_scores
+                }
+                if reference_ids != set(record.reference_profile_ids):
+                    errors.append(
+                        f"Attribution cache score evidence omits references: "
+                        f"{record.cache_key}"
+                    )
+                    continue
+                speaker_embedding = diarization.result.speaker_embeddings.get(
+                    speaker.speaker_label
+                )
+                for score in speaker.reference_scores:
+                    reference = profiles_by_id.get(score.reference_profile_id)
+                    if reference is None or speaker_embedding is None:
+                        continue
+                    if set(score.reference_artifact_ids) != set(
+                        reference.artifact_ids
+                    ):
+                        errors.append(
+                            f"Attribution cache reference artifacts are inconsistent: "
+                            f"{record.cache_key}"
+                        )
+                    try:
+                        expected_score = cosine_similarity(
+                            reference.embedding, speaker_embedding
+                        )
+                    except ValueError:
+                        errors.append(
+                            f"Attribution cache contains incompatible embeddings: "
+                            f"{record.cache_key}"
+                        )
+                        continue
+                    if not isclose(score.score, expected_score, abs_tol=1e-9):
+                        errors.append(
+                            f"Attribution cache score does not match embeddings: "
+                            f"{record.cache_key}"
+                        )
+                if speaker.reference_scores:
+                    winner = max(
+                        speaker.reference_scores,
+                        key=lambda item: (item.score, item.reference_profile_id),
+                    )
+                    if (
+                        not isclose(
+                            speaker.aggregate_score, winner.score, abs_tol=1e-9
+                        )
+                        or speaker.matched_reference_profile_id
+                        != winner.reference_profile_id
+                    ):
+                        errors.append(
+                            f"Attribution cache aggregate score is inconsistent: "
+                            f"{record.cache_key}"
+                        )
+            if evidence:
+                ranked = sorted(
+                    evidence,
+                    key=lambda item: (item.aggregate_score, item.speaker_label),
+                    reverse=True,
+                )
+                winner = ranked[0]
+                runner_up = ranked[1].aggregate_score if len(ranked) > 1 else -1.0
+                margin = winner.aggregate_score - runner_up
+                expected_status = (
+                    SpeakerStatus.ACCEPTED_MODEL
+                    if winner.aggregate_score >= record.minimum_score
+                    and margin >= record.minimum_margin
+                    else SpeakerStatus.UNCERTAIN
+                )
+                attribution = record.attribution
+                if (
+                    attribution.status != expected_status
+                    or attribution.speaker_label != winner.speaker_label
+                    or attribution.matched_reference_profile_id
+                    != winner.matched_reference_profile_id
+                    or attribution.score is None
+                    or not isclose(
+                        attribution.score, winner.aggregate_score, abs_tol=1e-9
+                    )
+                    or attribution.runner_up_score is None
+                    or not isclose(
+                        attribution.runner_up_score, runner_up, abs_tol=1e-9
+                    )
+                    or attribution.margin is None
+                    or not isclose(attribution.margin, margin, abs_tol=1e-9)
+                ):
+                    errors.append(
+                        f"Attribution cache decision is inconsistent with scores: "
+                        f"{record.cache_key}"
+                    )
+        elif diarization is not None and (
+            record.attribution.status != SpeakerStatus.UNAVAILABLE
+            or record.attribution.score_evidence
+            or record.attribution.speaker_label is not None
+        ):
+            errors.append(
+                f"Attribution cache empty-diarization decision is inconsistent: "
                 f"{record.cache_key}"
             )
 
@@ -881,6 +1103,18 @@ def verify_workspace(workspace: Path) -> VerificationResult:
         _validate_model_attribution(
             document, config, profile, profiles_by_id, errors
         )
+        if document.speaker_attribution.status in {
+            SpeakerStatus.ACCEPTED_MODEL,
+            SpeakerStatus.UNCERTAIN,
+            SpeakerStatus.UNAVAILABLE,
+        } and not any(
+            record.attribution == document.speaker_attribution
+            for record in attribution_records
+        ):
+            errors.append(
+                f"Document speaker attribution lacks a matching cache record: "
+                f"{document.document_version_id}"
+            )
         if (
             document.speaker_attribution.status == SpeakerStatus.ACCEPTED_MODEL
             and profile is None

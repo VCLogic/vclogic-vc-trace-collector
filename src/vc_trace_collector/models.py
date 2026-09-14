@@ -298,6 +298,7 @@ class ReferenceVoiceCandidate(StrictModel):
     status: ReferenceVoiceStatus = ReferenceVoiceStatus.HIGH_CONFIDENCE_CANDIDATE
     artifact_id: str | None = None
     reviewed_by: str | None = None
+    reviewed_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def valid_interval(self) -> ReferenceVoiceCandidate:
@@ -321,7 +322,27 @@ class ReferenceVoiceProfile(StrictModel):
     embedding_model: str
     embedding_model_version: str
     embedding: list[float] = Field(min_length=1)
+    reference_candidate_id: str | None = None
+    source_artifact_id: str | None = None
+    artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    start_seconds: float | None = Field(default=None, ge=0)
+    end_seconds: float | None = Field(default=None, ge=0)
+    reviewed_by: str | None = None
+    reviewed_at: AwareDatetime | None = None
+    embedding_provider: str | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def valid_interval(self) -> ReferenceVoiceProfile:
+        if (self.start_seconds is None) != (self.end_seconds is None):
+            raise ValueError("reference profile interval requires both start and end")
+        if (
+            self.start_seconds is not None
+            and self.end_seconds is not None
+            and self.end_seconds <= self.start_seconds
+        ):
+            raise ValueError("reference profile end_seconds must be after start_seconds")
+        return self
 
 
 class ExclusionDecision(StrictModel):

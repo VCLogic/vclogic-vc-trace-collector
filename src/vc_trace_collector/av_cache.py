@@ -93,6 +93,7 @@ class DiarizationCacheRecord(StrictModel):
     provider: str
     model: str
     model_version: str
+    media_seconds: float = Field(ge=0)
     result: DiarizationResult
     created_at: AwareDatetime = Field(default_factory=utc_now)
 

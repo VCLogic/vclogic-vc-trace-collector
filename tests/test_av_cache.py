@@ -113,6 +113,7 @@ def test_stage_records_are_strict_and_round_trip() -> None:
         provider="fixture",
         model="fixture-diarization",
         model_version="1",
+        media_seconds=1.0,
         result=DiarizationResult(
             model="fixture-diarization",
             turns=[

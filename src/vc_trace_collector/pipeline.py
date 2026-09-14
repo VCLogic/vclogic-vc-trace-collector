@@ -80,6 +80,7 @@ from .models import (
     SourceDecision,
     SourcePlan,
     SourceType,
+    TranscriptInfo,
     utc_now,
 )
 from .policy import ExclusionRule, RuleSet
@@ -176,18 +177,75 @@ class Pipeline:
     ) -> list[ReferenceVoiceProfile]:
         profiles_path = workspace / "identity/reference_voice_profiles.jsonl"
         profiles = [
-            self._identify_reference_profile(
-                ReferenceVoiceProfile.model_validate(row)
-            )
+            ReferenceVoiceProfile.model_validate(row)
             for row in read_jsonl(profiles_path)
         ]
         legacy_path = workspace / "identity/reference_voice_profile.json"
         if legacy_path.exists():
-            profiles.append(
-                self._identify_reference_profile(
-                    ReferenceVoiceProfile.model_validate(read_json(legacy_path))
+            profiles.append(ReferenceVoiceProfile.model_validate(read_json(legacy_path)))
+        voice_candidates = {
+            item.candidate_id: item
+            for item in (
+                ReferenceVoiceCandidate.model_validate(row)
+                for row in read_jsonl(
+                    workspace / "identity/reference_voice_candidates.jsonl"
                 )
             )
+        }
+        artifact_records = {
+            item.artifact_id: item for item in load_artifact_records(workspace)
+        }
+        enriched: list[ReferenceVoiceProfile] = []
+        for profile in profiles:
+            candidate = next(
+                (
+                    voice_candidates[candidate_id]
+                    for candidate_id in profile.candidate_ids
+                    if candidate_id in voice_candidates
+                ),
+                None,
+            )
+            artifact = next(
+                (
+                    artifact_records[artifact_id]
+                    for artifact_id in profile.artifact_ids
+                    if artifact_id in artifact_records
+                ),
+                None,
+            )
+            updates = {}
+            if candidate is not None:
+                updates = {
+                    "reference_candidate_id": profile.reference_candidate_id
+                    or candidate.candidate_id,
+                    "start_seconds": profile.start_seconds
+                    if profile.start_seconds is not None
+                    else candidate.start_seconds,
+                    "end_seconds": profile.end_seconds
+                    if profile.end_seconds is not None
+                    else candidate.end_seconds,
+                    "reviewed_by": profile.reviewed_by or candidate.reviewed_by,
+                    "reviewed_at": profile.reviewed_at
+                    or candidate.reviewed_at
+                    or profile.created_at,
+                }
+            if artifact is not None:
+                updates.update(
+                    {
+                        "source_artifact_id": profile.source_artifact_id
+                        or next(iter(artifact.parent_artifact_ids), artifact.artifact_id),
+                        "artifact_sha256": profile.artifact_sha256 or artifact.sha256,
+                    }
+                )
+            if (
+                profile.embedding_provider is None
+                and (candidate is not None or artifact is not None)
+            ):
+                updates["embedding_provider"] = "legacy-unspecified"
+            enriched.append(
+                self._identify_reference_profile(profile.model_copy(update=updates))
+            )
+        profiles = enriched
         by_id = {profile.profile_id: profile for profile in profiles}
         ordered = sorted(
             by_id.values(),
@@ -1118,6 +1176,17 @@ class Pipeline:
             raise KeyError(
                 f"Unknown reference voice candidate: {candidate_id}"
             ) from error
+        unchanged_review = (
+            selected.status == ReferenceVoiceStatus.VERIFIED_HUMAN
+            and selected.reviewed_by == reviewer
+            and selected.start_seconds == start_seconds
+            and selected.end_seconds == end_seconds
+        )
+        reviewed_at = (
+            selected.reviewed_at
+            if unchanged_review and selected.reviewed_at is not None
+            else utc_now()
+        )
         if not selected.artifact_id:
             raise ReviewRequired(
                 "Collect the reference source before approving its voice"
@@ -1263,6 +1332,7 @@ class Pipeline:
         selected.end_seconds = end_seconds
         selected.status = ReferenceVoiceStatus.VERIFIED_HUMAN
         selected.reviewed_by = reviewer
+        selected.reviewed_at = reviewed_at
         selected.artifact_id = reference_artifact.artifact_id
         write_jsonl(candidates_path, candidates)
         profile = ReferenceVoiceProfile(
@@ -1275,6 +1345,14 @@ class Pipeline:
                 getattr(provider, "model_version", "unspecified")
             ),
             embedding=embedding,
+            reference_candidate_id=selected.candidate_id,
+            source_artifact_id=artifact.artifact_id,
+            artifact_sha256=reference_artifact.sha256,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            reviewed_by=reviewer,
+            reviewed_at=selected.reviewed_at,
+            embedding_provider=provider.provider_name,
         )
         profile = self._identify_reference_profile(profile)
         self._upsert_reference_profile(workspace, profile)
@@ -1553,6 +1631,7 @@ class Pipeline:
             diarization_hit = False
             transcript_hit = False
             attribution_hit = False
+            cache_rejections: list[dict[str, str]] = []
             omitted_profiles: list[dict[str, str]] = []
             try:
                 diarization_provider_name = (
@@ -1587,10 +1666,37 @@ class Pipeline:
                 )
                 diarization_hit = diarization_path.exists()
                 if diarization_hit:
-                    diarization_record = DiarizationCacheRecord.model_validate(
-                        read_json(diarization_path)
-                    )
-                else:
+                    try:
+                        diarization_record = DiarizationCacheRecord.model_validate(
+                            read_json(diarization_path)
+                        )
+                        if (
+                            diarization_record.cache_key != diarization_key
+                            or diarization_record.artifact_id
+                            != processing_artifact.artifact_id
+                            or diarization_record.artifact_sha256
+                            != processing_artifact.sha256
+                            or diarization_record.provider
+                            != diarization_provider_name
+                            or diarization_record.model != diarization_model_name
+                            or diarization_record.model_version
+                            != diarization_model_version
+                            or diarization_record.result.model
+                            != diarization_model_name
+                        ):
+                            raise ValueError(
+                                "Diarization cache content does not match its key inputs"
+                            )
+                    except (OSError, ValueError, ValidationError) as error:
+                        diarization_hit = False
+                        cache_rejections.append(
+                            {
+                                "stage": "diarization",
+                                "path": str(diarization_path.relative_to(workspace)),
+                                "reason": f"{type(error).__name__}: {error}",
+                            }
+                        )
+                if not diarization_hit:
                     if (
                         processed_seconds + probed_seconds
                         > config.maximum_media_minutes * 60
@@ -1646,6 +1752,7 @@ class Pipeline:
                                 "unspecified",
                             )
                         ),
+                        media_seconds=probed_seconds,
                         result=diarization_result,
                     )
                     write_json(diarization_path, diarization_record)
@@ -1653,25 +1760,38 @@ class Pipeline:
                         stage_operation, diarization_key, str(diarization_path)
                     )
 
+                empty_diarization = not diarization_record.result.speaker_embeddings
                 transcript_provider_name = (
-                    self.transcript_provider.provider_name
-                    if self.transcript_provider
-                    else "local-whisper"
+                    "none"
+                    if empty_diarization
+                    else (
+                        self.transcript_provider.provider_name
+                        if self.transcript_provider
+                        else "local-whisper"
+                    )
                 )
                 transcript_model_name = (
-                    self.transcript_provider.model_name
-                    if self.transcript_provider
-                    else config.transcription_model
+                    "none"
+                    if empty_diarization
+                    else (
+                        self.transcript_provider.model_name
+                        if self.transcript_provider
+                        else config.transcription_model
+                    )
                 )
                 if not transcript_model_name:
                     raise ReviewRequired(
                         "No existing transcript; configure a transcription model"
                     )
-                transcript_model_version = str(
-                    getattr(
-                        self.transcript_provider,
-                        "model_version",
-                        "unspecified",
+                transcript_model_version = (
+                    "1"
+                    if empty_diarization
+                    else str(
+                        getattr(
+                            self.transcript_provider,
+                            "model_version",
+                            "unspecified",
+                        )
                     )
                 )
                 transcript_key = transcript_cache_key(
@@ -1687,10 +1807,37 @@ class Pipeline:
                 transcript_hit = transcript_path.exists()
                 migration_source = None
                 if transcript_hit:
-                    transcript_record = TranscriptCacheRecord.model_validate(
-                        read_json(transcript_path)
-                    )
-                else:
+                    try:
+                        transcript_record = TranscriptCacheRecord.model_validate(
+                            read_json(transcript_path)
+                        )
+                        if (
+                            transcript_record.cache_key != transcript_key
+                            or transcript_record.artifact_id
+                            != processing_artifact.artifact_id
+                            or transcript_record.artifact_sha256
+                            != processing_artifact.sha256
+                            or transcript_record.provider
+                            != transcript_provider_name
+                            or transcript_record.model != transcript_model_name
+                            or transcript_record.model_version
+                            != transcript_model_version
+                            or transcript_record.diarization_cache_key
+                            != diarization_key
+                        ):
+                            raise ValueError(
+                                "Transcript cache content does not match its key inputs"
+                            )
+                    except (OSError, ValueError, ValidationError) as error:
+                        transcript_hit = False
+                        cache_rejections.append(
+                            {
+                                "stage": "transcript",
+                                "path": str(transcript_path.relative_to(workspace)),
+                                "reason": f"{type(error).__name__}: {error}",
+                            }
+                        )
+                if not transcript_hit:
                     legacy_transcript = self._legacy_transcript(
                         workspace,
                         candidate_id=candidate_id,
@@ -1704,7 +1851,14 @@ class Pipeline:
                     state.start_operation(
                         transcript_stage_operation, transcript_key
                     )
-                    if legacy_transcript is not None:
+                    if empty_diarization:
+                        transcript_result = TranscriptResult(
+                            info=TranscriptInfo(), segments=[]
+                        )
+                        resolved_transcript_provider = "none"
+                        resolved_transcript_model = "none"
+                        resolved_transcript_version = "1"
+                    elif legacy_transcript is not None:
                         transcript_result = legacy_transcript
                         migration_source = "legacy_av_result"
                         resolved_transcript_provider = transcript_provider_name
@@ -1789,9 +1943,27 @@ class Pipeline:
                 }
                 compatible_profiles: list[ReferenceVoiceProfile] = []
                 for reference_profile in profiles:
-                    if len(speaker_dimensions) != 1 or len(
+                    if empty_diarization:
+                        compatible_profiles.append(reference_profile)
+                        continue
+                    if (
+                        reference_profile.embedding_model
+                        != diarization_record.model
+                        or reference_profile.embedding_model_version
+                        != diarization_record.model_version
+                    ):
+                        omitted_profiles.append(
+                            {
+                                "profile_id": reference_profile.profile_id or "unknown",
+                                "reason": "Embedding model or version differs from diarization",
+                            }
+                        )
+                        continue
+                    if not empty_diarization and (
+                        len(speaker_dimensions) != 1 or len(
                         reference_profile.embedding
-                    ) not in speaker_dimensions:
+                        ) not in speaker_dimensions
+                    ):
                         omitted_profiles.append(
                             {
                                 "profile_id": reference_profile.profile_id or "unknown",
@@ -1825,10 +1997,34 @@ class Pipeline:
                 )
                 attribution_hit = attribution_path.exists()
                 if attribution_hit:
-                    attribution_record = AttributionCacheRecord.model_validate(
-                        read_json(attribution_path)
-                    )
-                else:
+                    try:
+                        attribution_record = AttributionCacheRecord.model_validate(
+                            read_json(attribution_path)
+                        )
+                        if (
+                            attribution_record.cache_key != attribution_key
+                            or attribution_record.diarization_cache_key
+                            != diarization_key
+                            or set(attribution_record.reference_profile_ids)
+                            != {item.profile_id for item in reference_embeddings}
+                            or attribution_record.minimum_score
+                            != config.speaker_minimum_score
+                            or attribution_record.minimum_margin
+                            != config.speaker_minimum_margin
+                        ):
+                            raise ValueError(
+                                "Attribution cache content does not match its key inputs"
+                            )
+                    except (OSError, ValueError, ValidationError) as error:
+                        attribution_hit = False
+                        cache_rejections.append(
+                            {
+                                "stage": "attribution",
+                                "path": str(attribution_path.relative_to(workspace)),
+                                "reason": f"{type(error).__name__}: {error}",
+                            }
+                        )
+                if not attribution_hit:
                     attribution = match_target_speaker_references(
                         references=reference_embeddings,
                         speakers=diarization_record.result.speaker_embeddings,
@@ -1881,6 +2077,7 @@ class Pipeline:
                         "artifact_id": artifact.artifact_id,
                         "error_type": type(error).__name__,
                         "message": str(error),
+                        "rejected_cache_records": cache_rejections,
                     }
                 )
                 append_jsonl(workspace / "audit/failures.jsonl", failure)
@@ -1965,6 +2162,7 @@ class Pipeline:
                         item.profile_id for item in compatible_profiles
                     ],
                     "omitted_reference_profiles": omitted_profiles,
+                    "rejected_cache_records": cache_rejections,
                 },
             )
         if candidate_ids is not None:

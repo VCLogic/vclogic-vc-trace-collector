@@ -29,7 +29,7 @@ from vc_trace_collector.models import (
 )
 from vc_trace_collector.pipeline import Pipeline
 from vc_trace_collector.policy import RuleSet
-from vc_trace_collector.storage import read_json, read_jsonl
+from vc_trace_collector.storage import read_json, read_jsonl, write_json
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -1117,6 +1117,44 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
         len(item.reference_scores) == 2
         for item in rematched_document.speaker_attribution.score_evidence
     )
+    collector._upsert_reference_profile(
+        output / "michael-hyatt",
+        ReferenceVoiceProfile(
+            investor_slug="michael-hyatt",
+            candidate_ids=["voice:incompatible"],
+            artifact_ids=["sha256:" + "c" * 64],
+            status="verified_human",
+            embedding_model="different-embedding-space",
+            embedding_model_version="1",
+            embedding=[1.0, 0.0],
+        ),
+    )
+    compatible_only = collector.process_source(
+        "michael-hyatt", candidate_id=interviews[0].candidate_id
+    )
+    compatible_document = next(
+        item
+        for item in compatible_only
+        if item.source_candidate_id == interviews[0].candidate_id
+        and item.inclusion_status == "included"
+    )
+    assert all(
+        len(item.reference_scores) == 2
+        for item in compatible_document.speaker_attribution.score_evidence
+    )
+    assert diarization.calls == first_diarization_calls
+    assert transcript.calls == first_transcript_calls
+    diarization_cache = next(
+        (output / "michael-hyatt/state/av_diarization").glob("*.json")
+    )
+    corrupt_cache = read_json(diarization_cache)
+    corrupt_cache["cache_key"] = "av-diarization:corrupt"
+    write_json(diarization_cache, corrupt_cache)
+    collector.process_source(
+        "michael-hyatt", candidate_id=interviews[0].candidate_id
+    )
+    assert diarization.calls == first_diarization_calls + 1
+    assert transcript.calls == first_transcript_calls
     for stage in ("av_diarization", "av_transcripts", "av_attributions"):
         for cache_file in (output / "michael-hyatt/state" / stage).glob("*.json"):
             cache_file.unlink()
@@ -1149,9 +1187,41 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
         candidate_id=interviews[0].candidate_id,
         diarization_model="fixture-diarization-v2",
     )
+
+    class EmptyDiarization(CountingDiarization):
+        model_name = "fixture-diarization-empty"
+
+        def diarize(self, audio_path):
+            self.calls += 1
+            return DiarizationResult(
+                model=self.model_name,
+                turns=[],
+                speaker_embeddings={},
+            )
+
+    empty_diarization = EmptyDiarization()
+    collector.diarization_provider = empty_diarization
+    transcript_calls_before_empty = transcript.calls
+    collector.process_source(
+        "michael-hyatt",
+        candidate_id=interviews[1].candidate_id,
+        diarization_model=empty_diarization.model_name,
+    )
+    assert transcript.calls == transcript_calls_before_empty
+    empty_result = next(
+        row
+        for row in read_jsonl(
+            output / "michael-hyatt/processed/av_attribution_results.jsonl"
+        )
+        if row["candidate_id"] == interviews[1].candidate_id
+    )
+    assert empty_result["result"]["attribution"]["status"] == "unavailable"
+
     collector.diarization_provider = diarization
     second = collector.process_source(
-        "michael-hyatt", candidate_id=interviews[1].candidate_id
+        "michael-hyatt",
+        candidate_id=interviews[1].candidate_id,
+        diarization_model=diarization.model_name,
     )
 
     assert {item.source_candidate_id for item in first} == {

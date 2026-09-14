@@ -24,7 +24,13 @@ from vc_trace_collector.process import (
     process_artifact,
     target_speech_document,
 )
-from vc_trace_collector.storage import ArtifactStore, read_json, read_jsonl
+from vc_trace_collector.storage import (
+    ArtifactStore,
+    read_json,
+    read_jsonl,
+    write_json,
+    write_jsonl,
+)
 
 
 def document(
@@ -125,6 +131,30 @@ def test_quality_counts_merged_target_intervals_not_whole_recording(tmp_path) ->
 
     quality = read_json(tmp_path / "quality_report.json")
     assert quality["metrics"]["verified_target_speech_seconds"] == 5
+
+
+def test_manifest_includes_reference_profiles_and_av_stage_caches(tmp_path) -> None:
+    write_jsonl(
+        tmp_path / "identity/reference_voice_profiles.jsonl",
+        [{"profile_id": "voice-profile:test"}],
+    )
+    for stage in ("av_diarization", "av_transcripts", "av_attributions"):
+        write_json(tmp_path / f"state/{stage}/test.json", {"stage": stage})
+
+    manifest = export_workspace(
+        tmp_path,
+        investor_slug="michael-hyatt",
+        identity_id="identity:michael",
+        documents=[],
+        config_hash="config",
+        exclusion_rules_hash="rules",
+    )
+
+    paths = {item.path for item in manifest.files}
+    assert "identity/reference_voice_profiles.jsonl" in paths
+    assert "state/av_diarization/test.json" in paths
+    assert "state/av_transcripts/test.json" in paths
+    assert "state/av_attributions/test.json" in paths
 
 
 def test_human_verified_supplied_transcript_is_eligible_target_speech(tmp_path) -> None:
