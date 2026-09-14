@@ -22,6 +22,10 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Adding or changing a reference voice now recomputes only attribution when
   reusable diarization and transcription results exist; reprocessing replaces
   the candidate result instead of duplicating corpus documents.
+- Reapproving a bounded voice interval now resolves back to the original media
+  instead of attempting to cut the same timestamps from an earlier excerpt.
+- Human-selected reference excerpts are no longer processed as independent
+  target talks, and cosine scores are clamped against floating-point roundoff.
 - Verification now checks reference-profile lineage and dependencies between
   audiovisual stage-cache records.
 - Artifact loading now distinguishes collector provenance sidecars from raw
