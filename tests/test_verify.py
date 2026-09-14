@@ -1,16 +1,19 @@
 from test_process_export import document
 
+from vc_trace_collector.av_cache import AttributionCacheRecord
 from vc_trace_collector.collectors import CollectionCandidateOutcome
 from vc_trace_collector.config import RunConfig
 from vc_trace_collector.export import export_workspace
 from vc_trace_collector.models import (
     ApprovalStatus,
     Confidence,
+    ReferenceVoiceProfile,
     ResolutionStatus,
     ResolvedIdentity,
     SourceCandidate,
     SourceDecision,
     SourcePlan,
+    SpeakerAttribution,
     utc_now,
 )
 from vc_trace_collector.source_search import SourceSearchObservation
@@ -318,3 +321,51 @@ def test_verification_rejects_unattested_exclusion_override(tmp_path) -> None:
 
     assert result.passed is False
     assert any("override" in error.casefold() for error in result.errors)
+
+
+def test_verification_rejects_attribution_cache_with_missing_diarization(
+    tmp_path,
+) -> None:
+    exported_workspace(tmp_path)
+    write_json(
+        tmp_path / "state/av_attributions/orphan.json",
+        AttributionCacheRecord(
+            cache_key="av-attribution:orphan",
+            diarization_cache_key="av-diarization:missing",
+            reference_profile_ids=["voice-profile:missing"],
+            minimum_score=0.75,
+            minimum_margin=0.1,
+            attribution=SpeakerAttribution(status="uncertain"),
+        ),
+    )
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("attribution cache" in error.casefold() for error in result.errors)
+
+
+def test_verification_rejects_reference_profile_set_with_missing_artifact(
+    tmp_path,
+) -> None:
+    exported_workspace(tmp_path)
+    write_jsonl(
+        tmp_path / "identity/reference_voice_profiles.jsonl",
+        [
+            ReferenceVoiceProfile(
+                profile_id="voice-profile:missing",
+                investor_slug="michael-hyatt",
+                candidate_ids=["voice:missing"],
+                artifact_ids=["sha256:" + "f" * 64],
+                status="verified_human",
+                embedding_model="fixture",
+                embedding_model_version="1",
+                embedding=[1.0, 0.0],
+            )
+        ],
+    )
+
+    result = verify_workspace(tmp_path)
+
+    assert result.passed is False
+    assert any("reference voice profile" in error.casefold() for error in result.errors)

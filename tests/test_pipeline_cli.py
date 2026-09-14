@@ -1109,6 +1109,10 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
         if item.source_candidate_id == interviews[0].candidate_id
         and item.inclusion_status == "included"
     )
+    assert sum(
+        item.source_candidate_id == interviews[0].candidate_id
+        for item in rematched
+    ) == 1
     assert all(
         len(item.reference_scores) == 2
         for item in rematched_document.speaker_attribution.score_evidence

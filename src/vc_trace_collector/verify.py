@@ -14,6 +14,11 @@ from .audit import (
     attempted_media_seconds,
     provider_attempt_count,
 )
+from .av_cache import (
+    AttributionCacheRecord,
+    DiarizationCacheRecord,
+    TranscriptCacheRecord,
+)
 from .collectors import CollectionCandidateOutcome
 from .config import RunConfig
 from .discovery import SearchResult
@@ -120,6 +125,7 @@ def _validate_model_attribution(
     document: CanonicalDocument,
     config: RunConfig | None,
     profile: ReferenceVoiceProfile | None,
+    profiles_by_id: dict[str, ReferenceVoiceProfile],
     errors: list[str],
 ) -> None:
     attribution = document.speaker_attribution
@@ -171,13 +177,26 @@ def _validate_model_attribution(
                 f"Transcription model differs from frozen config: "
                 f"{document.document_version_id}"
             )
-    if profile is not None:
-        if attribution.embedding_model != profile.embedding_model:
+    matched_profile = profile
+    if attribution.matched_reference_profile_id:
+        matched_profile = profiles_by_id.get(
+            attribution.matched_reference_profile_id
+        )
+        if matched_profile is None:
+            errors.append(
+                f"Speaker attribution references an unknown reference profile: "
+                f"{document.document_version_id}"
+            )
+            return
+    if matched_profile is not None:
+        if attribution.embedding_model != matched_profile.embedding_model:
             errors.append(
                 f"Embedding model differs from reference profile: "
                 f"{document.document_version_id}"
             )
-        if set(attribution.reference_artifact_ids) != set(profile.artifact_ids):
+        if set(attribution.reference_artifact_ids) != set(
+            matched_profile.artifact_ids
+        ):
             errors.append(
                 f"Speaker attribution references a different voice profile: "
                 f"{document.document_version_id}"
@@ -676,6 +695,91 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 f"{candidate_id}"
             )
 
+    profiles_by_id: dict[str, ReferenceVoiceProfile] = {}
+    profiles_path = workspace / "identity/reference_voice_profiles.jsonl"
+    for row in read_jsonl(profiles_path):
+        try:
+            reference_profile = ReferenceVoiceProfile.model_validate(row)
+        except Exception as error:
+            errors.append(f"Invalid reference voice profile set entry: {error}")
+            continue
+        if not reference_profile.profile_id:
+            errors.append("Reference voice profile set entry lacks profile ID")
+            continue
+        if reference_profile.profile_id in profiles_by_id:
+            errors.append(
+                f"Duplicate reference voice profile ID: "
+                f"{reference_profile.profile_id}"
+            )
+            continue
+        profiles_by_id[reference_profile.profile_id] = reference_profile
+        if reference_profile.investor_slug != manifest.investor_slug:
+            errors.append(
+                "Reference voice profile set investor does not match manifest"
+            )
+        if reference_profile.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
+            errors.append("Reference voice profile set entry is not human verified")
+        if any(item not in artifacts for item in reference_profile.artifact_ids):
+            errors.append("Reference voice profile set has missing raw lineage")
+        for candidate_id in reference_profile.candidate_ids:
+            voice = reference_candidates.get(candidate_id)
+            if voice is None:
+                errors.append("Reference voice profile set names an unknown candidate")
+            elif voice.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
+                errors.append(
+                    "Reference voice profile set candidate is not human verified"
+                )
+
+    diarization_records: dict[str, DiarizationCacheRecord] = {}
+    for cache_file in sorted((workspace / "state/av_diarization").glob("*.json")):
+        try:
+            record = DiarizationCacheRecord.model_validate(read_json(cache_file))
+        except Exception as error:
+            errors.append(f"Invalid diarization cache {cache_file.name}: {error}")
+            continue
+        diarization_records[record.cache_key] = record
+        if record.artifact_id not in artifacts or not any(
+            item.sha256 == record.artifact_sha256
+            for item in artifacts.get(record.artifact_id, [])
+        ):
+            errors.append(
+                f"Diarization cache has missing raw lineage: {record.cache_key}"
+            )
+
+    transcript_records: dict[str, TranscriptCacheRecord] = {}
+    for cache_file in sorted((workspace / "state/av_transcripts").glob("*.json")):
+        try:
+            record = TranscriptCacheRecord.model_validate(read_json(cache_file))
+        except Exception as error:
+            errors.append(f"Invalid transcript cache {cache_file.name}: {error}")
+            continue
+        transcript_records[record.cache_key] = record
+        if record.diarization_cache_key not in diarization_records:
+            errors.append(
+                f"Transcript cache references missing diarization cache: "
+                f"{record.cache_key}"
+            )
+
+    for cache_file in sorted((workspace / "state/av_attributions").glob("*.json")):
+        try:
+            record = AttributionCacheRecord.model_validate(read_json(cache_file))
+        except Exception as error:
+            errors.append(f"Invalid attribution cache {cache_file.name}: {error}")
+            continue
+        if record.diarization_cache_key not in diarization_records:
+            errors.append(
+                f"Attribution cache references missing diarization cache: "
+                f"{record.cache_key}"
+            )
+        missing_profiles = sorted(
+            set(record.reference_profile_ids) - profiles_by_id.keys()
+        )
+        if missing_profiles:
+            errors.append(
+                f"Attribution cache references missing reference voice profiles: "
+                f"{record.cache_key}"
+            )
+
     profile = None
     profile_path = workspace / "identity/reference_voice_profile.json"
     if profile_path.exists():
@@ -774,10 +878,13 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 f"Corpus document source was not approved: "
                 f"{document.document_version_id}"
             )
-        _validate_model_attribution(document, config, profile, errors)
+        _validate_model_attribution(
+            document, config, profile, profiles_by_id, errors
+        )
         if (
             document.speaker_attribution.status == SpeakerStatus.ACCEPTED_MODEL
             and profile is None
+            and not profiles_by_id
         ):
             errors.append(
                 f"Model-attributed speech lacks a reference profile: "

@@ -9,12 +9,21 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Additive, human-verified reference voice profiles with deterministic profile
+  IDs and complete per-speaker/per-reference similarity evidence.
+- Independent content-addressed caches for diarization, timed transcription,
+  and speaker attribution, including legacy transcript-cache migration.
 - Repeatable `search-source --query` overrides for targeted source discovery.
 - Audited `--max-search-operations` increases for existing resumable runs.
 - Structured YouTube channel provenance in search observations and candidates.
 
 ### Fixed
 
+- Adding or changing a reference voice now recomputes only attribution when
+  reusable diarization and transcription results exist; reprocessing replaces
+  the candidate result instead of duplicating corpus documents.
+- Verification now checks reference-profile lineage and dependencies between
+  audiovisual stage-cache records.
 - Artifact loading now distinguishes collector provenance sidecars from raw
   yt-dlp `.metadata.json` payloads during processing, export, verification,
   and legacy resume.

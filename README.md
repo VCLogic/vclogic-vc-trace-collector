@@ -446,9 +446,13 @@ is extracted; and Whisper transcribes the extracted WAV segments. Platform
 captions are not fetched or substituted for this transcription path. Only
 segments attributed to the target speaker can enter `target_speech.jsonl`.
 
-Cosine matching uses minimum-score and runner-up-margin gates. A low score or
-narrow margin produces `uncertain`, not verified speech. Models, device
-selection, and access tokens are supplied by the operator; none are hard-coded.
+Cosine matching evaluates every diarized speaker against every compatible,
+human-approved reference profile. Each speaker keeps its best reference score;
+the winning speaker must then pass both the minimum-score and runner-up-margin
+gates. The complete per-reference score evidence is retained for audit. A low
+score or narrow margin produces `uncertain`, not verified speech. Models,
+device selection, and access tokens are supplied by the operator; none are
+hard-coded.
 
 After collecting an approved reference source, inspect
 `identity/reference_voice_candidates.jsonl`, select a clean interval, and approve
@@ -470,6 +474,13 @@ uv run vc-trace-collector process \
 
 uv run vc-trace-collector export --investor michael-hyatt
 ```
+
+`review-voice` is additive: approving another clean recording or interval keeps
+the earlier verified profiles. Re-running `process-source` after that approval
+recomputes only speaker attribution. It reuses cached diarization and timed
+transcription when the media and model selections are unchanged. Legacy AV
+results can seed the timed-transcript cache, so their first migration requires
+one diarization pass but does not rerun Whisper.
 
 Stage-specific model and cost selections update `config_snapshot.json` and
 append a structured configuration event to the audit trace. Options omitted at
@@ -534,7 +545,8 @@ outputs/<investor-slug>/
 │   ├── resolved_identity.json
 │   ├── identity_evidence.jsonl
 │   ├── reference_voice_candidates.jsonl
-│   └── reference_voice_profile.json
+│   ├── reference_voice_profiles.jsonl
+│   └── reference_voice_profile.json  # latest-profile compatibility view
 ├── discovery/
 │   ├── source_plan.json
 │   ├── source_candidates.jsonl
@@ -554,7 +566,11 @@ outputs/<investor-slug>/
 │   ├── talks.jsonl
 │   └── all_documents.jsonl
 ├── audit/
-├── state/state.sqlite
+├── state/
+│   ├── state.sqlite
+│   ├── av_diarization/
+│   ├── av_transcripts/
+│   └── av_attributions/
 ├── collection_manifest.json
 ├── exclusion_rules_snapshot.json
 ├── quality_report.json
