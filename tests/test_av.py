@@ -11,6 +11,7 @@ from vc_trace_collector.av import (
     TranscriptResult,
     align_transcript_to_speakers,
     assemble_target_speech,
+    cosine_similarity,
     extract_audio_segment,
     match_target_speaker,
     match_target_speaker_references,
@@ -23,6 +24,12 @@ from vc_trace_collector.models import (
     SpeakerStatus,
     TranscriptInfo,
 )
+
+
+def test_cosine_similarity_clamps_floating_point_roundoff() -> None:
+    embedding = [-0.7551397452729578, 0.8525588880711801]
+
+    assert cosine_similarity(embedding, embedding) == 1.0
 
 
 def test_weak_best_match_is_uncertain() -> None:

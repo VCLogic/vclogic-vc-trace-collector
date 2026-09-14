@@ -128,9 +128,10 @@ def cosine_similarity(first: Sequence[float], second: Sequence[float]) -> float:
     second_norm = math.sqrt(sum(value * value for value in second))
     if first_norm == 0 or second_norm == 0:
         raise ValueError("Cannot compare a zero-length embedding vector")
-    return sum(a * b for a, b in zip(first, second, strict=True)) / (
+    similarity = sum(a * b for a, b in zip(first, second, strict=True)) / (
         first_norm * second_norm
     )
+    return max(-1.0, min(1.0, similarity))
 
 
 def match_target_speaker(
