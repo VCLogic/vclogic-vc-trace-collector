@@ -219,6 +219,16 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         ),
         max_queries: int | None = typer.Option(None, min=1),
         limit_per_query: int = typer.Option(10, min=1, max=100),
+        query: list[str] | None = typer.Option(
+            None,
+            "--query",
+            help="Exact query to run; repeat to replace generated queries",
+        ),
+        max_search_operations: int | None = typer.Option(
+            None,
+            min=1,
+            help="Raise the saved total search-operation ceiling",
+        ),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
         """Find URLs for one source type and append them to the review plan."""
@@ -234,6 +244,8 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             ),
             maximum_queries=max_queries,
             limit_per_query=limit_per_query,
+            queries=query,
+            maximum_search_operations=max_search_operations,
         )
         noun = "candidate" if result.added == 1 else "candidates"
         typer.echo(
@@ -241,6 +253,9 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
             f"updated {result.updated}; failed queries {result.failed}; "
             "review required before fetching."
         )
+        if result.errors:
+            label = "Search stopped" if result.stopped_early else "Search issue"
+            typer.echo(f"{label}: {result.errors[-1]}")
 
     @app.command("list-sources")
     def list_sources(

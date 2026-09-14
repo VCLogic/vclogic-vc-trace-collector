@@ -395,6 +395,8 @@ class Pipeline:
         search_provider=None,
         maximum_queries: int | None = None,
         limit_per_query: int = 10,
+        queries: list[str] | None = None,
+        maximum_search_operations: int | None = None,
     ) -> SourceSearchSummary:
         """Append candidates found by one source-specific search operation."""
         provider = search_provider or self.search_provider
@@ -404,7 +406,20 @@ class Pipeline:
         identity = self._load_identity(investor_slug)
         plan = self._load_plan(investor_slug)
         config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
-        queries = build_source_queries(
+        if maximum_search_operations is not None:
+            if maximum_search_operations < config.maximum_search_operations:
+                raise ValueError(
+                    "--max-search-operations cannot be lower than the saved limit"
+                )
+            config = self._configure_stage(
+                workspace,
+                "source_search",
+                maximum_search_operations=maximum_search_operations,
+            )
+        supplied_queries = list(
+            dict.fromkeys(query.strip() for query in queries or [] if query.strip())
+        )
+        available_queries = supplied_queries or build_source_queries(
             identity.canonical_name,
             [affiliation.firm for affiliation in identity.affiliations],
             source_type,
@@ -414,7 +429,7 @@ class Pipeline:
             if maximum_queries is None
             else min(maximum_queries, config.maximum_search_operations)
         )
-        selected_queries = queries[: max(0, query_limit)]
+        selected_queries = available_queries[: max(0, query_limit)]
         by_url = {candidate.canonical_url: candidate for candidate in plan.candidates}
         summary = SourceSearchSummary(source_type=source_type, queries=selected_queries)
         operations: list[dict[str, object]] = []
@@ -433,11 +448,11 @@ class Pipeline:
             )
             for row in prior_cost_rows
         )
-        for query in selected_queries:
-            new_diagnostics: list[dict[str, str]] = []
-            provider_cache_identity = getattr(
-                provider, "cache_identity", provider.provider_name
-            )
+        provider_cache_identity = getattr(
+            provider, "cache_identity", provider.provider_name
+        )
+
+        def search_identity(query: str) -> tuple[str, str, Path]:
             input_hash = sha256(
                 canonical_json(
                     {
@@ -449,7 +464,68 @@ class Pipeline:
             ).hexdigest()
             operation_id = f"search-source:{source_type.value}:{input_hash[:20]}"
             cache_path = workspace / "state/source_search" / f"{input_hash}.json"
+            return input_hash, operation_id, cache_path
+
+        preflight = getattr(provider, "preflight", None)
+        preflight_checked = False
+        backend_unavailable = False
+        attempted_queries: list[str] = []
+
+        for query in selected_queries:
+            new_diagnostics: list[dict[str, object]] = []
+            input_hash, operation_id, cache_path = search_identity(query)
             cached = state.is_complete(operation_id, input_hash) and cache_path.exists()
+            if not cached and backend_unavailable:
+                continue
+            attempted_queries.append(query)
+            if not cached and not preflight_checked and preflight is not None:
+                preflight_checked = True
+                diagnostic = preflight(query)
+                if diagnostic is None:
+                    pass
+                else:
+                    diagnostic_error = str(
+                        redact(
+                            str(
+                                diagnostic.get(
+                                    "error", "search backend unavailable"
+                                )
+                            )
+                        )
+                    )
+                    state.start_operation(operation_id, input_hash)
+                    state.fail_operation(
+                        operation_id,
+                        input_hash,
+                        diagnostic_error,
+                    )
+                    summary.failed += 1
+                    summary.errors.append(diagnostic_error)
+                    summary.stopped_early = True
+                    append_jsonl(
+                        workspace / "discovery/search_observations.jsonl",
+                        SourceSearchObservation(
+                            operation_id=operation_id,
+                            source_type=source_type,
+                            query=query,
+                            requested_provider=provider.provider_name,
+                            status="failed",
+                            error=diagnostic_error,
+                        ),
+                    )
+                    operations.append(
+                        {
+                            "provider": provider.provider_name,
+                            "provider_cache_identity": provider_cache_identity,
+                            "query": query,
+                            "results": 0,
+                            "cached": False,
+                            "preflight": True,
+                            "diagnostics": [diagnostic],
+                        }
+                    )
+                    backend_unavailable = True
+                    continue
             if cached:
                 results = [
                     SearchResult.model_validate(row)
@@ -476,19 +552,30 @@ class Pipeline:
                     )
                     state.fail_operation(operation_id, input_hash, str(redact(str(error))))
                     raise
-                budget.settle(
-                    operation_id,
-                    config.search_operation_cost_usd,
-                    provider=provider.provider_name,
-                )
-                search_attempts += 1
                 new_diagnostics = diagnostics[diagnostic_count:]
+                provider_unreached = any(
+                    diagnostic.get("provider_reached") is False
+                    for diagnostic in new_diagnostics
+                )
+                if provider_unreached:
+                    budget.release(operation_id)
+                else:
+                    budget.settle(
+                        operation_id,
+                        config.search_operation_cost_usd,
+                        provider=provider.provider_name,
+                    )
+                    search_attempts += 1
                 if new_diagnostics:
                     summary.failed += 1
+                    diagnostic_error = str(
+                        redact(new_diagnostics[0].get("error", "search failed"))
+                    )
+                    summary.errors.append(diagnostic_error)
                     state.fail_operation(
                         operation_id,
                         input_hash,
-                        str(new_diagnostics[0].get("error", "search failed")),
+                        diagnostic_error,
                     )
                 else:
                     write_json(
@@ -519,6 +606,7 @@ class Pipeline:
                             rank=result.rank,
                             url=result.url,
                             title=result.title,
+                            channel=result.channel,
                         ),
                     )
             else:
@@ -532,7 +620,7 @@ class Pipeline:
                         status="failed" if new_diagnostics else "succeeded",
                         cached=cached,
                         error=(
-                            new_diagnostics[0].get("error")
+                            summary.errors[-1]
                             if new_diagnostics
                             else None
                         ),
@@ -560,13 +648,29 @@ class Pipeline:
                     existing.discovery_queries = sorted(
                         set(existing.discovery_queries + candidate.discovery_queries)
                     )
+                    if candidate.channel and not existing.channel:
+                        existing.channel = candidate.channel
+                    if candidate.programme and not existing.programme:
+                        existing.programme = candidate.programme
+                    if (
+                        candidate.approval_status == ApprovalStatus.REJECTED
+                        and existing.approval_status == ApprovalStatus.PENDING
+                    ):
+                        existing.approval_status = ApprovalStatus.REJECTED
+                        existing.decision_reason = candidate.decision_reason
                     updated_urls.add(candidate.canonical_url)
                     continue
                 by_url[candidate.canonical_url] = candidate
                 summary.added += 1
+            if any(
+                diagnostic.get("provider_reached") is False
+                for diagnostic in new_diagnostics
+            ):
+                summary.stopped_early = True
+                backend_unavailable = True
         summary.updated = len(updated_urls)
         previous_plan_id = plan.plan_id
-        plan.queries = sorted(set(plan.queries + selected_queries))
+        plan.queries = sorted(set(plan.queries + attempted_queries))
         plan.candidates = sorted(by_url.values(), key=lambda item: item.canonical_url)
         plan.plan_id = stable_id(
             "plan",

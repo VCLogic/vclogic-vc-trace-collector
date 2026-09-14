@@ -7,6 +7,20 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Repeatable `search-source --query` overrides for targeted source discovery.
+- Audited `--max-search-operations` increases for existing resumable runs.
+- Structured YouTube channel provenance in search observations and candidates.
+
+### Fixed
+
+- Agent Reach preflight now catches a missing `mcporter` before reserving
+  budget, and unreachable Exa failures stop after one query without consuming
+  the search-operation allowance.
+- Existing pending candidates are enriched with newly discovered channel
+  metadata so channel-based leakage rules apply on incremental reruns.
+
 ## [0.1.0] - 2026-09-13
 
 ### Added

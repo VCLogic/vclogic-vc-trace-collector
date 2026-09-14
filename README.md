@@ -134,6 +134,52 @@ uv run vc-trace-collector list-sources --investor michael-hyatt
 Search only discovers URLs and appends candidates. It does not download media,
 run Whisper, or run pyannote.
 
+To run a precise search instead of the generated queries, repeat `--query`.
+Explicit queries replace the generated set for that invocation:
+
+```bash
+uv run vc-trace-collector search-source \
+  --investor michael-hyatt \
+  --source youtube \
+  --backend agent-reach \
+  --query '"Michael Hyatt" "The Pitch" YouTube' \
+  --query '"Michael Hyatt" BlueCat investor interview YouTube' \
+  --limit-per-query 100 \
+  --max-search-operations 100
+
+uv run vc-trace-collector search-source \
+  --investor michael-hyatt \
+  --source web_article \
+  --backend agent-reach \
+  --query '"Michael Hyatt" BlueCat investor article' \
+  --query '"Michael Hyatt" Dyadem founder interview'
+```
+
+`--max-search-operations` raises the total ceiling saved during discovery and
+records the old and new values in the audit log. It cannot lower the saved
+ceiling. The Pitch Show results are retained as discovered evidence with their
+channel metadata, but the default leakage firewall marks them rejected rather
+than allowing them into the final corpus.
+
+If Agent Reach reports that Exa is offline, verify the backend outside the
+collector before retrying. On a machine that reaches the internet through
+`HTTP_PROXY`/`HTTPS_PROXY`, `mcporter` needs a Node version with environment
+proxy support and an explicit opt-in:
+
+```bash
+nvm use 25
+export NODE_USE_ENV_PROXY=1
+mcporter call exa.web_search_exa \
+  query='"Michael Hyatt" BlueCat investor' \
+  numResults=1
+```
+
+You may put `NODE_USE_ENV_PROXY=1` in the repository-local `.env`; the CLI
+loads it automatically. A missing `mcporter` is caught before a search starts.
+If Exa cannot be reached, the command stops after the first failed query and
+does not consume the saved search-operation allowance for that unreachable
+backend attempt.
+
 ### 4. Review the proposed sources
 
 Copy the real candidate IDs from `list-sources` into `decisions.json`. Mark a

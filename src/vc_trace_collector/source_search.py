@@ -25,6 +25,8 @@ class SourceSearchSummary(BaseModel):
     updated: int = 0
     result_count: int = 0
     failed: int = 0
+    errors: list[str] = Field(default_factory=list)
+    stopped_early: bool = False
 
 
 class SourceSearchObservation(BaseModel):
@@ -40,6 +42,7 @@ class SourceSearchObservation(BaseModel):
     rank: int | None = None
     url: str | None = None
     title: str | None = None
+    channel: str | None = None
     error: str | None = None
 
 
@@ -95,6 +98,7 @@ def candidate_from_search_result(
     exclusion = rules.evaluate(
         url=canonical,
         title=result.title,
+        channel=result.channel,
         text=result.snippet,
         stage="discovery",
     )
@@ -108,6 +112,7 @@ def candidate_from_search_result(
         ),
         title=result.title,
         description=result.snippet,
+        channel=result.channel,
         discovered_via=result.provider,
         discovery_queries=[result.query],
         identity_confidence=Confidence(

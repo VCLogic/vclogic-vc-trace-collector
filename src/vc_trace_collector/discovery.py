@@ -66,6 +66,7 @@ class SearchResult(BaseModel):
     rank: int = Field(ge=1)
     query: str
     provider: str
+    channel: str | None = None
 
 
 class SearchProvider(Protocol):

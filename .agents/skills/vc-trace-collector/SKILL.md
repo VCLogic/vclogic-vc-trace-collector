@@ -29,6 +29,21 @@ uv run vc-trace-collector search-source --investor michael-hyatt --source podcas
 uv run vc-trace-collector list-sources --investor michael-hyatt
 ```
 
+Use repeatable `--query` options when generated queries miss a known programme,
+firm, or site. Explicit queries replace generated queries for that invocation.
+For example:
+
+```bash
+uv run vc-trace-collector search-source \
+  --investor michael-hyatt --source youtube --backend agent-reach \
+  --query '"Michael Hyatt" "The Pitch" YouTube' \
+  --limit-per-query 100 --max-search-operations 100
+```
+
+The default firewall must still retain The Pitch results as rejected discovery
+evidence, never as corpus inputs. If Agent Reach is unavailable, report the
+single actionable failure; do not repeatedly retry every generated query.
+
 Show the `list-sources` output to the human. Do not bypass identity or source review. Write their decisions to a JSON array such as:
 
 ```json

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -59,15 +60,35 @@ class AgentReachWebSearchProvider:
         runner: Callable[..., Any] = subprocess.run,
         *,
         timeout: float = 120,
+        executable_finder: Callable[[str], str | None] = shutil.which,
     ) -> None:
         self._runner = runner
+        self._executable_finder = executable_finder
         self.timeout = timeout
-        self.diagnostics: list[dict[str, str]] = []
+        self.diagnostics: list[dict[str, Any]] = []
 
-    def _diagnose(self, query: str, error: str) -> None:
+    def _diagnose(
+        self, query: str, error: str, *, provider_reached: bool = True
+    ) -> None:
         self.diagnostics.append(
-            {"provider": self.provider_name, "query": query, "error": error}
+            {
+                "provider": self.provider_name,
+                "query": query,
+                "error": error,
+                "provider_reached": provider_reached,
+            }
         )
+
+    def preflight(self, query: str) -> dict[str, Any] | None:
+        """Return an actionable diagnostic before reserving provider budget."""
+        if self._executable_finder("mcporter") is None:
+            return {
+                "provider": self.provider_name,
+                "query": query,
+                "error": "mcporter is not installed",
+                "provider_reached": False,
+            }
+        return None
 
     @staticmethod
     def _rows(payload: Any) -> list[dict[str, Any]]:
@@ -109,13 +130,31 @@ class AgentReachWebSearchProvider:
                 shell=False,
             )
         except FileNotFoundError:
-            self._diagnose(query, "mcporter is not installed")
+            self._diagnose(query, "mcporter is not installed", provider_reached=False)
             return []
         except subprocess.TimeoutExpired:
             self._diagnose(query, "Exa search command timed out")
             return []
         if completed.returncode != 0:
-            self._diagnose(query, "Exa search command failed")
+            stderr = str(getattr(completed, "stderr", ""))
+            offline = any(
+                marker in stderr.casefold()
+                for marker in (
+                    "appears offline",
+                    "era_negotiation_failed",
+                    "version negotiation probe failed",
+                )
+            )
+            self._diagnose(
+                query,
+                (
+                    "Agent Reach Exa backend is unreachable; check its connection "
+                    "and Node proxy configuration"
+                    if offline
+                    else "Exa search command failed"
+                ),
+                provider_reached=not offline,
+            )
             return []
         try:
             rows = self._rows(json.loads(completed.stdout))
@@ -216,6 +255,7 @@ class YtDlpSearchProvider:
                     rank=len(results) + 1,
                     query=query,
                     provider=self.provider_name,
+                    channel=channel or None,
                 )
             )
             if len(results) >= limit:
@@ -234,10 +274,18 @@ class CompositeSearchProvider:
         self.cache_identity = (
             f"composite:{web.provider_name}:{youtube.provider_name}"
         )
-        self.diagnostics: list[dict[str, str]] = []
+        self.diagnostics: list[dict[str, Any]] = []
+
+    def _provider_for(self, query: str) -> SearchProvider:
+        return self.youtube if "youtube" in query.casefold() else self.web
+
+    def preflight(self, query: str) -> dict[str, Any] | None:
+        provider = self._provider_for(query)
+        check = getattr(provider, "preflight", None)
+        return check(query) if check is not None else None
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
-        provider = self.youtube if "youtube" in query.casefold() else self.web
+        provider = self._provider_for(query)
         try:
             results = provider.search(query, limit=limit)
         except Exception as error:

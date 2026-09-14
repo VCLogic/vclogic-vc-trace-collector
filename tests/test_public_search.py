@@ -58,6 +58,38 @@ def test_agent_reach_exa_backend_isolates_missing_mcporter() -> None:
     assert provider.diagnostics[-1]["error"] == "mcporter is not installed"
 
 
+def test_agent_reach_preflight_reports_missing_mcporter_without_running() -> None:
+    calls = []
+    provider = AgentReachWebSearchProvider(
+        runner=lambda *args, **kwargs: calls.append((args, kwargs)),
+        executable_finder=lambda _name: None,
+    )
+
+    diagnostic = provider.preflight("Michael Hyatt article")
+
+    assert diagnostic == {
+        "provider": "agent-reach:exa",
+        "query": "Michael Hyatt article",
+        "error": "mcporter is not installed",
+        "provider_reached": False,
+    }
+    assert calls == []
+
+
+def test_agent_reach_marks_offline_exa_as_not_reached() -> None:
+    provider = AgentReachWebSearchProvider(
+        runner=lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="[mcporter] exa appears offline (Version negotiation probe failed)",
+        )
+    )
+
+    assert provider.search("Michael Hyatt article") == []
+    assert provider.diagnostics[-1]["provider_reached"] is False
+    assert "unreachable" in provider.diagnostics[-1]["error"].casefold()
+
+
 def test_ddg_normalizes_and_bounds_public_results() -> None:
     calls: list[tuple[str, int]] = []
 
@@ -131,7 +163,9 @@ def test_ytdlp_uses_shell_safe_arguments_and_normalizes_watch_urls() -> None:
     assert kwargs["timeout"] == 17
     assert results[0].url == "https://www.youtube.com/watch?v=abc123"
     assert results[0].provider == "yt-dlp"
+    assert results[0].channel == "Example Channel"
     assert results[1].url == "https://www.youtube.com/watch?v=def456"
+    assert results[1].channel == "Another Channel"
 
 
 def test_ytdlp_ignores_malformed_rows_and_reports_command_failure() -> None:

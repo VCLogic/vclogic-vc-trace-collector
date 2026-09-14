@@ -436,6 +436,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 item.rank,
                 item.url,
                 item.title,
+                item.channel,
             )
             for item in cached_results
         }
@@ -446,6 +447,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
                 item.rank,
                 item.url,
                 item.title,
+                item.channel,
             )
             for item in observations
             if item.url is not None
