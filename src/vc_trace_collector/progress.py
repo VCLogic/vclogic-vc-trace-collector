@@ -1,5 +1,7 @@
 """Terminal-only processing feedback; never persisted in corpus records."""
 
+import warnings
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 
@@ -14,6 +16,25 @@ from rich.progress import (
 from rich.text import Text
 
 _active: ContextVar = ContextVar("processing_progress", default=None)
+
+
+@contextmanager
+def quiet_torchaudio_notices():
+    """Hide known migration notices only, preserving runtime diagnostics."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"torchaudio\._backend\.[\w.]+ has been deprecated\.",
+            category=UserWarning,
+            module=r"(?:pyannote|torchaudio|speechbrain)(?:\.|$)",
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"In 2\.9, this function's implementation will be changed to use torchaudio\.load_with_torchcodec",
+            category=UserWarning,
+            module=r"torchaudio(?:\.|$)",
+        )
+        yield
 
 
 def report(stage: str, *, completed: int = 0, total: int | None = None) -> None:
@@ -40,6 +61,7 @@ def diarization_hook(step_name, _artifact=None, *, total=None, completed=None, *
 
 def with_processing_progress(function):
     @wraps(function)
+    @quiet_torchaudio_notices()
     def wrapped(*args, **kwargs):
         console = Console(stderr=True)
         if not console.is_terminal:

@@ -1,9 +1,30 @@
+import warnings
 from io import StringIO
 
 import pytest
 from rich.console import Console
 
 from vc_trace_collector import progress as ui
+
+
+def test_only_known_torchaudio_notices_are_hidden():
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        with ui.quiet_torchaudio_notices():
+            warnings.warn_explicit(
+                "torchaudio._backend.utils.info has been deprecated. Migration notice",
+                UserWarning, "io.py", 85, module="pyannote.audio.core.io",
+            )
+            warnings.warn_explicit(
+                "In 2.9, this function's implementation will be changed to use torchaudio.load_with_torchcodec",
+                UserWarning, "utils.py", 213, module="torchaudio._backend.utils",
+            )
+            warnings.warn_explicit(
+                "Audio decoding failed", UserWarning, "io.py", 1,
+                module="pyannote.audio.core.io",
+            )
+        warnings.warn("Filter restored", UserWarning)
+    assert [str(item.message) for item in seen] == ["Audio decoding failed", "Filter restored"]
 
 
 def test_terminal_progress_handles_stage_totals_and_restores_context(monkeypatch):

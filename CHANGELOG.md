@@ -21,6 +21,8 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Processing hides repeated TorchAudio backend migration notices while retaining
+  runtime warnings and errors, keeping terminal progress readable.
 - Podcast collection now fails explicitly with retained page lineage when no
   audio is acquired, retries legacy page-only successes, and resolves advertised
   RSS/Atom enclosures only for an exactly matching episode URL.
