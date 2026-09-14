@@ -1083,6 +1083,55 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
     first = collector.process_source(
         "michael-hyatt", candidate_id=interviews[0].candidate_id
     )
+    first_diarization_calls = diarization.calls
+    first_transcript_calls = transcript.calls
+    collector._upsert_reference_profile(
+        output / "michael-hyatt",
+        ReferenceVoiceProfile(
+            investor_slug="michael-hyatt",
+            candidate_ids=["voice:second"],
+            artifact_ids=["sha256:" + "b" * 64],
+            status="verified_human",
+            embedding_model="fixture-diarization",
+            embedding_model_version="1",
+            embedding=[0.9, 0.1],
+        ),
+    )
+    rematched = collector.process_source(
+        "michael-hyatt", candidate_id=interviews[0].candidate_id
+    )
+
+    assert diarization.calls == first_diarization_calls
+    assert transcript.calls == first_transcript_calls
+    rematched_document = next(
+        item
+        for item in rematched
+        if item.source_candidate_id == interviews[0].candidate_id
+        and item.inclusion_status == "included"
+    )
+    assert all(
+        len(item.reference_scores) == 2
+        for item in rematched_document.speaker_attribution.score_evidence
+    )
+    for stage in ("av_diarization", "av_transcripts", "av_attributions"):
+        for cache_file in (output / "michael-hyatt/state" / stage).glob("*.json"):
+            cache_file.unlink()
+    diarization.calls = 0
+    transcript.calls = 0
+
+    collector.process_source(
+        "michael-hyatt", candidate_id=interviews[0].candidate_id
+    )
+
+    assert diarization.calls == 1
+    assert transcript.calls == 0
+    migrated_transcript = read_jsonl(
+        output / "michael-hyatt/audit/events.jsonl"
+    )[-1]
+    assert (
+        migrated_transcript["details"]["cache"]["transcript_migration_source"]
+        == "legacy_av_result"
+    )
 
     class FailingDiarization(CountingDiarization):
         model_name = "fixture-diarization-v2"
@@ -1111,8 +1160,8 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
     assert {item.source_candidate_id for item in failed_retry} == {
         interviews[0].candidate_id
     }
-    assert diarization.calls == 2
-    assert transcript.calls == 4  # one call for each diarized speaker turn
+    assert diarization.calls == 1
+    assert transcript.calls == 0
 
 
 def test_cli_process_source_passes_models_to_one_candidate(tmp_path) -> None:

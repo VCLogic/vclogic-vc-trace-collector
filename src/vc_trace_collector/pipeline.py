@@ -11,7 +11,7 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .audit import AuditLog, BudgetExceeded, BudgetLedger, redact
 from .av import (
@@ -19,12 +19,25 @@ from .av import (
     EmbeddingProvider,
     PyannoteDiarizationProvider,
     PyannoteEmbeddingProvider,
+    ReferenceEmbedding,
     TargetSpeechResult,
+    TimedText,
     TranscriptProvider,
+    TranscriptResult,
     WhisperTranscriptProvider,
+    assemble_target_speech,
     extract_audio_segment,
+    match_target_speaker_references,
     probe_media_duration,
-    process_target_speech,
+    transcribe_diarized_turns,
+)
+from .av_cache import (
+    AttributionCacheRecord,
+    DiarizationCacheRecord,
+    TranscriptCacheRecord,
+    attribution_cache_key,
+    diarization_cache_key,
+    transcript_cache_key,
 )
 from .collectors import (
     NETWORK_COLLECTION_METHODS,
@@ -205,6 +218,48 @@ class Pipeline:
             workspace / "identity/reference_voice_profile.json", identified
         )
         return ordered
+
+    @staticmethod
+    def _av_cache_path(workspace: Path, stage: str, cache_key: str) -> Path:
+        return workspace / "state" / stage / f"{cache_key.rsplit(':', 1)[-1]}.json"
+
+    @staticmethod
+    def _legacy_transcript(
+        workspace: Path,
+        *,
+        candidate_id: str,
+        artifact_id: str,
+        provider_name: str,
+        model_name: str,
+    ) -> TranscriptResult | None:
+        rows = read_jsonl(
+            workspace / "processed/av_attribution_results.jsonl"
+        )
+        for row in reversed(rows):
+            if row.get("candidate_id") != candidate_id:
+                continue
+            if row.get("artifact_id") != artifact_id:
+                continue
+            try:
+                result = TargetSpeechResult.model_validate(row.get("result"))
+            except (TypeError, ValidationError):
+                continue
+            if result.transcript.provider != provider_name:
+                continue
+            if result.transcript.model != model_name:
+                continue
+            return TranscriptResult(
+                info=result.transcript,
+                segments=[
+                    TimedText(
+                        start_seconds=item.start_seconds,
+                        end_seconds=item.end_seconds,
+                        text=item.text,
+                    )
+                    for item in result.aligned_segments
+                ],
+            )
+        return None
 
     def _run_id(self) -> str:
         return f"run-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
@@ -1303,12 +1358,11 @@ class Pipeline:
             target_name=identity.canonical_name,
             rules=self._rules_for(config),
         )
-        profile_path = workspace / "identity/reference_voice_profile.json"
-        profile = (
-            ReferenceVoiceProfile.model_validate(read_json(profile_path))
-            if profile_path.exists()
-            else None
-        )
+        profiles = [
+            profile
+            for profile in self._load_reference_profiles(workspace)
+            if profile.status == ReferenceVoiceStatus.VERIFIED_HUMAN
+        ]
         candidate_map = {item.candidate_id: item for item in active_candidates}
         outcomes = {
             item.candidate_id: AVCandidateOutcome(
@@ -1416,7 +1470,7 @@ class Pipeline:
                 continue
             if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET:
                 continue
-            if profile is None or profile.status != ReferenceVoiceStatus.VERIFIED_HUMAN:
+            if not profiles:
                 failure = {
                     "candidate_id": candidate_id,
                     "artifact_id": artifact.artifact_id,
@@ -1495,150 +1549,332 @@ class Pipeline:
             operation_id = (
                 f"process-av:{candidate_id}:{processing_artifact.artifact_id}"
             )
-            input_hash = sha256(
-                canonical_json(
-                    {
-                        "artifact": processing_artifact.sha256,
-                        "profile": profile.model_dump(mode="json"),
-                        "transcription_model": config.transcription_model,
-                        "diarization_model": config.diarization_model,
-                        "minimum_score": config.speaker_minimum_score,
-                        "minimum_margin": config.speaker_minimum_margin,
-                        "segmented_transcription": True,
-                        "probed_media_seconds": probed_seconds,
-                    }
-                ).encode("utf-8")
-            ).hexdigest()
-            cache_path = workspace / "state/av_results" / f"{input_hash}.json"
-            cached = state.is_complete(operation_id, input_hash) and cache_path.exists()
-            if (
-                not cached
-                and processed_seconds + probed_seconds
-                > config.maximum_media_minutes * 60
-            ):
-                failure = {
-                    "candidate_id": candidate_id,
-                    "artifact_id": artifact.artifact_id,
-                    "message": "Media processing budget exhausted before model calls",
-                    "media_seconds": probed_seconds,
-                }
-                append_jsonl(workspace / "audit/failures.jsonl", failure)
-                mark_outcome(
-                    candidate_id,
-                    "failed",
-                    failure["message"],
-                    artifact.artifact_id,
-                )
-                continue
-            cost_operation_ids: list[str] = []
+            input_hash = ""
+            diarization_hit = False
+            transcript_hit = False
+            attribution_hit = False
+            omitted_profiles: list[dict[str, str]] = []
             try:
-                if cached:
-                    result = TargetSpeechResult.model_validate(read_json(cache_path))
+                diarization_provider_name = (
+                    self.diarization_provider.provider_name
+                    if self.diarization_provider
+                    else "pyannote"
+                )
+                diarization_model_name = (
+                    self.diarization_provider.model_name
+                    if self.diarization_provider
+                    else config.diarization_model
+                )
+                if not diarization_model_name:
+                    raise ReviewRequired(
+                        "Configure a diarization model for target speech"
+                    )
+                diarization_model_version = str(
+                    getattr(
+                        self.diarization_provider,
+                        "model_version",
+                        "unspecified",
+                    )
+                )
+                diarization_key = diarization_cache_key(
+                    artifact_sha256=processing_artifact.sha256,
+                    provider=diarization_provider_name,
+                    model=diarization_model_name,
+                    model_version=diarization_model_version,
+                )
+                diarization_path = self._av_cache_path(
+                    workspace, "av_diarization", diarization_key
+                )
+                diarization_hit = diarization_path.exists()
+                if diarization_hit:
+                    diarization_record = DiarizationCacheRecord.model_validate(
+                        read_json(diarization_path)
+                    )
                 else:
-                    required_provider_operations = 2
                     if (
-                        cost.provider_operations + required_provider_operations
-                        > config.maximum_provider_operations
+                        processed_seconds + probed_seconds
+                        > config.maximum_media_minutes * 60
                     ):
                         raise RuntimeError(
-                            "Provider-operation budget exhausted before model calls"
+                            "Media processing budget exhausted before model calls"
                         )
-                    diarization_operation = f"{operation_id}:diarization"
+                    if cost.provider_operations >= config.maximum_provider_operations:
+                        raise RuntimeError(
+                            "Provider-operation budget exhausted before diarization"
+                        )
+                    _, diarization_provider = self._av_providers(
+                        config, needs_transcript=False
+                    )
+                    diarization_operation = (
+                        f"process-av-diarization:{processing_artifact.artifact_id}"
+                    )
                     cost.reserve(
                         diarization_operation,
                         config.diarization_cost_usd,
-                        provider=(
-                            self.diarization_provider.provider_name
-                            if self.diarization_provider
-                            else "pyannote"
-                        ),
-                        model=(
-                            self.diarization_provider.model_name
-                            if self.diarization_provider
-                            else config.diarization_model
-                        ),
+                        provider=diarization_provider.provider_name,
+                        model=diarization_provider.model_name,
                         media_seconds=probed_seconds,
                     )
-                    cost_operation_ids.append(diarization_operation)
-                    transcription_operation = f"{operation_id}:transcription"
-                    cost.reserve(
-                        transcription_operation,
-                        config.transcription_cost_usd,
-                        provider=(
-                            self.transcript_provider.provider_name
-                            if self.transcript_provider
-                            else "local-whisper"
-                        ),
-                        model=(
-                            self.transcript_provider.model_name
-                            if self.transcript_provider
-                            else config.transcription_model
-                        ),
+                    stage_operation = (
+                        f"av-diarization:{processing_artifact.artifact_id}"
                     )
-                    cost_operation_ids.append(transcription_operation)
-                    transcript_provider, diarization_provider = self._av_providers(
-                        config, needs_transcript=True
-                    )
-                    state.start_operation(operation_id, input_hash)
-                    result = process_target_speech(
-                        path,
-                        reference=profile,
-                        transcript_provider=transcript_provider,
-                        diarization_provider=diarization_provider,
-                        segment_extractor=self.audio_extractor,
-                        minimum_score=config.speaker_minimum_score,
-                        minimum_margin=config.speaker_minimum_margin,
-                    )
-                    write_json(cache_path, result)
-                    if transcription_operation and transcript_provider:
+                    state.start_operation(stage_operation, diarization_key)
+                    try:
+                        diarization_result = diarization_provider.diarize(path)
+                    except Exception as error:
+                        state.fail_operation(
+                            stage_operation, diarization_key, str(redact(str(error)))
+                        )
+                        raise
+                    finally:
                         cost.settle(
+                            diarization_operation,
+                            config.diarization_cost_usd,
+                            provider=diarization_provider.provider_name,
+                            model=diarization_provider.model_name,
+                        )
+                    diarization_record = DiarizationCacheRecord(
+                        cache_key=diarization_key,
+                        artifact_id=processing_artifact.artifact_id,
+                        artifact_sha256=processing_artifact.sha256,
+                        provider=diarization_provider.provider_name,
+                        model=diarization_provider.model_name,
+                        model_version=str(
+                            getattr(
+                                diarization_provider,
+                                "model_version",
+                                "unspecified",
+                            )
+                        ),
+                        result=diarization_result,
+                    )
+                    write_json(diarization_path, diarization_record)
+                    state.finish_operation(
+                        stage_operation, diarization_key, str(diarization_path)
+                    )
+
+                transcript_provider_name = (
+                    self.transcript_provider.provider_name
+                    if self.transcript_provider
+                    else "local-whisper"
+                )
+                transcript_model_name = (
+                    self.transcript_provider.model_name
+                    if self.transcript_provider
+                    else config.transcription_model
+                )
+                if not transcript_model_name:
+                    raise ReviewRequired(
+                        "No existing transcript; configure a transcription model"
+                    )
+                transcript_model_version = str(
+                    getattr(
+                        self.transcript_provider,
+                        "model_version",
+                        "unspecified",
+                    )
+                )
+                transcript_key = transcript_cache_key(
+                    artifact_sha256=processing_artifact.sha256,
+                    provider=transcript_provider_name,
+                    model=transcript_model_name,
+                    model_version=transcript_model_version,
+                    diarization_cache_key=diarization_key,
+                )
+                transcript_path = self._av_cache_path(
+                    workspace, "av_transcripts", transcript_key
+                )
+                transcript_hit = transcript_path.exists()
+                migration_source = None
+                if transcript_hit:
+                    transcript_record = TranscriptCacheRecord.model_validate(
+                        read_json(transcript_path)
+                    )
+                else:
+                    legacy_transcript = self._legacy_transcript(
+                        workspace,
+                        candidate_id=candidate_id,
+                        artifact_id=artifact.artifact_id,
+                        provider_name=transcript_provider_name,
+                        model_name=transcript_model_name,
+                    )
+                    transcript_stage_operation = (
+                        f"av-transcript:{processing_artifact.artifact_id}"
+                    )
+                    state.start_operation(
+                        transcript_stage_operation, transcript_key
+                    )
+                    if legacy_transcript is not None:
+                        transcript_result = legacy_transcript
+                        migration_source = "legacy_av_result"
+                        resolved_transcript_provider = transcript_provider_name
+                        resolved_transcript_model = transcript_model_name
+                        resolved_transcript_version = transcript_model_version
+                    else:
+                        transcript_provider, _ = self._av_providers(
+                            config, needs_transcript=True
+                        )
+                        assert transcript_provider is not None
+                        if (
+                            cost.provider_operations
+                            >= config.maximum_provider_operations
+                        ):
+                            raise RuntimeError(
+                                "Provider-operation budget exhausted before transcription"
+                            )
+                        transcription_operation = (
+                            f"process-av-transcription:"
+                            f"{processing_artifact.artifact_id}"
+                        )
+                        cost.reserve(
                             transcription_operation,
                             config.transcription_cost_usd,
                             provider=transcript_provider.provider_name,
                             model=transcript_provider.model_name,
                         )
-                    cost.settle(
-                        diarization_operation,
-                        config.diarization_cost_usd,
-                        provider=diarization_provider.provider_name,
-                        model=diarization_provider.model_name,
+                        try:
+                            transcript_result = transcribe_diarized_turns(
+                                path,
+                                diarization_record.result,
+                                transcript_provider,
+                                self.audio_extractor,
+                            )
+                        except Exception as error:
+                            state.fail_operation(
+                                transcript_stage_operation,
+                                transcript_key,
+                                str(redact(str(error))),
+                            )
+                            raise
+                        finally:
+                            cost.settle(
+                                transcription_operation,
+                                config.transcription_cost_usd,
+                                provider=transcript_provider.provider_name,
+                                model=transcript_provider.model_name,
+                            )
+                        resolved_transcript_provider = (
+                            transcript_provider.provider_name
+                        )
+                        resolved_transcript_model = transcript_provider.model_name
+                        resolved_transcript_version = str(
+                            getattr(
+                                transcript_provider,
+                                "model_version",
+                                "unspecified",
+                            )
+                        )
+                    transcript_record = TranscriptCacheRecord(
+                        cache_key=transcript_key,
+                        artifact_id=processing_artifact.artifact_id,
+                        artifact_sha256=processing_artifact.sha256,
+                        provider=resolved_transcript_provider,
+                        model=resolved_transcript_model,
+                        model_version=resolved_transcript_version,
+                        diarization_cache_key=diarization_key,
+                        transcript=transcript_result.info,
+                        segments=transcript_result.segments,
+                        migration_source=migration_source,
                     )
-                    state.finish_operation(operation_id, input_hash, str(cache_path))
+                    write_json(transcript_path, transcript_record)
+                    state.finish_operation(
+                        f"av-transcript:{processing_artifact.artifact_id}",
+                        transcript_key,
+                        str(transcript_path),
+                    )
+
+                speaker_dimensions = {
+                    len(embedding)
+                    for embedding in diarization_record.result.speaker_embeddings.values()
+                }
+                compatible_profiles: list[ReferenceVoiceProfile] = []
+                for reference_profile in profiles:
+                    if len(speaker_dimensions) != 1 or len(
+                        reference_profile.embedding
+                    ) not in speaker_dimensions:
+                        omitted_profiles.append(
+                            {
+                                "profile_id": reference_profile.profile_id or "unknown",
+                                "reason": "Embedding dimensions differ from diarization",
+                            }
+                        )
+                        continue
+                    compatible_profiles.append(reference_profile)
+                if not compatible_profiles:
+                    raise ReviewRequired(
+                        "No compatible verified reference voice profiles"
+                    )
+                reference_embeddings = [
+                    ReferenceEmbedding(
+                        profile_id=reference_profile.profile_id or "unknown",
+                        artifact_ids=reference_profile.artifact_ids,
+                        embedding=reference_profile.embedding,
+                    )
+                    for reference_profile in compatible_profiles
+                ]
+                attribution_key = attribution_cache_key(
+                    diarization_cache_key=diarization_key,
+                    reference_profile_ids=[
+                        item.profile_id for item in reference_embeddings
+                    ],
+                    minimum_score=config.speaker_minimum_score,
+                    minimum_margin=config.speaker_minimum_margin,
+                )
+                attribution_path = self._av_cache_path(
+                    workspace, "av_attributions", attribution_key
+                )
+                attribution_hit = attribution_path.exists()
+                if attribution_hit:
+                    attribution_record = AttributionCacheRecord.model_validate(
+                        read_json(attribution_path)
+                    )
+                else:
+                    attribution = match_target_speaker_references(
+                        references=reference_embeddings,
+                        speakers=diarization_record.result.speaker_embeddings,
+                        minimum_score=config.speaker_minimum_score,
+                        minimum_margin=config.speaker_minimum_margin,
+                        diarization_model=diarization_record.model,
+                        embedding_model=compatible_profiles[0].embedding_model,
+                    )
+                    attribution_record = AttributionCacheRecord(
+                        cache_key=attribution_key,
+                        diarization_cache_key=diarization_key,
+                        reference_profile_ids=[
+                            item.profile_id for item in reference_embeddings
+                        ],
+                        minimum_score=config.speaker_minimum_score,
+                        minimum_margin=config.speaker_minimum_margin,
+                        attribution=attribution,
+                    )
+                    write_json(attribution_path, attribution_record)
+
+                result = assemble_target_speech(
+                    diarization=diarization_record.result,
+                    transcript=TranscriptResult(
+                        info=transcript_record.transcript,
+                        segments=transcript_record.segments,
+                    ),
+                    attribution=attribution_record.attribution,
+                )
+                input_hash = sha256(
+                    canonical_json(
+                        {
+                            "diarization_cache_key": diarization_key,
+                            "transcript_cache_key": transcript_key,
+                            "attribution_cache_key": attribution_key,
+                        }
+                    ).encode("utf-8")
+                ).hexdigest()
+                cache_path = workspace / "state/av_results" / f"{input_hash}.json"
+                state.start_operation(operation_id, input_hash)
+                write_json(cache_path, result)
+                state.finish_operation(operation_id, input_hash, str(cache_path))
             except Exception as error:
-                for cost_operation_id in cost_operation_ids:
-                    row_provider = "unknown-provider"
-                    row_model = None
-                    row_cost = config.diarization_cost_usd
-                    if cost_operation_id.endswith(":transcription"):
-                        row_provider = (
-                            self.transcript_provider.provider_name
-                            if self.transcript_provider
-                            else "local-whisper"
-                        )
-                        row_model = (
-                            self.transcript_provider.model_name
-                            if self.transcript_provider
-                            else config.transcription_model
-                        )
-                        row_cost = config.transcription_cost_usd
-                    else:
-                        row_provider = (
-                            self.diarization_provider.provider_name
-                            if self.diarization_provider
-                            else "pyannote"
-                        )
-                        row_model = (
-                            self.diarization_provider.model_name
-                            if self.diarization_provider
-                            else config.diarization_model
-                        )
-                    cost.settle(
-                        cost_operation_id,
-                        row_cost,
-                        provider=row_provider,
-                        model=row_model,
+                if input_hash:
+                    state.fail_operation(
+                        operation_id, input_hash, str(redact(str(error)))
                     )
-                state.fail_operation(operation_id, input_hash, str(redact(str(error))))
                 failure = redact(
                     {
                         "candidate_id": candidate_id,
@@ -1716,6 +1952,19 @@ class Pipeline:
                     "transcript": result.transcript.model_dump(mode="json"),
                     "attribution": result.attribution.model_dump(mode="json"),
                     "media_seconds": result.media_seconds,
+                    "cache": {
+                        "diarization_key": diarization_key,
+                        "diarization_hit": diarization_hit,
+                        "transcript_key": transcript_key,
+                        "transcript_hit": transcript_hit,
+                        "transcript_migration_source": migration_source,
+                        "attribution_key": attribution_key,
+                        "attribution_hit": attribution_hit,
+                    },
+                    "reference_profile_ids": [
+                        item.profile_id for item in compatible_profiles
+                    ],
+                    "omitted_reference_profiles": omitted_profiles,
                 },
             )
         if candidate_ids is not None:
