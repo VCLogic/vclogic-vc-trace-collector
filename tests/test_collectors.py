@@ -372,6 +372,49 @@ def test_podcast_duration_ignores_zero_placeholder_before_real_runtime() -> None
     assert _podcast_duration_seconds(html) == 2561
 
 
+@pytest.mark.parametrize("feed_mode", ["none", "matching", "unrelated"])
+def test_podcast_requires_audio_and_matches_feed_episode(tmp_path, feed_mode) -> None:
+    episode = "https://example.test/episode"
+    requested = []
+
+    def resolver(host, port):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+
+    def handler(request):
+        requested.append(str(request.url))
+        mime = "text/html"
+        body = b"<html><p>Podcast announcement</p></html>"
+        if str(request.url) == episode and feed_mode != "none":
+            body = b'<html><link type="application/rss+xml" href="/feed.xml"></html>'
+        elif request.url.path == "/feed.xml":
+            mime = "application/rss+xml"
+            link = episode if feed_mode == "matching" else "https://example.test/other"
+            body = (f'<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">'
+                    f'<channel><item><link>{link}</link><itunes:duration>5</itunes:duration>'
+                    '<enclosure url="https://example.test/audio.mp3" type="audio/mpeg"/>'
+                    '</item></channel></rss>').encode()
+        elif request.url.path == "/audio.mp3":
+            mime, body = "audio/mpeg", b"ID3 audio fixture"
+        return httpx.Response(200, content=body, headers={"content-type": mime}, request=request)
+
+    ctx = context(tmp_path)
+    ctx.fetcher = Fetcher(transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0)
+    result = collect_approved_sources(
+        plan(candidate("podcast", SourceType.PODCAST, url=episode)),
+        context=ctx, registry=CollectorRegistry([PodcastCollector()]),
+    )
+    if feed_mode == "matching":
+        assert result.collected == 1
+        assert result.media_seconds == 5
+        assert any(record.collection_method == "podcast_enclosure_http" for record in result.artifacts)
+    else:
+        assert result.failed == 1
+        assert result.collected == 0
+        assert "audio is unresolved" in result.outcomes[0].reason
+        assert result.outcomes[0].artifact_ids
+        assert "https://example.test/audio.mp3" not in requested
+
+
 def test_podcast_refuses_unbounded_media_before_enclosure_download(tmp_path) -> None:
     page_url = "https://podcast.example.test/episode"
     audio_url = "https://cdn.example.test/episode.mp3"

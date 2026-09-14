@@ -19,6 +19,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Podcast collection now fails explicitly with retained page lineage when no
+  audio is acquired, retries legacy page-only successes, and resolves advertised
+  RSS/Atom enclosures only for an exactly matching episode URL.
 - Platform-specific downloads now collect approved candidates even when other
   candidates on the same platform remain pending review.
 - Adding or changing a reference voice now recomputes only attribution when

@@ -14,6 +14,7 @@ from typing import ClassVar, Protocol
 from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
 
+import feedparser
 import httpx
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,6 +52,15 @@ class ReviewRequired(RuntimeError):
 
 class CollectorUnavailable(RuntimeError):
     pass
+
+
+class PodcastAudioUnresolved(RuntimeError):
+    def __init__(self, records: list[RawArtifact]):
+        super().__init__(
+            "Podcast page saved, but episode audio is unresolved; "
+            "supply an episode URL with playable audio or its RSS feed"
+        )
+        self.records = records
 
 
 NETWORK_COLLECTION_METHODS = {
@@ -421,7 +431,10 @@ class PodcastCollector:
                 )
         fetched = _fetch(context, source.url)
         mime = fetched.headers.get("content-type", "text/html")
-        soup = BeautifulSoup(fetched.content, "html.parser")
+        soup = BeautifulSoup(
+            fetched.content if "html" in mime or "xml" in mime else b"",
+            "html.parser",
+        )
         site_name = soup.find("meta", attrs={"property": "og:site_name"})
         author = soup.find("meta", attrs={"name": "author"})
         programme = (
@@ -488,7 +501,59 @@ class PodcastCollector:
                 )
             return records
 
+        if not any(value in mime for value in ("html", "xml", "json")):
+            raise PodcastAudioUnresolved(records)
         audio_urls = _podcast_audio_urls(fetched.content, fetched.final_url)
+        # Follow only explicitly advertised feeds and only an entry whose link
+        # matches this approved episode. A show's other episodes need review.
+        if not audio_urls:
+            feeds = [
+                urljoin(fetched.final_url, str(link["href"]))
+                for link in soup.find_all("link", href=True)
+                if link.get("type") in {"application/rss+xml", "application/atom+xml"}
+            ][:3]
+            feed_inputs = [(fetched, page)] if "xml" in mime else []
+            for feed_url in feeds:
+                feed_fetch = _fetch(context, feed_url)
+                feed_record = context.artifacts.put_bytes(
+                    feed_fetch.content, category="podcast", suffix=".xml",
+                    source_url=feed_fetch.final_url, mime_type="application/xml",
+                    collection_method="podcast_page_http",
+                    original_metadata={"candidate_id": source.candidate_id},
+                    parent_artifact_ids=[page.artifact_id],
+                ).record
+                records.append(feed_record)
+                feed_inputs.append((feed_fetch, feed_record))
+            for feed_fetch, feed_record in feed_inputs:
+                entries = feedparser.parse(feed_fetch.content).entries
+                matches = [entry for entry in entries if
+                    urljoin(feed_fetch.final_url, entry.get("link", "")).rstrip("/")
+                    in {source.canonical_url.rstrip("/"), fetched.final_url.rstrip("/")}
+                ]
+                if len(matches) != 1:
+                    continue
+                entry = matches[0]
+                feed_decision = context.rules.evaluate(
+                    url=feed_fetch.final_url,
+                    title=entry.get("title"),
+                    text=entry.get("summary", ""),
+                    stage="post_metadata",
+                )
+                if feed_decision.status == InclusionStatus.EXCLUDED or (
+                    feed_decision.status == InclusionStatus.REVIEW_REQUIRED
+                    and feed_decision.rule_id not in source.override_rule_ids
+                ):
+                    raise PodcastAudioUnresolved(records)
+                audio_urls = [urljoin(feed_fetch.final_url, item["href"])
+                    for item in entry.get("enclosures", []) if item.get("href")]
+                runtime = str(entry.get("itunes_duration", ""))
+                if runtime.isdigit():
+                    duration = float(runtime)
+                elif runtime:
+                    duration = _podcast_duration_seconds(runtime.encode())
+                if audio_urls:
+                    page = feed_record
+                    break
         if audio_urls and context.remaining_media_seconds is not None:
             if not duration:
                 raise RuntimeError(
@@ -515,6 +580,11 @@ class PodcastCollector:
                 )
                 continue
             audio_mime = audio.headers.get("content-type", "application/octet-stream")
+            if not (
+                audio_mime.split(";", 1)[0].strip().startswith("audio/")
+                or audio_mime.split(";", 1)[0].strip() == "application/octet-stream"
+            ):
+                continue
             records.append(
                 context.artifacts.put_bytes(
                     audio.content,
@@ -539,6 +609,8 @@ class PodcastCollector:
                     parent_artifact_ids=[page.artifact_id],
                 ).record
             )
+        if not any(is_acquired_media(record) for record in records):
+            raise PodcastAudioUnresolved(records)
         return records
 
 
@@ -1001,9 +1073,10 @@ def collect_approved_sources(
             )
             continue
 
-        input_hash = sha256(
-            canonical_json(candidate.model_dump(mode="json")).encode("utf-8")
-        ).hexdigest()
+        collection_input = candidate.model_dump(mode="json")
+        if candidate.source_type == SourceType.PODCAST:
+            collection_input["collector_version"] = "podcast-audio-required-v2"
+        input_hash = sha256(canonical_json(collection_input).encode("utf-8")).hexdigest()
         operation_id = f"collect:{candidate.candidate_id}"
         outcome_cache_path = (
             context.workspace / "state/collection_results" / f"{input_hash}.json"
@@ -1061,6 +1134,7 @@ def collect_approved_sources(
                     candidate_id=candidate.candidate_id,
                     status="failed",
                     reason=str(failure["message"]),
+                    artifact_ids=[record.artifact_id for record in getattr(error, "records", [])],
                 )
             )
             append_jsonl(context.workspace / "audit/failures.jsonl", failure)
