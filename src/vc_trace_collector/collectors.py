@@ -37,6 +37,7 @@ from .storage import (
     ArtifactStore,
     StateStore,
     append_jsonl,
+    artifact_metadata_paths,
     canonical_json,
     read_json,
     read_jsonl,
@@ -871,7 +872,7 @@ def _recover_legacy_collection_outcome(
         if value.startswith("sha256:")
     }
     records: list[RawArtifact] = []
-    for metadata_path in sorted((context.workspace / "raw").rglob("*.metadata.json")):
+    for metadata_path in artifact_metadata_paths(context.workspace):
         try:
             record = RawArtifact.model_validate(read_json(metadata_path))
         except Exception as error:

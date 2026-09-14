@@ -24,7 +24,7 @@ from .models import (
 )
 from .policy import InclusionStatus as PolicyInclusionStatus
 from .policy import RuleSet
-from .storage import read_json
+from .storage import artifact_metadata_paths, read_json
 
 
 def normalize_text(text: str) -> str:
@@ -383,7 +383,7 @@ def target_speech_document(
 
 def load_artifact_records(workspace: Path) -> list[RawArtifact]:
     records: list[RawArtifact] = []
-    for path in sorted((Path(workspace) / "raw").rglob("*.metadata.json")):
+    for path in artifact_metadata_paths(workspace):
         records.append(RawArtifact.model_validate(read_json(path)))
     return records
 

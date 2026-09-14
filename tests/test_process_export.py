@@ -1,5 +1,8 @@
 from hashlib import sha256
 
+import pytest
+from pydantic import ValidationError
+
 from vc_trace_collector.av import AlignedText, TargetSpeechResult
 from vc_trace_collector.export import export_persona_sources, export_workspace
 from vc_trace_collector.models import (
@@ -16,6 +19,7 @@ from vc_trace_collector.models import (
 from vc_trace_collector.policy import ExclusionRule, RuleSet, eligible_for_corpus
 from vc_trace_collector.process import (
     deduplicate,
+    load_artifact_records,
     normalize_text,
     process_artifact,
     target_speech_document,
@@ -59,6 +63,37 @@ def document(
 
 def test_normalization_is_stable_without_rewriting_words() -> None:
     assert normalize_text("  One\r\n\r\n\r\nTwo\u00a0words  ") == "One\n\nTwo words"
+
+
+def test_artifact_loader_does_not_parse_raw_metadata_payload_as_sidecar(
+    tmp_path,
+) -> None:
+    stored = ArtifactStore(tmp_path).put_bytes(
+        b'{"title": "Raw yt-dlp metadata", "formats": []}',
+        category="video",
+        suffix=".metadata.json",
+        source_url="https://www.youtube.com/watch?v=fixture",
+        mime_type="application/json",
+        collection_method="yt_dlp_metadata",
+        original_metadata={"candidate_id": "candidate:fixture"},
+    )
+
+    records = load_artifact_records(tmp_path)
+
+    assert records == [stored.record]
+
+
+def test_artifact_loader_rejects_malformed_provenance_sidecar(tmp_path) -> None:
+    stored = ArtifactStore(tmp_path).put_bytes(
+        b"audio",
+        category="video",
+        suffix=".webm",
+        collection_method="yt_dlp_audio",
+    )
+    stored.metadata_path.write_text("{}")
+
+    with pytest.raises(ValidationError):
+        load_artifact_records(tmp_path)
 
 
 def test_quality_counts_merged_target_intervals_not_whole_recording(tmp_path) -> None:

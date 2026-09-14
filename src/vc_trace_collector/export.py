@@ -20,6 +20,7 @@ from .models import (
 from .policy import eligible_for_corpus
 from .storage import (
     StateStore,
+    artifact_metadata_paths,
     canonical_json,
     read_json,
     read_jsonl,
@@ -177,7 +178,7 @@ def export_workspace(
     export_persona_sources(workspace, ordered)
 
     raw_records = []
-    for metadata_path in sorted((workspace / "raw").rglob("*.metadata.json")):
+    for metadata_path in artifact_metadata_paths(workspace):
         raw_records.append(read_json(metadata_path))
     cost_rows = read_jsonl(workspace / "audit/costs.jsonl")
     settlements = [row for row in cost_rows if row.get("kind") == "settlement"]

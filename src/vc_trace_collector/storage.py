@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import tempfile
 from collections.abc import Iterable
@@ -16,6 +17,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from .models import RawArtifact
+
+_ARTIFACT_METADATA_SUFFIX = re.compile(r"\.[0-9a-f]{16}\.metadata\.json$")
 
 
 def _jsonable(value: Any) -> Any:
@@ -97,6 +100,16 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
         return []
     with path.open(encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
+
+
+def artifact_metadata_paths(root: Path) -> list[Path]:
+    """Return collector provenance sidecars, excluding raw metadata payloads."""
+    raw = Path(root) / "raw"
+    return sorted(
+        path
+        for path in raw.rglob("*.metadata.json")
+        if _ARTIFACT_METADATA_SUFFIX.search(path.name)
+    )
 
 
 @dataclass(frozen=True)

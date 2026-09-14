@@ -37,7 +37,13 @@ from .models import (
 )
 from .policy import ExclusionRule, RuleSet, canonicalize_url, eligible_for_corpus
 from .source_search import SourceSearchObservation
-from .storage import StateStore, canonical_json, read_json, read_jsonl
+from .storage import (
+    StateStore,
+    artifact_metadata_paths,
+    canonical_json,
+    read_json,
+    read_jsonl,
+)
 
 
 class VerificationResult(BaseModel):
@@ -505,7 +511,7 @@ def verify_workspace(workspace: Path) -> VerificationResult:
             errors.append(f"Invalid reference voice candidate: {error}")
 
     artifacts: dict[str, list[RawArtifact]] = {}
-    for metadata_path in sorted((workspace / "raw").rglob("*.metadata.json")):
+    for metadata_path in artifact_metadata_paths(workspace):
         try:
             artifact = RawArtifact.model_validate(read_json(metadata_path))
         except Exception as error:
