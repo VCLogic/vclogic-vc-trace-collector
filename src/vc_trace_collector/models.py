@@ -313,6 +313,7 @@ class ReferenceVoiceCandidate(StrictModel):
 
 
 class ReferenceVoiceProfile(StrictModel):
+    profile_id: str | None = None
     investor_slug: str
     candidate_ids: list[str] = Field(min_length=1)
     artifact_ids: list[str] = Field(min_length=1)

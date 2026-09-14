@@ -145,6 +145,67 @@ class Pipeline:
     def workspace(self, investor_slug: str) -> Path:
         return self.output_dir / investor_slug
 
+    @staticmethod
+    def _identify_reference_profile(
+        profile: ReferenceVoiceProfile,
+    ) -> ReferenceVoiceProfile:
+        payload = profile.model_dump(
+            mode="json", exclude={"profile_id", "created_at"}
+        )
+        profile_id = (
+            "voice-profile:"
+            + sha256(canonical_json(payload).encode("utf-8")).hexdigest()[:20]
+        )
+        return profile.model_copy(update={"profile_id": profile_id})
+
+    def _load_reference_profiles(
+        self, workspace: Path
+    ) -> list[ReferenceVoiceProfile]:
+        profiles_path = workspace / "identity/reference_voice_profiles.jsonl"
+        profiles = [
+            self._identify_reference_profile(
+                ReferenceVoiceProfile.model_validate(row)
+            )
+            for row in read_jsonl(profiles_path)
+        ]
+        legacy_path = workspace / "identity/reference_voice_profile.json"
+        if legacy_path.exists():
+            profiles.append(
+                self._identify_reference_profile(
+                    ReferenceVoiceProfile.model_validate(read_json(legacy_path))
+                )
+            )
+        by_id = {profile.profile_id: profile for profile in profiles}
+        ordered = sorted(
+            by_id.values(),
+            key=lambda item: (item.created_at, item.profile_id or ""),
+        )
+        serialized = [item.model_dump(mode="json") for item in ordered]
+        if ordered and read_jsonl(profiles_path) != serialized:
+            write_jsonl(profiles_path, ordered)
+        return ordered
+
+    def _upsert_reference_profile(
+        self, workspace: Path, profile: ReferenceVoiceProfile
+    ) -> list[ReferenceVoiceProfile]:
+        identified = self._identify_reference_profile(profile)
+        profiles = {
+            item.profile_id: item
+            for item in self._load_reference_profiles(workspace)
+        }
+        profiles[identified.profile_id] = identified
+        ordered = sorted(
+            profiles.values(),
+            key=lambda item: (item.created_at, item.profile_id or ""),
+        )
+        write_jsonl(
+            workspace / "identity/reference_voice_profiles.jsonl", ordered
+        )
+        write_json(
+            workspace / "identity/reference_voice_profile.json", identified
+        )
+        return ordered
+
     def _run_id(self) -> str:
         return f"run-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
 
@@ -1160,7 +1221,8 @@ class Pipeline:
             ),
             embedding=embedding,
         )
-        write_json(workspace / "identity/reference_voice_profile.json", profile)
+        profile = self._identify_reference_profile(profile)
+        self._upsert_reference_profile(workspace, profile)
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         summary.cost_usd = cost.spent
         self._event(

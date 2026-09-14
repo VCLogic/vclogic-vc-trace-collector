@@ -23,6 +23,7 @@ from vc_trace_collector.fetch import Fetcher
 from vc_trace_collector.models import (
     ApprovalStatus,
     MaterialRole,
+    ReferenceVoiceProfile,
     SourceDecision,
     TranscriptInfo,
 )
@@ -108,6 +109,64 @@ class FixtureTranscript:
                 ),
             ],
         )
+
+
+def _reference_profile(candidate_id: str, value: float) -> ReferenceVoiceProfile:
+    return ReferenceVoiceProfile(
+        investor_slug="michael-hyatt",
+        candidate_ids=[candidate_id],
+        artifact_ids=["sha256:" + candidate_id[-1] * 64],
+        status="verified_human",
+        embedding_model="fixture-embedding",
+        embedding_model_version="1",
+        embedding=[value, 1.0 - value],
+    )
+
+
+def test_reference_profile_set_preserves_multiple_and_upserts_idempotently(
+    tmp_path,
+) -> None:
+    collector = pipeline(tmp_path)
+    workspace = tmp_path / "michael-hyatt"
+
+    collector._upsert_reference_profile(
+        workspace, _reference_profile("voice:1", 1.0)
+    )
+    collector._upsert_reference_profile(
+        workspace, _reference_profile("voice:2", 0.0)
+    )
+    collector._upsert_reference_profile(
+        workspace, _reference_profile("voice:1", 1.0)
+    )
+
+    profiles = read_jsonl(
+        workspace / "identity/reference_voice_profiles.jsonl"
+    )
+    assert len(profiles) == 2
+    assert len({row["profile_id"] for row in profiles}) == 2
+    assert read_json(workspace / "identity/reference_voice_profile.json")[
+        "profile_id"
+    ] in {row["profile_id"] for row in profiles}
+
+
+def test_legacy_reference_profile_is_migrated_without_deleting_projection(
+    tmp_path,
+) -> None:
+    collector = pipeline(tmp_path)
+    workspace = tmp_path / "michael-hyatt"
+    legacy_path = workspace / "identity/reference_voice_profile.json"
+    from vc_trace_collector.storage import write_json
+
+    write_json(legacy_path, _reference_profile("voice:legacy", 1.0))
+
+    profiles = collector._load_reference_profiles(workspace)
+
+    assert len(profiles) == 1
+    assert profiles[0].profile_id is not None
+    assert legacy_path.exists()
+    assert len(
+        read_jsonl(workspace / "identity/reference_voice_profiles.jsonl")
+    ) == 1
 
 
 class FixtureDiarization:
