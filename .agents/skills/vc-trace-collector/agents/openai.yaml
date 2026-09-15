@@ -1,0 +1,4 @@
+interface:
+  display_name: "VC Trace Collector"
+  short_description: "Guided investor discovery, downloads and processing"
+  default_prompt: "Use $vc-trace-collector to guide me through collecting public traces for an investor, one stage at a time."

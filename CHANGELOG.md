@@ -9,6 +9,15 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Guided `wizard` with independent discovery, download and processing stages,
+  profile choices, evidence review, searchable source checkboxes, confidence
+  sorting, cancellation and existing-workspace resume.
+- Shared repository-local Claude Code and Codex skill instructions, with staged
+  conversational operation when an interactive terminal is unavailable.
+- Voice-reference guidance with actual-duration checks and matching embedding
+  space, plus non-copying `stage-reference` and repeatable `process --candidate-id`
+  for selected written material in scripted workflows.
+
 - Download-only `portfolio` command with Agent Reach search, resumable downloads,
   source-linked readable pages, search budget accounting and audit manifests.
   No corpus exclusions apply, including The Pitch. `handoff.json` and
@@ -36,6 +45,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--collect-only` option remains accepted for command compatibility.
 
 ### Fixed
+
+- Supplied video downloads now retain the reference-voice artifact backlink,
+  allowing human voice review without requiring an audio-only supplied file.
 
 - Processing hides repeated TorchAudio backend migration notices while retaining
   runtime warnings and errors, keeping terminal progress readable.

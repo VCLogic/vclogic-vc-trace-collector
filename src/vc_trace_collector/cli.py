@@ -54,6 +54,49 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
     )
 
     @app.command()
+    def wizard(
+        stage: str | None = typer.Option(None, help="discover, download or process"),
+        name: str | None = typer.Option(None, help="Name for a new discovery"),
+        investor: str | None = typer.Option(
+            None, help="Existing investor workspace slug"
+        ),
+        output_dir: Path = typer.Option(Path("outputs")),
+    ) -> None:
+        """Guided terminal workflow; each stage runs independently."""
+        from .audit import redact
+        from .terminal import Cancelled, TerminalPrompts
+        from .wizard import Wizard
+
+        try:
+            ui = TerminalPrompts()
+            Wizard(make_pipeline(output_dir), ui).run(
+                stage=stage, name=name, investor=investor
+            )
+        except (Cancelled, KeyboardInterrupt):
+            typer.echo("Cancelled. Previously completed work is preserved.")
+            raise typer.Exit(130) from None
+        except Exception as error:
+            typer.echo(f"Wizard stopped: {redact(str(error))}", err=True)
+            raise typer.Exit(2) from None
+
+    @app.command("stage-reference")
+    def stage_reference(
+        investor: str = typer.Option(...),
+        file: Path = typer.Option(..., exists=True, dir_okay=False),
+        reviewer: str = typer.Option(...),
+        output_dir: Path = typer.Option(Path("outputs")),
+    ) -> None:
+        """Record an approved local reference source; do not copy or process it."""
+        from .wizard_reference import stage_local_reference
+
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", investor):
+            raise typer.BadParameter("Invalid investor slug")
+        cid = stage_local_reference(make_pipeline(output_dir), investor, file, reviewer)
+        typer.echo(
+            f"Staged {cid}. Next: fetch-source --investor {investor} --candidate-id {cid}"
+        )
+
+    @app.command()
     @with_download_progress
     def portfolio(
         investor: str = typer.Option(..., help="Resolved investor workspace slug"),
@@ -490,14 +533,34 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
     @with_processing_progress
     def process_command(
         investor: str = typer.Option(...),
+        candidate_id: list[str] | None = typer.Option(
+            None,
+            help="Process only these downloaded candidates; repeat to select several",
+        ),
         transcription_model: str | None = typer.Option(None),
         diarization_model: str | None = typer.Option(None),
         transcription_cost_usd: str | None = typer.Option(None),
         diarization_cost_usd: str | None = typer.Option(None),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        documents = make_pipeline(output_dir).process(
+        pipeline = make_pipeline(output_dir)
+        if candidate_id:
+            from .wizard_models import source_items
+
+            eligible = {
+                item.candidate.candidate_id
+                for item in source_items(pipeline, investor)
+                if item.downloaded
+                and item.candidate.approval_status
+                in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
+            }
+            if set(candidate_id) - eligible:
+                raise typer.BadParameter(
+                    "Selected candidates must be approved and downloaded"
+                )
+        documents = pipeline.process(
             investor,
+            **({"candidate_ids": set(candidate_id)} if candidate_id else {}),
             transcription_model=transcription_model,
             diarization_model=diarization_model,
             transcription_cost_usd=(

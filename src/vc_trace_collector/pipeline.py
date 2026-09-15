@@ -1087,8 +1087,9 @@ class Pipeline:
             voice = voice_by_source.get(candidate_id)
             if voice and (
                 (artifact.mime_type or "").casefold().startswith("audio/")
+                or (artifact.mime_type or "").casefold().startswith("video/")
                 or Path(artifact.relative_path).suffix.casefold()
-                in {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac", ".webm"}
+                in {".wav", ".mp3", ".m4a", ".opus", ".ogg", ".flac", ".webm", ".mp4", ".mov"}
                 or artifact.collection_method == "yt_dlp_audio"
             ):
                 voice.artifact_id = artifact.artifact_id

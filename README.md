@@ -11,6 +11,83 @@ predict investment decisions, or run founder rehearsals.
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
 
+## Guided terminal workflow and agent skills
+
+Start with a name; the wizard will guide profile confirmation and source choice:
+
+```bash
+uv run vc-trace-collector wizard --stage discover --name "Michael Hyatt"
+```
+
+For an existing workspace, discovery can resume with `--investor michael-hyatt`.
+It preserves the saved identity rather than overwriting it. Known firms are kept
+as user-supplied affiliation evidence; wizard workspace folders use the name only.
+
+Then run the other stages separately:
+
+```bash
+# Download selected approved sources; no transcription
+uv run --extra youtube vc-trace-collector wizard --stage download --investor michael-hyatt
+
+# Normalize written items or process downloaded AV using Whisper and pyannote
+uv run --extra av --extra av-local vc-trace-collector wizard --stage process --investor michael-hyatt
+```
+
+Run `wizard` alone for the stage menu. Source selection supports arrow keys,
+Space to toggle checkboxes, type-to-search, Enter to accept selection, and Ctrl+C
+to cancel. Its menu adds title/URL text filtering, platform/status filters,
+confidence sorting in either direction and a detailed evidence view. Confirm a
+decision summary to save approvals/rejections; unselected/deferred items do not
+change. Review different material roles in separate batches. Existing corpus
+exclusions still apply even when a source is approved.
+
+Discovery only retrieves identity evidence pages and source URLs; it does not
+download media or ask for GPU/transcription settings. The initial profile lookup
+is one separately accounted search, with up to ten options. Subsequent platform
+search limits use the saved run configuration. Downloading never automatically
+starts processing. Processing never silently downloads media. Each stage loads
+actual saved plans/artifacts and reuses the existing resumable caches.
+
+For audiovisual processing, the wizard checks local dependencies and an approved
+voice reference. If needed, choose a downloaded recording and confirm target-only
+timestamps after listening, or stage a local sample for the download stage.
+Reference intervals are checked against recording duration. Reference embeddings
+use the chosen diarization pipeline's embedding space; incompatible saved
+references are not silently accepted. Uncertain speaker matches remain flagged.
+Export and verification require a separate confirmation at the end.
+
+Repository-local skills are included for both coding agents:
+
+- **Codex:** `.agents/skills/vc-trace-collector/`; invoke
+  `$vc-trace-collector` and describe the investor and desired stage.
+- **Claude Code:** `.claude/skills/vc-trace-collector/`; invoke
+  `/vc-trace-collector`. Its entry point reads the same canonical instructions.
+
+Open the agent from this checkout; restart its session if the new skill is not
+listed. No global skill installation is required, and the Claude wrapper is not
+a standalone package to copy without the rest of the checkout. Claude's
+[project-skill documentation](https://code.claude.com/docs/en/skills) describes
+its repository discovery convention.
+
+In an agent chat without human-controllable terminal input, the skill asks the
+same questions conversationally and uses the scripted CLI; it must not launch an
+inaccessible wizard or answer human verification prompts itself. Two additional
+scripted entry points support those conversations:
+
+```bash
+# Record a local reference source only; prints the ID to download next
+uv run vc-trace-collector stage-reference --investor michael-hyatt \
+  --file /path/to/public-reference.wav --reviewer human:your-name
+
+# Process just these approved downloaded written items
+uv run vc-trace-collector process --investor michael-hyatt \
+  --candidate-id candidate:actual-id
+```
+
+The existing `discover`, `review`, `fetch-source`, `process-source`, `export`,
+`status` and `verify` commands remain available. Portfolio collection remains the
+independent download-only workflow below, not an AV/Investment Memory stage.
+
 ## Portfolio downloads
 
 Portfolio collection is **download-only**. It uses Agent Reach by default to find
