@@ -1,769 +1,264 @@
-# vc-trace-collector
+# VC Trace Collector
 
-`vc-trace-collector` builds a clean, auditable, source-linked collection of a
-venture investor's public traces. It resolves an identity, proposes a source
-plan, pauses for review, collects approved public material, normalizes and
-deduplicates it, applies leakage rules, and exports a canonical corpus plus the
-legacy `blog.jsonl`, `talks.jsonl`, and `_manifest.json` files.
+Collect a venture investor's public articles, interviews, videos and podcasts into
+a source-linked corpus. A separate repository can use that corpus to build an
+Investment Memory.
 
-This repository does **not** generate an Investment Memory, score pitches,
-predict investment decisions, or run founder rehearsals.
+**The workflow has three separate stages: discover → download → process.**
+Nothing advances to the next stage automatically.
 
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+[Get started](#get-started) · [Run the workflow](#run-the-workflow) ·
+[Find your data](#where-is-the-data) · [Use an agent](#use-claude-code-or-codex) ·
+[Manual CLI and configuration](docs/guides/cli-reference.md)
 
-## Guided terminal workflow and agent skills
+## Get started
 
-Start with a name; the wizard will guide profile confirmation and source choice:
+Use Python 3.11–3.13 and [uv](https://docs.astral.sh/uv/).
+Run all commands from the repository directory.
 
-```bash
-uv run vc-trace-collector wizard --stage discover --name "Michael Hyatt"
-```
-
-For an existing workspace, discovery can resume with `--investor michael-hyatt`.
-It preserves the saved identity rather than overwriting it. Known firms are kept
-as user-supplied affiliation evidence; wizard workspace folders use the name only.
-
-Then run the other stages separately:
+For a new checkout:
 
 ```bash
-# Download selected approved sources; no transcription
-uv run --extra youtube vc-trace-collector wizard --stage download --investor michael-hyatt
-
-# Normalize written items or process downloaded AV using Whisper and pyannote
-uv run --extra av --extra av-local vc-trace-collector wizard --stage process --investor michael-hyatt
+git clone https://github.com/VCLogic/vclogic-vc-trace-collector.git
+cd vclogic-vc-trace-collector
 ```
 
-Run `wizard` alone for the stage menu. Source selection supports arrow keys,
-Space to toggle checkboxes, type-to-search, Enter to accept selection, and Ctrl+C
-to cancel. Its menu adds title/URL text filtering, platform/status filters,
-confidence sorting in either direction and a detailed evidence view. Confirm a
-decision summary to save approvals/rejections; unselected/deferred items do not
-change. Review different material roles in separate batches. Existing corpus
-exclusions still apply even when a source is approved.
-
-Discovery only retrieves identity evidence pages and source URLs; it does not
-download media or ask for GPU/transcription settings. The initial profile lookup
-is one separately accounted search, with up to ten options. Subsequent platform
-search limits use the saved run configuration. Downloading never automatically
-starts processing. Processing never silently downloads media. Each stage loads
-actual saved plans/artifacts and reuses the existing resumable caches.
-
-For audiovisual processing, the wizard checks local dependencies and an approved
-voice reference. If needed, choose a downloaded recording and confirm target-only
-timestamps after listening, or stage a local sample for the download stage.
-Reference intervals are checked against recording duration. Reference embeddings
-use the chosen diarization pipeline's embedding space; incompatible saved
-references are not silently accepted. Uncertain speaker matches remain flagged.
-Export and verification require a separate confirmation at the end.
-
-Repository-local skills are included for both coding agents:
-
-- **Codex:** `.agents/skills/vc-trace-collector/`; invoke
-  `$vc-trace-collector` and describe the investor and desired stage.
-- **Claude Code:** `.claude/skills/vc-trace-collector/`; invoke
-  `/vc-trace-collector`. Its entry point reads the same canonical instructions.
-
-Open the agent from this checkout; restart its session if the new skill is not
-listed. No global skill installation is required, and the Claude wrapper is not
-a standalone package to copy without the rest of the checkout. Claude's
-[project-skill documentation](https://code.claude.com/docs/en/skills) describes
-its repository discovery convention.
-
-In an agent chat without human-controllable terminal input, the skill asks the
-same questions conversationally and uses the scripted CLI; it must not launch an
-inaccessible wizard or answer human verification prompts itself. Two additional
-scripted entry points support those conversations:
+Install the basic collector and YouTube support:
 
 ```bash
-# Record a local reference source only; prints the ID to download next
-uv run vc-trace-collector stage-reference --investor michael-hyatt \
-  --file /path/to/public-reference.wav --reviewer human:your-name
-
-# Process just these approved downloaded written items
-uv run vc-trace-collector process --investor michael-hyatt \
-  --candidate-id candidate:actual-id
+uv sync --extra youtube
 ```
 
-The existing `discover`, `review`, `fetch-source`, `process-source`, `export`,
-`status` and `verify` commands remain available. Portfolio collection remains the
-independent download-only workflow below, not an AV/Investment Memory stage.
+**You do not need Whisper, pyannote, a GPU or a Hugging Face token to discover sources.**
+Those are relevant only when processing audio/video.
 
-## Portfolio downloads
+### Choose a search backend
 
-Portfolio collection is **download-only**. It uses Agent Reach by default to find
-portfolio pages and funding announcements, then downloads and extracts readable
-page text deterministically. It does not identify investments, infer investment
-dates, summarize companies, call an extraction LLM, or import agent assessments.
-Those tasks belong to the downstream repository.
+The wizard offers two choices:
+
+| Backend | What it uses | What you need |
+|---|---|---|
+| `default` | DDG web search and yt-dlp YouTube search | No search API key; public search can be rate-limited |
+| `agent-reach` | Exa through mcporter for web search; yt-dlp for YouTube | A working Agent Reach/Exa setup |
+
+If Agent Reach is not configured, choose `default`. An unavailable backend is
+not evidence that the investor has no sources.
+
+To inspect installed tools and backends:
+
+```bash
+uv run --extra youtube vc-trace-collector doctor --json
+```
+
+`doctor` checks capabilities. It does **not** discover investors, install tools
+or download their material.
+
+## Run the workflow
+
+The examples use Michael Hyatt. Replace his name and workspace slug for another
+investor. New wizard workspaces use the name only, such as `michael-hyatt`.
+
+### 1. Discover and review sources
+
+```bash
+uv run --extra youtube vc-trace-collector wizard \
+  --stage discover --name "Michael Hyatt"
+```
+
+The wizard asks you to:
+
+1. Provide a firm or known profile if you have one; otherwise choose from possible profiles.
+2. Confirm the intended person using the displayed evidence.
+3. Choose platforms and search limits.
+4. Select sources to approve, reject or defer, then confirm the saved decisions.
+
+For Michael Hyatt, you can supply
+`https://www.thepitch.show/investors/michael-hyatt` when asked for a known profile.
+That page can establish identity even though The Pitch material is excluded from
+the public-trace corpus by the default rules.
+
+**How to select sources:** choose **select**, use arrow keys to move and Space
+to tick items, then press Enter. Choose **done** to continue to the decision
+screen. The menu also provides source details, text/platform/status filters and
+confidence sorting. Ctrl+C cancels unsaved choices.
+
+Review different roles in separate batches:
+
+| Material | Role to choose |
+|---|---|
+| An article or post written by the investor | `authored_by_target` |
+| A video or podcast containing the investor speaking | `spoken_by_target` |
+| A recording used only for voice comparison | `reference_voice` |
+| Someone else's discussion of the investor | `third_party` — not first-person corpus material |
+
+Do not approve a namesake or assume a high confidence score proves identity.
+Unselected and deferred sources stay unchanged. Approval does not override
+corpus exclusions.
+
+**This stage finds URLs and retrieves identity evidence. It does not download
+recordings or run audiovisual models.**
+
+To review more batches or resume discovery without replacing the saved identity:
+
+```bash
+uv run --extra youtube vc-trace-collector wizard \
+  --stage discover --investor michael-hyatt
+```
+
+Select no platforms if you only want to review existing candidates.
+
+### 2. Download approved material
+
+```bash
+uv run --extra youtube vc-trace-collector wizard \
+  --stage download --investor michael-hyatt
+```
+
+Select the approved sources you want, then confirm. The terminal shows progress
+and reports failures/skips. Rerun this stage to retry selected failures; valid
+successful downloads are reused.
+
+**Downloading does not start transcription or diarization.** A podcast page
+without acquired audio is not a successfully downloaded podcast episode.
+
+### 3. Process downloaded material
+
+For **written material only**, no AV dependencies are needed:
+
+```bash
+uv run vc-trace-collector wizard --stage process --investor michael-hyatt
+```
+
+For **YouTube or podcast recordings**, first ensure `ffmpeg` and `ffprobe` are
+installed. Create `.env` from [.env.example](.env.example) **only if you do not
+already have one**, then edit it locally:
+
+```dotenv
+HF_TOKEN=your-hugging-face-token
+VC_TRACE_AV_DEVICE=cuda
+```
+
+Use an appropriate device for your machine, such as `cpu` instead of `cuda`.
+Accept the required gated model access in Hugging Face. The CLI loads `.env`
+automatically; no `export` or `source .env` is needed. Never commit credentials.
+
+Run AV processing with its optional dependencies:
+
+```bash
+uv run --extra av --extra av-local vc-trace-collector wizard \
+  --stage process --investor michael-hyatt
+```
+
+Select downloaded recordings and the models to use. The local pipeline uses
+**Whisper for transcription** and **pyannote for diarization and voice comparison**,
+not platform captions.
+
+If there is no approved voice reference, the wizard asks you to choose a
+downloaded recording and provide a clean target-only interval after listening.
+It checks timestamps against the recording's duration. You can also stage a
+local reference file; acquire it in the download stage, then return here.
+Reference embeddings use the selected diarization pipeline's matching embedding
+space. Uncertain speaker matches remain flagged for review.
+
+Cached transcription and diarization are reused when valid. Processing does not
+silently download additional recordings.
+
+At the end, the wizard offers to **export and verify**. If you skip that prompt,
+run these later:
+
+```bash
+uv run vc-trace-collector export --investor michael-hyatt
+uv run vc-trace-collector verify --investor michael-hyatt
+```
+
+Check failures and review-required items before treating the corpus as complete.
+A successful verification does not guarantee discovery found every public source.
+
+## Where is the data?
+
+Everything for this example is under `outputs/michael-hyatt/`.
+
+| Location | Contents |
+|---|---|
+| `identity/` | Person, supporting evidence and voice references |
+| `discovery/source_plan.json` | Discovered sources and approval decisions |
+| `raw/` | Downloaded material and provenance |
+| `processed/documents.jsonl` | Normalized records, including inclusion/exclusion status |
+| `processed/target_speech.jsonl` | Extracted target speech |
+| `corpus/all_documents.jsonl` | Included documents after export |
+| `blog.jsonl`, `talks.jsonl`, `_manifest.json` | Compatibility export for the downstream builder |
+| `quality_report.json`, `run_summary.json` | Quality checks and run status |
+| `audit/` | Actions, decisions, failures and provider accounting |
+
+**For the Investment Memory builder:** use the exported corpus or the
+compatibility files above. Keep the manifests and source links for provenance.
+This collector does not run that builder or copy files into its repository.
+
+To inspect run status:
+
+```bash
+uv run vc-trace-collector status --investor michael-hyatt
+```
+
+## Portfolio evidence is separate
+
+Once the investor identity exists, collect portfolio evidence with:
 
 ```bash
 uv run vc-trace-collector portfolio --investor michael-hyatt
 ```
 
-No LLM API key or portfolio model settings are required. `--collect-only` remains
-accepted as a compatibility no-op. The former `--model`, `--assessment-file` and
-`--llm-call-budget-usd` options have been removed.
+This command uses Agent Reach by default; use `--backend default` if needed.
+It searches and downloads portfolio/funding pages with their readable text.
 
-**No corpus exclusions apply**, including The Pitch, domains, companies, keywords
-or date cutoffs. Existing corpus rules/approvals are unchanged. Searches are
-generated from the resolved identity and affiliations; no manual queries are
-required. Additional known URLs can be supplied with repeatable `--source-url`.
-The default Agent Reach backend uses `mcporter`; `--backend default` selects the
-standard web-search backend.
+**Portfolio collection is download-only.** It does not identify investments,
+extract investment dates, summarize companies or call an extraction LLM.
+The Pitch and other corpus exclusion rules do **not** apply to this dataset.
 
-The downstream tool should start at:
-
-For Michael Hyatt, open `outputs/michael-hyatt/portfolio/handoff.json` and read
-`outputs/michael-hyatt/portfolio/documents.jsonl`. These files are written when
-the portfolio command runs; downloading does not invoke the Investment Memory
-builder or move files into its repository.
+Give the downstream tool these files:
 
 ```text
-outputs/<investor>/portfolio/
-├── handoff.json        # Dataset paths, identity and scope
-├── documents.jsonl     # All validated available pages: text, URLs, dates, hashes
-├── sources/*.json      # Per-page text and provenance
-├── raw/*.html          # Original downloaded content
-├── search/*.json       # Queries and search results
-├── audit/              # Actions, search cost bounds and transferred bytes
-├── run_summary.json    # Download status and failures
-└── manifest.json       # File hashes
+outputs/michael-hyatt/portfolio/handoff.json
+outputs/michael-hyatt/portfolio/documents.jsonl
 ```
 
-`published_at` is the source page's publication date, **not an investment date**.
-Collected pages may concern namesakes or merely mention the VC. The downstream
-tool must assess identity, extract investment facts and create company summaries.
+Check `portfolio/run_summary.json` and `portfolio/manifest.json` for status.
+Page publication dates are not investment dates; the other repository must
+assess identity and extract the investment facts.
 
-Repeating the command reuses validated caches. The defaults are 20 search queries,
-30 attempted distinct pages, and 10 results per query. Use explicit limits for
-broader coverage; this is not guaranteed to discover a complete portfolio.
-The cumulative download budget is 100 MB with at most 5 MB per page.
-The separate search budget defaults to $10; search cost defaults to zero.
-Set `--search-operation-cost-usd` if your backend bills requests. There are no
-portfolio extraction-model charges.
+## Use Claude Code or Codex
 
-Corrupt caches fail validation. Explicit `--refresh` refetches within the same
-budgets and preserves overwritten cache versions under `cache_history/`.
-Previously created extraction outputs such as `portfolio.jsonl` and
-`assessment_schema.json` are left untouched but are not current handoff inputs.
-No corpus export, date snapshot filtering or Investment Memory generation runs here.
+Open the agent in this repository and invoke:
 
-## Status
+- **Codex:** `$vc-trace-collector`
+- **Claude Code:** `/vc-trace-collector`
 
-The MVP is a modular Python package with:
+For example: “Discover sources for Michael Hyatt. Help me confirm his profile
+and choose the sources; do not download yet.”
 
-- deterministic known-profile parsing, query generation, identity evidence,
-  and explicit namesake hypotheses;
-- credential-free DDG web search, direct `yt-dlp` YouTube search, optional
-  SearXNG override, and optional structured LLM refinement;
-- human review or confidence-gated automatic approval;
-- safe, rate-limited web/feed collection, supplied-file ingestion, optional
-  YouTube metadata/audio collection, and bounded podcast-enclosure
-  downloads;
-- configurable exclusion rules with a built-in The Pitch leakage firewall;
-- content-addressed raw artifacts, resumable SQLite operation state, sanitized
-  audit events, canonical documents, deterministic manifests, and verification;
-- resumable provider-neutral transcription, diarization, human-approved voice
-  embedding, target-speaker matching, and target-only speech extraction.
+Both skills share the same instructions. They guide the three stages and ask
+for missing decisions or a voice reference. If the agent cannot expose terminal
+controls to you, it uses conversational choices and the scripted CLI instead.
+Restart the agent session if the new skill is not listed.
 
-The first vertical slice supports web pages, feeds, supplied files, YouTube,
-and podcast pages/enclosures.
-LinkedIn and X should be provided as user-approved exports unless the operator
-configures an authorized collector. Audiovisual processing is opt-in because it
-can be costly: a reference must be human-approved, and weak model matches are
-routed to review rather than exported as verified speech.
+The skill files live under [.agents/skills/vc-trace-collector](.agents/skills/vc-trace-collector/)
+and [.claude/skills/vc-trace-collector](.claude/skills/vc-trace-collector/).
+Keep the full checkout: the Claude entry point refers to the shared skill.
 
-## Install
+## Further help
 
-Python 3.11–3.13 and [`uv`](https://docs.astral.sh/uv/) are required.
+- [Manual CLI, configuration, budgets and troubleshooting](docs/guides/cli-reference.md)
+- [Environment variable template](.env.example)
+- [Exclusion-rule examples](config/exclusions.example.toml)
+- [Changelog](CHANGELOG.md)
+- [Attribution and licensing notes](NOTICE.md)
 
-```bash
-uv sync
-uv run vc-trace-collector --help
-```
-
-Install only the optional capabilities you need:
-
-```bash
-# YouTube discovery/download plus local Whisper and pyannote processing
-uv sync --extra youtube --extra av --extra av-local
-
-# Optional browser-backed web collection
-uv sync --extra browser
-```
-
-The core web workflow does not install GPU frameworks, browser binaries, or
-paid-provider SDKs.
-
-Agent Reach is an optional external capability checker and router. Install it
-in an isolated tool environment, then inspect (but do not modify) available
-backends:
-
-```bash
-pipx install "https://github.com/Panniantong/agent-reach/archive/main.zip"
-agent-reach install --env=auto
-uv run vc-trace-collector doctor --json
-```
-
-`doctor` reports executables and the active backend Agent Reach selected for
-each channel. It does not search for an investor and it does not install tools.
-Use Agent Reach's explicit `--system` installer only if you intend it to modify
-your user-level tool configuration.
-
-Set local model configuration in `.env`; the CLI loads it automatically from
-the repository's current working directory:
-
-```bash
-cp .env.example .env
-chmod 600 .env
-# Edit .env and set HF_TOKEN and VC_TRACE_AV_DEVICE as needed.
-```
-
-Do not copy `.env` to another filename and commit it. Existing shell variables
-take precedence over values in `.env`.
-
-## Michael Hyatt: complete staged workflow
-
-Run these stages from the repository root. Each stage is resumable; rerunning a
-completed operation uses its audited cache.
-
-### 1. Check dependencies
-
-```bash
-uv run vc-trace-collector doctor --json
-```
-
-For the complete audiovisual path, `ffmpeg`, `ffprobe`, and `yt-dlp` should be
-reported as ready. Agent Reach web discovery additionally needs `agent-reach`
-and `mcporter`; `doctor` only reports their status and never installs them.
-
-### 2. Resolve the identity
-
-```bash
-uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --disable-public-search
-```
-
-`--disable-public-search` affects this `discover` invocation only: it prevents
-the built-in DDG/YouTube search while the known profile is used to resolve the
-identity. It does not disable any later `search-source` command. Keeping the
-steps separate makes platform searches explicit, independently resumable, and
-easy to audit.
-
-The supplied profile is retained as identity evidence but excluded from corpus
-material by the configurable `thepitch.show` leakage firewall.
-
-### 3. Search each source family
-
-```bash
-uv run vc-trace-collector search-source --investor michael-hyatt --source youtube --backend agent-reach
-uv run vc-trace-collector search-source --investor michael-hyatt --source podcast --backend agent-reach
-uv run vc-trace-collector search-source --investor michael-hyatt --source web_article --backend agent-reach
-uv run vc-trace-collector search-source --investor michael-hyatt --source web_profile --backend agent-reach
-uv run vc-trace-collector search-source --investor michael-hyatt --source rss_feed --backend agent-reach
-uv run vc-trace-collector search-source --investor michael-hyatt --source substack --backend agent-reach
-uv run vc-trace-collector search-source --investor michael-hyatt --source medium --backend agent-reach
-uv run vc-trace-collector list-sources --investor michael-hyatt
-```
-
-Search only discovers URLs and appends candidates. It does not download media,
-run Whisper, or run pyannote.
-
-To run a precise search instead of the generated queries, repeat `--query`.
-Explicit queries replace the generated set for that invocation:
-
-```bash
-uv run vc-trace-collector search-source \
-  --investor michael-hyatt \
-  --source youtube \
-  --backend agent-reach \
-  --query '"Michael Hyatt" "The Pitch" YouTube' \
-  --query '"Michael Hyatt" BlueCat investor interview YouTube' \
-  --limit-per-query 100 \
-  --max-search-operations 100
-
-uv run vc-trace-collector search-source \
-  --investor michael-hyatt \
-  --source web_article \
-  --backend agent-reach \
-  --query '"Michael Hyatt" BlueCat investor article' \
-  --query '"Michael Hyatt" Dyadem founder interview'
-```
-
-`--max-search-operations` raises the total ceiling saved during discovery and
-records the old and new values in the audit log. It cannot lower the saved
-ceiling. The Pitch Show results are retained as discovered evidence with their
-channel metadata, but the default leakage firewall marks them rejected rather
-than allowing them into the final corpus.
-
-If Agent Reach reports that Exa is offline, verify the backend outside the
-collector before retrying. On a machine that reaches the internet through
-`HTTP_PROXY`/`HTTPS_PROXY`, `mcporter` needs a Node version with environment
-proxy support and an explicit opt-in:
-
-```bash
-nvm use 25
-export NODE_USE_ENV_PROXY=1
-mcporter call exa.web_search_exa \
-  query='"Michael Hyatt" BlueCat investor' \
-  numResults=1
-```
-
-You may put `NODE_USE_ENV_PROXY=1` in the repository-local `.env`; the CLI
-loads it automatically. A missing `mcporter` is caught before a search starts.
-If Exa cannot be reached, the command stops after the first failed query and
-does not consume the saved search-operation allowance for that unreachable
-backend attempt.
-
-### 4. Review the proposed sources
-
-Copy the real candidate IDs from `list-sources` into `decisions.json`. Mark a
-clean recording intended for voice comparison as `reference_voice`; mark each
-appearance whose target speech should enter the corpus as `spoken_by_target`:
-
-```json
-[
-  {
-    "candidate_id": "candidate:<reference-id>",
-    "status": "approved",
-    "reason": "Human confirmed identity and suitability as a voice reference",
-    "decided_by": "human",
-    "material_role": "reference_voice"
-  },
-  {
-    "candidate_id": "candidate:<appearance-id>",
-    "status": "approved",
-    "reason": "Human confirmed the target investor appears in this recording",
-    "decided_by": "human",
-    "material_role": "spoken_by_target"
-  }
-]
-```
-
-Then record the identity and source decisions:
-
-```bash
-uv run vc-trace-collector review \
-  --investor michael-hyatt \
-  --confirm-identity \
-  --decision-file decisions.json
-```
-
-Do not approve a namesake or uncertain source merely to continue the run.
-
-### 5. Fetch approved material
-
-Fetch one platform or candidate at a time:
-
-```bash
-uv run vc-trace-collector fetch-source --investor michael-hyatt --source youtube
-uv run vc-trace-collector fetch-source --investor michael-hyatt --source podcast
-uv run vc-trace-collector fetch-source --investor michael-hyatt --candidate-id 'candidate:<id>'
-```
-
-YouTube collection downloads metadata and audio. Platform captions are not used
-for target-speech extraction.
-
-### 6. Approve a clean reference-voice interval
-
-After fetching the reference recording, take its `voice:` ID from
-`outputs/michael-hyatt/identity/reference_voice_candidates.jsonl`. Listen to the
-recording and select an interval containing Michael Hyatt alone—no host,
-crosstalk, or music:
-
-```bash
-uv run vc-trace-collector review-voice \
-  --investor michael-hyatt \
-  --candidate-id 'voice:<actual-id>' \
-  --reviewer human \
-  --start-seconds 120 \
-  --end-seconds 165 \
-  --diarization-model pyannote/speaker-diarization-3.1
-```
-
-### 7. Process each target appearance
-
-```bash
-uv run vc-trace-collector process-source \
-  --investor michael-hyatt \
-  --candidate-id 'candidate:<appearance-id>' \
-  --transcription-model turbo \
-  --diarization-model pyannote/speaker-diarization-3.1
-```
-
-This stage extracts audio, diarizes speakers, compares them with the approved
-voice reference, transcribes target turns, and flags uncertain attribution for
-review.
-
-### 8. Export and verify
-
-```bash
-uv run vc-trace-collector export --investor michael-hyatt
-uv run vc-trace-collector verify --investor michael-hyatt
-uv run vc-trace-collector status --investor michael-hyatt
-```
-
-The run is complete only when `verify` passes. Outputs are under
-`outputs/michael-hyatt/`, including the compatibility files `blog.jsonl`,
-`talks.jsonl`, and `_manifest.json`.
-
-## Alternative all-in-one run
-
-After discovery and review, the higher-level command can resume and execute the
-remaining stages:
-
-```bash
-uv run vc-trace-collector collect \
-  --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --resume latest
-```
-
-For a non-interactive run, `--auto-approve-discovery` accepts only candidates
-above the configured confidence thresholds. A remaining namesake hypothesis,
-including the Michael S. Hyatt namesake, still stops cleanly for human review.
-
-```bash
-uv run vc-trace-collector collect \
-  --name "Investor Name" \
-  --firm "Firm Name" \
-  --auto-approve-discovery \
-  --max-cost-usd 5.00 \
-  --max-search-operations 20 \
-  --max-media-minutes 60
-```
-
-`--source-url` is repeatable. It seeds an independently discovered page or
-recording into the same identity validation and review workflow; it never
-bypasses confidence checks or exclusion rules.
-
-When an LLM discovery provider is enabled, also pass a conservative upper-bound
-reservation for its single refinement call. The call will not start without it:
-
-```bash
---discovery-call-budget-usd 0.25
-```
-
-Stage commands are available independently:
-
-```bash
-uv run vc-trace-collector discover --help
-uv run vc-trace-collector review --help
-uv run vc-trace-collector search-source --help
-uv run vc-trace-collector list-sources --help
-uv run vc-trace-collector fetch-source --help
-uv run vc-trace-collector review-voice --help
-uv run vc-trace-collector collect --help
-uv run vc-trace-collector process --help
-uv run vc-trace-collector process-source --help
-uv run vc-trace-collector export --help
-uv run vc-trace-collector status --help
-uv run vc-trace-collector verify --help
-```
-
-`collect` also accepts `--collection-only`, `--processing-only`, and
-`--export-only`. Only one may be selected at a time.
-
-## Agent Reach staged workflow
-
-Agent Reach does not replace collectors. It identifies working upstream
-backends: the staged CLI uses `yt-dlp` for YouTube and the Agent Reach Exa
-configuration through `mcporter` for web, blog, and podcast URL discovery.
-Each search appends to the same reviewable plan without removing prior human
-decisions:
-
-```bash
-uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
-  --disable-public-search
-uv run vc-trace-collector search-source \
-  --investor michael-hyatt --source youtube --backend agent-reach
-uv run vc-trace-collector search-source \
-  --investor michael-hyatt --source podcast --backend agent-reach
-uv run vc-trace-collector search-source \
-  --investor michael-hyatt --source web_article --backend agent-reach
-uv run vc-trace-collector list-sources --investor michael-hyatt
-```
-
-After reviewing the plan, download one platform or one item at a time:
-
-```bash
-uv run vc-trace-collector fetch-source \
-  --investor michael-hyatt --source youtube
-uv run vc-trace-collector fetch-source \
-  --investor michael-hyatt --candidate-id 'candidate:<id>'
-```
-
-Run pyannote, reference-voice matching, target-turn extraction, and Whisper for
-one approved appearance with:
-
-```bash
-uv run vc-trace-collector process-source \
-  --investor michael-hyatt \
-  --candidate-id 'candidate:<id>' \
-  --transcription-model turbo \
-  --diarization-model pyannote/speaker-diarization-3.1
-```
-
-The project-local agent skill at
-`.agents/skills/vc-trace-collector/SKILL.md` instructs compatible coding agents
-to use these same public, audited commands. It never grants credentials or
-bypasses human review.
-
-## Discovery providers
-
-The normal CLI searches the public web through DDG without credentials. When
-the `youtube` extra is installed, YouTube-specific queries use `yt-dlp`
-directly, matching the discovery behavior of the reference collector:
-
-```bash
-uv sync --extra youtube
-uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt"
-```
-
-No-key public search is best-effort: a public service may throttle automated
-requests or change its interface. Failures are isolated and recorded in the
-discovery audit. Use `--disable-public-search` for offline tests or a run that
-must evaluate only supplied profiles, URLs, and files.
-
-An operator-controlled SearXNG JSON endpoint can replace DDG for general web
-search. Direct YouTube discovery remains enabled:
-
-```bash
-export VC_TRACE_SEARCH_ENDPOINT="https://search.example/search"
-```
-
-Structured LLM refinement is enabled only when all three variables are set:
-
-```bash
-export VC_TRACE_LLM_ENDPOINT="https://provider.example/v1/chat/completions"
-export VC_TRACE_LLM_API_KEY="..."
-export VC_TRACE_DISCOVERY_MODEL="provider-model-name"
-```
-
-The LLM receives structured public evidence and returns schema-validated JSON.
-The audit stores the model/provider operation, token usage when returned, and a
-concise action record, never private chain-of-thought. Search, fetching,
-approval, hashing, policy evaluation, normalization, deduplication, export, and
-verification remain deterministic.
-
-Do not commit these variables. Copy `.env.example` only as a list of supported
-names, then place local values in `.env`:
-
-```bash
-cp .env.example .env
-chmod 600 .env
-```
-
-The CLI automatically loads `.env` from the current working directory. Values
-already exported in the shell take precedence over values in `.env`. The file
-is ignored by Git and must never be force-added or committed.
-
-## Download progress
-
-`fetch-source` automatically shows two progress rows in an interactive terminal:
-selected sources completed (with failed/skipped counts), and the current item
-with downloaded bytes, transfer speed and ETA when its size is known. Web and
-podcast HTTP transfers and YouTube audio downloads report byte progress. Unknown
-sizes and metadata requests show an indeterminate bar. Each request or retry
-starts a fresh transfer count; cached sources advance the batch without downloading.
-Redirected logs contain no animated bars. No extra flag is required, and this
-display applies to newly started commands only.
-
-## Reference voice and speaker attribution
-
-`process` and `process-source` show a progress bar in an interactive terminal:
-the recording title, current stage, elapsed time, pyannote batch progress, and
-Whisper segment counts. Model loading and audio extraction show a spinner;
-cached stages are labelled. Redirected output does not include animated bars.
-An already-running command must finish before the new display takes effect on
-its next invocation.
-
-Discovery generates interview, podcast, and YouTube queries and records likely
-single-identity voice sources in
-`identity/reference_voice_candidates.jsonl`. A usable voice reference should:
-
-- have strong independent identity evidence;
-- contain a clean interval dominated by the target investor;
-- avoid music, crosstalk, or unidentified panel speech;
-- be human-reviewed before it becomes a reference profile.
-
-The authoritative AV path follows the original `transcribe_investors.py`
-workflow: downloaded media is normalized by FFmpeg to mono 16 kHz WAV;
-pyannote diarizes it and produces speaker embeddings; those embeddings are
-compared with the human-approved reference voice; each diarized speaker turn
-is extracted; and Whisper transcribes the extracted WAV segments. Platform
-captions are not fetched or substituted for this transcription path. Only
-segments attributed to the target speaker can enter `target_speech.jsonl`.
-
-Cosine matching evaluates every diarized speaker against every compatible,
-human-approved reference profile. Each speaker keeps its best reference score;
-the winning speaker must then pass both the minimum-score and runner-up-margin
-gates. The complete per-reference score evidence is retained for audit. A low
-score or narrow margin produces `uncertain`, not verified speech. Models,
-device selection, and access tokens are supplied by the operator; none are
-hard-coded.
-
-After collecting an approved reference source, inspect
-`identity/reference_voice_candidates.jsonl`, select a clean interval, and approve
-it explicitly:
-
-```bash
-uv run vc-trace-collector review-voice \
-  --investor michael-hyatt \
-  --candidate-id 'voice:<id from the JSONL file>' \
-  --reviewer 'analyst@example.com' \
-  --start-seconds 120 \
-  --end-seconds 165 \
-  --diarization-model "pyannote/speaker-diarization-3.1"
-
-uv run vc-trace-collector process \
-  --investor michael-hyatt \
-  --transcription-model turbo \
-  --diarization-model "pyannote/speaker-diarization-3.1"
-
-uv run vc-trace-collector export --investor michael-hyatt
-```
-
-`review-voice` is additive: approving another clean recording or interval keeps
-the earlier verified profiles. Re-running `process-source` after that approval
-recomputes only speaker attribution. It reuses cached diarization and timed
-transcription when the media and model selections are unchanged. Legacy AV
-results can seed the timed-transcript cache, so their first migration requires
-one diarization pass but does not rerun Whisper.
-
-Stage-specific model and cost selections update `config_snapshot.json` and
-append a structured configuration event to the audit trace. Options omitted at
-a later invocation retain their previously saved values.
-
-Use a decision-file entry with `"material_role": "spoken_by_target"` for an
-appearance that should enter target-speech processing. A separate clean
-reference recording is preferable to the recording being evaluated. Local
-Whisper and pyannote adapters are available in the `av-local` extra; `HF_TOKEN`
-and `VC_TRACE_AV_DEVICE` are optional environment variables consumed only by
-the selected models.
-
-Set conservative per-operation price estimates with
-`--transcription-cost-usd`, `--diarization-cost-usd`, and
-`--embedding-cost-usd`; search calls use `--search-operation-cost-usd`. They
-are reserved transactionally before provider or model invocation.
-`--max-download-bytes`, `--max-provider-operations`, and
-`--max-media-minutes` are aggregate run ceilings. Media with an unknown
-duration is rejected before model calls. Provider reservations are immutable
-attempt records: retries and dispatched failures consume the operation ceiling,
-and potentially billable failures are conservatively settled. The public
-JSONL cost trace is reconciled against the transactional SQLite ledger during
-verification.
-By default, any failed or unresolved approved source prevents a verified
-export; `--allow-partial-run` is an explicit, manifest-visible opt-out.
-
-## Exclusions and source review
-
-`config/exclusions.example.toml` demonstrates domain, channel, programme,
-company, author, speaker, keyword, and URL-pattern controls. Rules are evaluated
-at discovery, post-metadata collection, processing, export, and verification.
-Items that are excluded, third-party, unknown, or have uncertain speaker
-attribution cannot enter the corpus. A post-metadata `review` rule pauses before
-media download; an analyst may record its rule ID in a decision file's
-`override_rule_ids` and rerun review/collection. The decision history is part of
-the signed manifest provenance.
-
-Direct audio URLs are not downloaded during discovery. Their review decision
-must include a positive `estimated_media_seconds` value before collection.
-Extensionless podcast URLs are classified with a safe HEAD request before GET;
-an audio/video MIME type without an approved duration also fails closed.
-
-Pass the file with `--exclusion-file`. Its validated rule contents are frozen
-inside `config_snapshot.json` and fingerprinted in the collection manifest.
-
-Additional run-level exclusions are available from the CLI:
-
-```bash
-uv run vc-trace-collector collect \
-  --name "Investor Name" \
-  --exclude-domain example.com \
-  --exclude-channel "Prohibited Show"
-```
-
-## Output contract
-
-Each investor has an isolated workspace:
-
-```text
-outputs/<investor-slug>/
-├── identity/
-│   ├── resolved_identity.json
-│   ├── identity_evidence.jsonl
-│   ├── reference_voice_candidates.jsonl
-│   ├── reference_voice_profiles.jsonl
-│   └── reference_voice_profile.json  # latest-profile compatibility view
-├── discovery/
-│   ├── source_plan.json
-│   ├── source_candidates.jsonl
-│   ├── search_observations.jsonl
-│   ├── approved_sources.jsonl
-│   └── rejected_sources.jsonl
-├── raw/{web,social,video,podcast,supplied}/
-├── processed/
-│   ├── documents.jsonl
-│   ├── target_speech.jsonl
-│   ├── av_attribution_results.jsonl
-│   ├── av_candidate_outcomes.jsonl
-│   ├── collection_candidate_outcomes.jsonl
-│   └── excluded_documents.jsonl
-├── corpus/
-│   ├── blog.jsonl
-│   ├── talks.jsonl
-│   └── all_documents.jsonl
-├── audit/
-├── state/
-│   ├── state.sqlite
-│   ├── av_diarization/
-│   ├── av_transcripts/
-│   └── av_attributions/
-├── collection_manifest.json
-├── exclusion_rules_snapshot.json
-├── quality_report.json
-└── run_summary.json
-```
-
-Raw bytes are immutable and addressed by SHA-256. Canonical JSON serialization,
-stable identifiers, file hashes, extraction metadata, source URLs, identity
-confidence, inclusion decisions, and model attribution make every exported
-record traceable back to source artifacts. The compatibility export is written
-both under `corpus/` and at the investor workspace root as required by the
-existing downstream consumer.
-
-Direct network connections verify the connected socket against public DNS to
-mitigate rebinding. Environment proxy use is disabled unless the operator sets
-`VC_TRACE_ALLOW_ENV_PROXY=1`; that explicit opt-in treats the proxy as part of
-the network trust boundary while retaining pre/post DNS validation.
-
-## Tests
-
-The default suite is local and requires no paid API or network:
+Development checks require no paid API:
 
 ```bash
 uv run pytest -q
+uv run ruff check src tests
 ```
 
-Run the explicit public-network contract separately:
-
-```bash
-uv run pytest -m live tests/live/test_michael_hyatt.py -q
-```
-
-## Development principles
-
-- Never treat matching names as sufficient identity proof.
-- Never silently promote an uncertain speaker match.
-- Preserve raw evidence and decisions; derived files are reproducible.
-- Fail one source independently and keep successful source results.
-- Reserve provider budget before paid work and stop before exceeding it.
-- Respect robots, site terms, authentication boundaries, rate limits, and
-  applicable law. Prefer official feeds and user-provided exports.
+This repository does not generate Investment Memory, evaluate pitches, predict
+investment decisions or run founder rehearsals.
