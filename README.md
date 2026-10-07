@@ -9,7 +9,55 @@ Nothing advances to the next stage automatically.
 
 [Get started](#get-started) · [Run the workflow](#run-the-workflow) ·
 [Find your data](#where-is-the-data) · [Use an agent](#use-claude-code-or-codex) ·
+[Related repositories](#dependencies-and-related-vclogic-repositories) ·
 [Manual CLI and configuration](docs/guides/cli-reference.md)
+
+## Dependencies and related VCLogic repositories
+
+**This collector runs independently.** No other VCLogic repository is required
+to install it, discover sources, download material, or process recordings.
+Its Python dependencies and optional extras are declared in [pyproject.toml](pyproject.toml).
+The relationships below are primarily downstream data handoffs, not dependencies
+that must be installed alongside the collector.
+
+| Repository | Responsibility | Relationship to this collector |
+|---|---|---|
+| [vclogic-vc-investment-memory](https://github.com/VCLogic/vclogic-vc-investment-memory) | Reviews collected evidence and generates the investor's source-linked Investment Memory wiki, including portfolio/relationship analysis | **Direct downstream consumer:** reads the complete `outputs/<investor-slug>/` folder; does not import the collector as a Python package |
+| [vclogic-vc-investor-onboarding](https://github.com/VCLogic/vclogic-vc-investor-onboarding) | Validates an investor wiki and prepares an assessment bundle with identity, retrieval indexes and configuration; optionally collects historical pitches and decisions | **Indirect downstream consumer:** takes the generated wiki, not the collector's raw source plan; its own setup uses the investment-memory and assessment packages |
+| [vclogic-vc-agentic-assessment](https://github.com/VCLogic/vclogic-vc-agentic-assessment) | Runs investor-specific pitch assessment and rehearsal | Uses the prepared investor assets installed through onboarding; assessment does not run inside this collector |
+| [vclogic-web-application](https://github.com/VCLogic/vclogic-web-application) | Provides the web interface and API for investor profiles, assessment and rehearsal | Uses the assessment engine and prepared investor bundles; it is not required for the collector CLI or skill |
+
+The data flow is:
+
+```text
+trace-collector → investment-memory → investor-onboarding → agentic-assessment
+                     investor wiki       runtime bundle          ↑
+                                                          web-application
+                                                          (interface/API)
+```
+
+Each stage is run separately; this collector does not automatically invoke the
+other repositories. Follow each linked repository's README for its installation,
+credentials and runtime requirements. In particular, onboarding's sibling-checkout
+requirements do not apply to running this collector by itself.
+
+### Handoff to Investment Memory
+
+Pass the **whole investor output folder**, for example
+`outputs/michael-hyatt/`, to the investment-memory tool. Preserve relative paths
+and all available `identity/`, `discovery/`, `raw/`, `processed/`, `corpus/`,
+`state/`, `portfolio/`, audit and manifest files. The receiving tool requires a
+confirmed `identity/resolved_identity.json` with a slug matching the folder name.
+You can pass the folder's path directly or transfer the folder without copying
+the collector's `.env`, credentials or virtual environment.
+
+The `blog.jsonl`, `talks.jsonl` and `_manifest.json` export remains available for
+legacy consumers, but those files alone are **not** the complete input expected
+by the current Investment Memory workflow. Untranscribed recordings remain
+untranscribed: the memory builder does not automatically process raw media.
+Portfolio evidence stays separate from the public-trace corpus; investment-fact
+extraction belongs to investment-memory, not this collector. Historical pitch
+collection in onboarding is also separate from this collector's corpus exclusions.
 
 ## Get started
 
@@ -190,8 +238,9 @@ Everything for this example is under `outputs/michael-hyatt/`.
 | `quality_report.json`, `run_summary.json` | Quality checks and run status |
 | `audit/` | Actions, decisions, failures and provider accounting |
 
-**For the Investment Memory builder:** use the exported corpus or the
-compatibility files above. Keep the manifests and source links for provenance.
+**For the Investment Memory builder:** supply the whole investor folder as
+described in [Handoff to Investment Memory](#handoff-to-investment-memory), not
+just the compatibility export. Keep the manifests and source links for provenance.
 This collector does not run that builder or copy files into its repository.
 
 To inspect run status:
