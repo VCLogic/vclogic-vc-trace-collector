@@ -30,6 +30,7 @@ from .av import (
     match_target_speaker_references,
     probe_media_duration,
     transcribe_diarized_turns,
+    transcription_strategy,
 )
 from .av_cache import (
     AttributionCacheRecord,
@@ -291,6 +292,10 @@ class Pipeline:
         provider_name: str,
         model_name: str,
     ) -> TranscriptResult | None:
+        # Legacy results contain phrases, not the original word timestamps.
+        # Never migrate them into a word-level cache or across strategies.
+        if transcription_strategy() != "diarized-turns-v1":
+            return None
         rows = read_jsonl(
             workspace / "processed/av_attribution_results.jsonl"
         )
@@ -306,6 +311,8 @@ class Pipeline:
             if result.transcript.provider != provider_name:
                 continue
             if result.transcript.model != model_name:
+                continue
+            if result.transcript.method == "speech_to_text_full_audio_words_v1":
                 continue
             return TranscriptResult(
                 info=result.transcript,

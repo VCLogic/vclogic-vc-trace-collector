@@ -26,6 +26,13 @@ from .models import (
 from .progress import diarization_hook, report
 
 
+def transcription_strategy() -> str:
+    strategy = os.environ.get("VC_TRACE_TRANSCRIPTION_STRATEGY", "diarized-turns-v1")
+    if strategy not in {"diarized-turns-v1", "full-audio-words-v1"}:
+        raise ValueError(f"Unsupported transcription strategy: {strategy}")
+    return strategy
+
+
 class TimedText(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -282,6 +289,12 @@ def transcribe_diarized_turns(
     transcript_provider: TranscriptProvider,
     segment_extractor: Callable[..., Path] | None = None,
 ) -> TranscriptResult:
+    if transcription_strategy() == "full-audio-words-v1":
+        transcribe_words = getattr(transcript_provider, "transcribe_words", None)
+        if transcribe_words is None:
+            raise ValueError("Full-audio strategy requires a word-timestamp provider")
+        report("Whisper: full recording (word timestamps)")
+        return transcribe_words(audio_path)
     extractor = segment_extractor or extract_audio_segment
     segments: list[TimedText] = []
     transcript_info = TranscriptInfo(
@@ -292,7 +305,11 @@ def transcribe_diarized_turns(
     with tempfile.TemporaryDirectory(prefix="vc-trace-segments-") as directory:
         segment_dir = Path(directory)
         for index, turn in enumerate(diarization.turns):
-            report("Whisper: speech segments", completed=index, total=len(diarization.turns))
+            report(
+                "Whisper: speech segments",
+                completed=index,
+                total=len(diarization.turns),
+            )
             safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", turn.speaker_label)
             segment_path = segment_dir / f"segment_{safe_label}_{index:05d}.wav"
             extractor(
@@ -315,8 +332,59 @@ def transcribe_diarized_turns(
                         text=item.text,
                     )
                 )
-    report("Whisper: speech segments", completed=len(diarization.turns), total=len(diarization.turns))
+    report(
+        "Whisper: speech segments",
+        completed=len(diarization.turns),
+        total=len(diarization.turns),
+    )
     return TranscriptResult(info=transcript_info, segments=segments)
+
+
+def align_words_to_speakers(
+    words: list[TimedText], turns: list[DiarizedTurn]
+) -> list[AlignedText]:
+    """Conservative word attribution, then coalesce into readable segments.
+
+    Whisper word spans can include leading silence. A unique overlapping speaker
+    is retained, but competing speakers leave the word unattributed. Never give
+    a whole cross-speaker sentence to one person.
+    """
+    result: list[AlignedText] = []
+    for word in words:
+        overlaps: dict[str, float] = {}
+        for turn in turns:
+            seconds = _overlap(
+                word.start_seconds,
+                word.end_seconds,
+                turn.start_seconds,
+                turn.end_seconds,
+            )
+            if seconds > 0:
+                overlaps[turn.speaker_label] = max(
+                    overlaps.get(turn.speaker_label, 0), seconds
+                )
+        label, seconds = None, 0.0
+        if len(overlaps) == 1:
+            label, seconds = next(iter(overlaps.items()))
+        item = AlignedText(
+            **word.model_dump(), speaker_label=label, overlap_seconds=seconds
+        )
+        if (
+            result
+            and result[-1].speaker_label == label
+            and 0 <= item.start_seconds - result[-1].end_seconds <= 0.8
+            and item.end_seconds - result[-1].start_seconds <= 30
+            and not result[-1].text.rstrip().endswith((".", "?", "!"))
+        ):
+            previous = result[-1]
+            previous.text = re.sub(
+                r"\s+([,.;:!?])", r"\1", previous.text + " " + item.text
+            )
+            previous.end_seconds = item.end_seconds
+            previous.overlap_seconds += seconds
+        else:
+            result.append(item)
+    return result
 
 
 def assemble_target_speech(
@@ -325,7 +393,12 @@ def assemble_target_speech(
     transcript: TranscriptResult,
     attribution: SpeakerAttribution,
 ) -> TargetSpeechResult:
-    aligned = align_transcript_to_speakers(transcript.segments, diarization.turns)
+    align = (
+        align_words_to_speakers
+        if transcript.info.method == "speech_to_text_full_audio_words_v1"
+        else align_transcript_to_speakers
+    )
+    aligned = align(transcript.segments, diarization.turns)
     target = [
         item
         for item in aligned
@@ -504,6 +577,31 @@ class WhisperTranscriptProvider:
             segments=segments,
         )
 
+    def transcribe_words(self, audio_path: Path) -> TranscriptResult:
+        result = self._model.transcribe(
+            str(audio_path), word_timestamps=True, verbose=False
+        )
+        words = []
+        for segment in result.get("segments", []):
+            if segment.get("text", "").strip() and "words" not in segment:
+                raise ValueError("Whisper did not return requested word timestamps")
+            for word in segment.get("words", []):
+                start, end = float(word["start"]), float(word["end"])
+                text = str(word["word"]).strip()
+                if text and end > start:
+                    words.append(
+                        TimedText(start_seconds=start, end_seconds=end, text=text)
+                    )
+        return TranscriptResult(
+            info=TranscriptInfo(
+                method="speech_to_text_full_audio_words_v1",
+                provider=self.provider_name,
+                model=self.model_name,
+                language=result.get("language"),
+            ),
+            segments=words,
+        )
+
 
 @contextmanager
 def _safe_pyannote_checkpoint_load() -> Iterator[None]:
@@ -534,9 +632,7 @@ class PyannoteDiarizationProvider:
             try:
                 self._pipeline = Pipeline.from_pretrained(model, token=token)
             except TypeError:
-                self._pipeline = Pipeline.from_pretrained(
-                    model, use_auth_token=token
-                )
+                self._pipeline = Pipeline.from_pretrained(model, use_auth_token=token)
         if device:
             import torch
 
@@ -594,9 +690,7 @@ class PyannoteEmbeddingProvider:
             try:
                 self._inference = Inference(model, token=token, window="whole")
             except TypeError:
-                self._inference = Inference(
-                    model, use_auth_token=token, window="whole"
-                )
+                self._inference = Inference(model, use_auth_token=token, window="whole")
         if device:
             import torch
 

@@ -6,7 +6,7 @@ from hashlib import sha256
 
 from pydantic import AwareDatetime, Field
 
-from .av import DiarizationResult, TimedText
+from .av import DiarizationResult, TimedText, transcription_strategy
 from .models import SpeakerAttribution, StrictModel, TranscriptInfo, utc_now
 from .storage import canonical_json
 
@@ -46,7 +46,7 @@ def transcript_cache_key(
     model: str,
     model_version: str,
     diarization_cache_key: str,
-    segmentation_version: str = SEGMENTATION_VERSION,
+    segmentation_version: str | None = None,
 ) -> str:
     return _key(
         "av-transcript",
@@ -57,7 +57,7 @@ def transcript_cache_key(
             "model": model,
             "model_version": model_version,
             "diarization_cache_key": diarization_cache_key,
-            "segmentation_version": segmentation_version,
+            "segmentation_version": segmentation_version or transcription_strategy(),
         },
     )
 
@@ -107,7 +107,7 @@ class TranscriptCacheRecord(StrictModel):
     model: str
     model_version: str
     diarization_cache_key: str
-    segmentation_version: str = SEGMENTATION_VERSION
+    segmentation_version: str = Field(default_factory=transcription_strategy)
     transcript: TranscriptInfo
     segments: list[TimedText]
     migration_source: str | None = None
