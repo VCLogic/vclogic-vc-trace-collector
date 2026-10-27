@@ -59,6 +59,7 @@ from .discovery import (
     OpenAICompatibleDiscoveryProvider,
     SearchResult,
     SearxngSearchProvider,
+    _source_type,
     stable_id,
 )
 from .export import export_workspace
@@ -69,6 +70,7 @@ from .models import (
     AVCandidateOutcome,
     CanonicalDocument,
     CollectionManifest,
+    Confidence,
     EventStatus,
     InclusionStatus,
     MaterialRole,
@@ -78,13 +80,14 @@ from .models import (
     ResolutionStatus,
     ResolvedIdentity,
     RunSummary,
+    SourceCandidate,
     SourceDecision,
     SourcePlan,
     SourceType,
     TranscriptInfo,
     utc_now,
 )
-from .policy import ExclusionRule, RuleSet
+from .policy import ExclusionRule, RuleSet, canonicalize_url
 from .process import (
     deduplicate,
     load_artifact_records,
@@ -568,6 +571,41 @@ class Pipeline:
         workspace = self.workspace(slug)
         write_json(workspace / "discovery/source_plan.json", plan)
         self._write_candidate_views(workspace, plan)
+
+    def add_sources(
+        self, investor_slug: str, urls: list[str], *, reviewer: str
+    ) -> list[SourceCandidate]:
+        """Append human-supplied URLs as approved candidates; collection fetches them."""
+        plan = self._load_plan(investor_slug)
+        known = {candidate.canonical_url for candidate in plan.candidates}
+        confidence = Confidence(score=1, method="human_added_in_triage", version="1")
+        added = []
+        for url in urls:
+            canonical = canonicalize_url(url.strip())
+            if not canonical.startswith(("https://", "http://")):
+                raise ValueError(f"Not a public HTTP(S) URL: {url}")
+            if canonical in known:
+                continue
+            known.add(canonical)
+            added.append(
+                SourceCandidate(
+                    candidate_id=stable_id("candidate", canonical),
+                    url=url.strip(),
+                    canonical_url=canonical,
+                    source_type=_source_type(canonical),
+                    discovered_via="user_supplied_source",
+                    discovery_queries=["human added in triage"],
+                    identity_confidence=confidence,
+                    source_confidence=confidence,
+                    approval_status=ApprovalStatus.APPROVED,
+                    reviewed_by=reviewer,
+                    decision_at=utc_now(),
+                    decision_reason="Added by human during triage",
+                )
+            )
+        plan.candidates.extend(added)
+        self._save_plan(investor_slug, plan)
+        return added
 
     def search_source(
         self,
