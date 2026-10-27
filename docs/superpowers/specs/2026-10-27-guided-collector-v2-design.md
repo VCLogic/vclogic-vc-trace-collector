@@ -18,11 +18,11 @@ runner, no stage menu. All durable work goes through existing `Pipeline` methods
 `vc-trace-collector wizard` runs:
 
 1. **Who.** Investor name; optional firm or known profile URL.
-2. **Is this them?** Show resolved identity and evidence; Yes / No. No: offer to
-   enter a profile URL and re-resolve, or quit. Yes: `pipeline.review(...,
+2. **Is this them?** Show resolved identity and evidence; Yes / No. No: stop and
+   suggest re-running with the correct profile URL. Yes: `pipeline.review(...,
    confirm_identity=True)`.
-3. **Platforms.** Checkbox list of all `SourceType`s except `supplied`, all ticked
-   by default. Limits (results per query, search-operation ceiling, cost ceiling)
+3. **Platforms.** Checkbox list of platforms to skip (all `SourceType`s except
+   `supplied`); nothing ticked searches all. Limits (results per query, search-operation ceiling, cost ceiling)
    shown on one line; "Edit limits?" defaults to No.
 4. **Discovery.** `pipeline.search_source` per platform. A bar per platform; when
    the total is unknown, a spinner with a running candidate count, never a
@@ -40,18 +40,9 @@ runner, no stage menu. All durable work goes through existing `Pipeline` methods
 
 ### Resume
 
-When a workspace for the name (or `--investor` slug) exists, the next step is
-determined from saved state:
-
-| Saved state | Resume at |
-|---|---|
-| identity not confirmed | 2 |
-| confirmed, no candidates | 3 |
-| candidates, none decided | 5 |
-| approved but not downloaded | 6 |
-| downloaded media, no verified reference profile | 7 |
-| downloaded, not processed | 8 |
-| processed | 9 |
+Completed steps are recorded in `<workspace>/guided_state.json` as
+`{"completed": [...]}`. Without that file, a workspace with confirmed identity
+resumes after `identity`.
 
 The wizard asks "Continue from <step>?"; No offers a list of steps to jump to.
 Each step persists on completion. Ctrl-C prints
@@ -79,9 +70,9 @@ Decisions are held in memory and written in one `pipeline.review(...)` call on `
 or `q`; reviewer defaults to `$USER`. Keystroke logic lives in a plain class
 separate from the prompt_toolkit layout so it can be unit tested.
 
-New pipeline method `add_sources(slug, urls) -> list[SourceCandidate]` reuses the
-`source_urls` handling from `discover` to append candidates to an existing plan.
-Duplicate URLs (after canonicalization) are ignored.
+New pipeline method `add_sources(slug, urls, reviewer)` appends human-vouched,
+approved candidates (type from URL, confidence 1.0) without fetching; canonical
+duplicates are ignored.
 
 ## Voice reference loop (step 7)
 
