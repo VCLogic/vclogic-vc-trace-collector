@@ -1,8 +1,8 @@
 # Download only
 
 Read the existing plan and download outcomes. Confirm the selected approved items
-and limits. Offer `wizard --stage download --investor investor-name` in the human's
-terminal, or use explicit commands after conversational selection:
+and limits. Offer `wizard --investor investor-name` (resumes at the next unfinished
+step) in the human's terminal, or use explicit commands after conversational selection:
 
 ```bash
 uv run --extra youtube vc-trace-collector fetch-source \

@@ -7,6 +7,15 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `wizard` is now one linear guided run: identity, platforms to skip, discovery,
+  a full-screen triage table (approve/reject, roles, add URLs, skip platforms),
+  download, voice references (pick a diarized speaker or type a range; several
+  references allowed), processing and export. Progress is saved per step.
+- Removed `wizard --stage` and the investor dashboard. Agents keep using the
+  granular CLI commands.
+
 ### Fixed
 
 - YouTube extra now includes yt-dlp's default dependencies, including the EJS
@@ -18,25 +27,14 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Table-first investor source browser: Enter opens source details; search and
-  stage filters separate source approval, downloads, transcription, diarization
-  and voice attribution. Direct processing shortcut and an investor readiness
-  filter allow processing downloaded recordings despite other failed downloads.
-- Investor-first full-screen terminal dashboard for `wizard` without `--stage`:
-  workspace counts, new-investor platform choices, pending-source bulk approval,
-  guided voice references with mm:ss input, and persistent job progress/reconnect.
-- Detached managed workers with per-investor locking, GPU serialization, pause
-  requests, stale-process detection, and download pacing/circuit breaking.
-
+- `Pipeline.add_sources` appends human-supplied URLs as approved candidates.
+- Download pacing and circuit breaking after repeated bot-check failures.
 - Explicit `process-source --allow-unknown-role` mode for approved downloaded
   media whose identity/material role is unresolved. Source roles are preserved
   and extracted content stays review-required even when speaker matching passes.
 - In-chat skill review with numbered batches, clickable source links, evidence
   and proposed roles, persistent batch-to-candidate mappings, and scoped decisions
   that do not trigger downloads or processing.
-- Guided `wizard` with independent discovery, download and processing stages,
-  profile choices, evidence review, searchable source checkboxes, confidence
-  sorting, cancellation and existing-workspace resume.
 - Shared repository-local Claude Code and Codex skill instructions, with staged
   conversational operation when an interactive terminal is unavailable.
 - Voice-reference guidance with actual-duration checks and matching embedding

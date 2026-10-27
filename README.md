@@ -4,79 +4,34 @@ Collect a venture investor's public articles, interviews, videos and podcasts in
 a source-linked corpus. A separate repository can use that corpus to build an
 Investment Memory.
 
-**The workflow has three separate stages: discover → download → process.**
-Nothing advances to the next stage automatically.
+**Run `vc-trace-collector wizard` for one guided run: discover → triage →
+download → voice reference → process.** Agents use the separate CLI commands.
 
 [Get started](#get-started) · [Run the workflow](#run-the-workflow) ·
 [Find your data](#where-is-the-data) · [Use an agent](#use-claude-code-or-codex) ·
 [Related repositories](#dependencies-and-related-vclogic-repositories) ·
 [Manual CLI and configuration](docs/guides/cli-reference.md)
 
-## Interactive investor dashboard
+## Guided run
 
-Start here—no stage flags or shell loops:
+Start here—one linear run from a name to a verified corpus:
 
 ```bash
 uv run --extra youtube --extra av --extra av-local vc-trace-collector wizard
 ```
 
-For discovery and written material only, omit the extras. FFmpeg, an approved
-voice reference, and the configured model access are still needed for audiovisual
-processing; `.env` is loaded automatically.
+For discovery and written material only, omit the extras. `.env` is loaded
+automatically.
 
 The YouTube extra includes yt-dlp's JavaScript challenge-solver scripts. Install
 a supported JavaScript runtime (Deno is yt-dlp's default) and make it available
 on `PATH`. This supports YouTube extraction but does not guarantee that YouTube
 will accept every request; repeated bot-check failures pause bulk downloading.
 
-- **Investors:** open an existing VC, see saved counts and active jobs, or choose
-  **New investor**. New investors start with platform selection and identity review.
-- **Source table:** select a VC with the arrows and press **Enter**. All discovered
-  sources appear, with separate approval, download, transcription (`Tx`),
-  diarization (`Dia`) and voice-attribution columns. Press **Enter** on a source
-  for its URL, files, decisions, voice scores and failure reasons. **Esc** returns
-  to investors. Browsing does not start work or approve anything.
-- **Find the next VC:** on the investor list, choose **Show VCs with downloaded
-  recordings ready to process**. Open one and press **p**. Choose all eligible
-  recordings or a subset, then confirm transcription and diarization. Missing
-  downloads do not block recordings already downloaded. If a voice reference is
-  missing, the wizard guides reference selection first; return and press **p**
-  after the reference job finishes.
-- **Review:** inspect URLs/evidence, filter sources, or **Accept all pending**.
-  Bulk approval keeps previous rejections, material roles and exclusions intact;
-  it is not verified speaker attribution.
-- **Download:** collect approved missing items, with live progress. Successful
-  artifacts are reused. Failed items remain visible for retry.
-- **Voice signature:** choose from up to three metadata-ranked downloaded clips
-  (or browse all), listen using the displayed URL/local path, enter `1:11` or `71`,
-  and confirm only the target speaks. The tool creates the reference embedding.
-- **Process:** explicitly start transcription, diarization and speaker matching.
-  Uncertain results remain review-required. Export/verification is a separate choice.
-- **Jobs:** reconnect to persistent background jobs. Closing the dashboard leaves
-  workers running. **Pause after item** takes effect between items. Reopen the
-  job and choose **Resume / retry** for failed or unfinished items; completed stages use caches.
-
-Use arrow keys, Space to select checkboxes, Tab to move to buttons, Enter to
-confirm, Escape to go back, or the mouse. No browser UI is required. Managed jobs
-serialize writes to each investor and use one managed GPU worker at a time.
-External CLI jobs cannot be universally controlled by the dashboard; the known
-bulk-download runner is detected and protected. Workers currently require Linux.
-
-In the source table: **/** search, **f** cycle status filters, **p** process ready
-recordings, **d** download/retry, **r** review sources, **v** voice reference,
-**j** jobs, **a** other actions, **Ctrl-R** reload saved progress, **?** help.
-Enter leaves search and returns focus to the table; keyboard shortcuts apply
-when the table is focused. Processing asks for confirmation and does not act on
-the highlighted row automatically.
-
-`done` means a saved transcript/diarization result exists; it does not mean the
-speaker is verified. `matched` means model-accepted attribution, `uncertain`
-needs review, and `operator` means recorded human speaker attribution. Source
-approval is separate. `?` means the stage is unknown; inspect the failure details.
-Changed model settings may require recomputation despite saved stage results.
-Download failures and processing failures are counted separately.
-
-The older `wizard --stage discover|download|process` commands remain available.
+The wizard walks through: name and affiliation → confirm identity → platforms to
+skip → discovery → triage table → download → voice references → processing →
+export and verify. Each finished step is saved; run
+`wizard --investor <slug>` to continue, and Ctrl-C tells you where you stopped.
 
 ## Dependencies and related VCLogic repositories
 
@@ -170,35 +125,39 @@ or download their material.
 ## Run the workflow
 
 The examples use Michael Hyatt. Replace his name and workspace slug for another
-investor. New wizard workspaces use the name only, such as `michael-hyatt`.
-
-### 1. Discover and review sources
+investor. Workspaces use the name only, such as `michael-hyatt`.
 
 ```bash
-uv run --extra youtube vc-trace-collector wizard \
-  --stage discover --name "Michael Hyatt"
+uv run --extra youtube --extra av --extra av-local vc-trace-collector wizard \
+  --name "Michael Hyatt"
 ```
 
-The wizard asks you to:
+### 1. Identity and discovery
 
-1. Provide a firm or known profile if you have one; otherwise choose from possible profiles.
-2. Confirm the intended person using the displayed evidence.
-3. Choose platforms and search limits.
-4. Select sources to approve, reject or defer, then confirm the saved decisions.
+Give a firm or known profile if you have one; otherwise choose from possible
+profiles. For Michael Hyatt you can supply
+`https://www.thepitch.show/investors/michael-hyatt`; that page can establish
+identity even though The Pitch material is excluded from the corpus by the
+default rules. Confirm the displayed person before any platform search. Then
+tick the platforms to **skip** (e.g. podcast); nothing ticked searches all.
 
-For Michael Hyatt, you can supply
-`https://www.thepitch.show/investors/michael-hyatt` when asked for a known profile.
-That page can establish identity even though The Pitch material is excluded from
-the public-trace corpus by the default rules.
+### 2. Triage
 
-**How to select sources:** choose **select**, use arrow keys to move and Space
-to tick items, then press Enter. Choose **done** to continue to the decision
-screen. The menu also provides source details, text/platform/status filters and
-confidence sorting. Ctrl+C cancels unsaved choices.
+A full-screen table lists every candidate, highest identity confidence first.
 
-Review different roles in separate batches:
+| Key | Action |
+|---|---|
+| `↑` `↓` | move |
+| `a` / `x` | approve / reject |
+| `r` | cycle material role |
+| `A` | approve every pending row with confidence ≥ 0.8 |
+| `u` | paste URLs discovery missed (added as approved) |
+| `p` | skip a platform (its rows are rejected) |
+| `/` | search title/URL |
+| `enter` | details and identity evidence |
+| `s` / `q` | save and continue / save and quit |
 
-| Material | Role to choose |
+| Material | Role |
 |---|---|
 | An article or post written by the investor | `authored_by_target` |
 | A video or podcast containing the investor speaking | `spoken_by_target` |
@@ -206,79 +165,40 @@ Review different roles in separate batches:
 | Someone else's discussion of the investor | `third_party` — not first-person corpus material |
 
 Do not approve a namesake or assume a high confidence score proves identity.
-Unselected and deferred sources stay unchanged. Approval does not override
-corpus exclusions.
+Approval does not override corpus exclusions.
 
-**This stage finds URLs and retrieves identity evidence. It does not download
-recordings or run audiovisual models.**
+### 3. Download
 
-To review more batches or resume discovery without replacing the saved identity:
+Approved sources are downloaded with live progress. Successful downloads are
+reused; failures are listed at the end of the run.
 
-```bash
-uv run --extra youtube vc-trace-collector wizard \
-  --stage discover --investor michael-hyatt
-```
+### 4. Voice references
 
-Select no platforms if you only want to review existing candidates.
-
-### 2. Download approved material
-
-```bash
-uv run --extra youtube vc-trace-collector wizard \
-  --stage download --investor michael-hyatt
-```
-
-Select the approved sources you want, then confirm. The terminal shows progress
-and reports failures/skips. Rerun this stage to retry selected failures; valid
-successful downloads are reused.
-
-**Downloading does not start transcription or diarization.** A podcast page
-without acquired audio is not a successfully downloaded podcast episode.
-
-### 3. Process downloaded material
-
-For **written material only**, no AV dependencies are needed:
-
-```bash
-uv run vc-trace-collector wizard --stage process --investor michael-hyatt
-```
-
-For **YouTube or podcast recordings**, first ensure `ffmpeg` and `ffprobe` are
-installed. Create `.env` from [.env.example](.env.example) **only if you do not
-already have one**, then edit it locally:
+Needed only for YouTube or podcast recordings. First ensure `ffmpeg` and
+`ffprobe` are installed. Create `.env` from [.env.example](.env.example) **only
+if you do not already have one**, then edit it locally:
 
 ```dotenv
 HF_TOKEN=your-hugging-face-token
 VC_TRACE_AV_DEVICE=cuda
 ```
 
-Use an appropriate device for your machine, such as `cpu` instead of `cuda`.
-Accept the required gated model access in Hugging Face. The CLI loads `.env`
-automatically; no `export` or `source .env` is needed. Never commit credentials.
+Use `cpu` instead of `cuda` if needed and accept the gated model access in
+Hugging Face. Never commit credentials.
 
-Run AV processing with its optional dependencies:
+Pick one of the three suggested recordings (or browse, or a local file). The
+wizard runs pyannote diarization and lists each speaker with their speaking
+time; choose **▶** to hear an 8-second sample, then pick the investor. If the
+split is wrong, type a range such as `03:10-03:40` instead. Add references from
+several recordings to cope with different microphones and noise. Without any
+reference, audio/video sources are skipped and reported.
 
-```bash
-uv run --extra av --extra av-local vc-trace-collector wizard \
-  --stage process --investor michael-hyatt
-```
+### 5. Process and export
 
-Select downloaded recordings and the models to use. The local pipeline uses
-**Whisper for transcription** and **pyannote for diarization and voice comparison**,
-not platform captions.
-
-If there is no approved voice reference, the wizard asks you to choose a
-downloaded recording and provide a clean target-only interval after listening.
-It checks timestamps against the recording's duration. You can also stage a
-local reference file; acquire it in the download stage, then return here.
-Reference embeddings use the selected diarization pipeline's matching embedding
-space. Uncertain speaker matches remain flagged for review.
-
-Cached transcription and diarization are reused when valid. Processing does not
-silently download additional recordings.
-
-At the end, the wizard offers to **export and verify**. If you skip that prompt,
-run these later:
+Sources are processed one by one with progress (Whisper for transcription,
+pyannote for diarization and voice comparison). A failing source is reported and
+the run continues. The run ends with export, verification and a summary of
+counts, output path and failures. To repeat them later:
 
 ```bash
 uv run vc-trace-collector export --investor michael-hyatt

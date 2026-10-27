@@ -1,7 +1,7 @@
 # Processing and voice references
 
-Offer `wizard --stage process --investor investor-name`. It lists local downloaded
-items and does not fetch remote media. Written normalization needs no reference.
+Offer `wizard --investor investor-name`; it resumes at the next unfinished
+step, and its voice step lets the human pick the speaker or type a range. Written normalization needs no reference.
 For AV, check installed dependencies and configured models only now. The local
 pipeline uses Whisper for transcription and pyannote for diarization/embeddings;
 do not substitute platform captions.

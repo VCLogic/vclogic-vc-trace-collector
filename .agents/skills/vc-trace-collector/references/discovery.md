@@ -1,6 +1,6 @@
 # Discovery and source review
 
-In the user's terminal, start `wizard --stage discover --name "Investor Name"`.
+In the user's terminal, start `wizard --name "Investor Name"`.
 Use `--investor existing-slug` to resume without overwriting identity.
 The wizard accepts a known URL or searches possible profiles, confirms identity,
 asks for platforms and search limits, then reviews sources. It downloads only
