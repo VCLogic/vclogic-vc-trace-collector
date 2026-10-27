@@ -80,8 +80,9 @@ def test_run_triage_keys_drive_state():
     from vc_trace_collector.triage import run_triage
 
     s = TriageState([cand("a", 0.5), cand("b", 0.9)])
-    with create_pipe_input() as pipe, create_app_session(
-        input=pipe, output=DummyOutput()
+    with (
+        create_pipe_input() as pipe,
+        create_app_session(input=pipe, output=DummyOutput()),
     ):
         pipe.send_text("a\x1b[Bxs")  # approve b, down, reject a, save
         assert run_triage(s, "Jane Doe") == "save"
