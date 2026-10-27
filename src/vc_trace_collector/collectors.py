@@ -1146,11 +1146,25 @@ def collect_approved_sources(
             )
             if context.budget:
                 context.budget.release(operation_id)
+            message = str(error)
+            if isinstance(error, subprocess.CalledProcessError):
+                diagnostic = error.stderr or "No diagnostic output"
+                if isinstance(diagnostic, bytes):
+                    diagnostic = diagnostic.decode("utf-8", errors="replace")
+                # Never persist request URLs (signed queries/proxy credentials),
+                # authentication headers, or the subprocess command environment.
+                diagnostic = re.sub(r"https?://\S+", "[URL]", diagnostic)
+                diagnostic = re.sub(
+                    r"(?im)^.*(?:authorization|cookie)\s*:.*$",
+                    "[REDACTED HEADER]", diagnostic,
+                )
+                diagnostic = redact(diagnostic)[-4000:]
+                message = f"Downloader exited {error.returncode}: {diagnostic}"
             failure = redact(
                 {
                     "candidate_id": candidate.candidate_id,
                     "error_type": type(error).__name__,
-                    "message": str(error),
+                    "message": message,
                 }
             )
             context.state.fail_operation(

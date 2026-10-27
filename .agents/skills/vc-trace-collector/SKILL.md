@@ -16,6 +16,9 @@ files before starting a new run. Ask only for missing choices.
 
 - **Discovery:** a name is enough to start. Offer possible profiles with URLs and
   affiliation evidence; ask which person is intended. Never merge namesakes.
+- **Review:** in chat, present small numbered batches with clickable source URLs
+  and evidence, then record the user's item-level choices. Follow the
+  conversational review section of the discovery reference below.
 - **Download:** select approved platforms/items from an existing plan. Do not
   rediscover or launch processing automatically.
 - **Process:** select already downloaded material. For audiovisual items check
@@ -40,7 +43,9 @@ Use `--stage download --investor michael-hyatt` or
 provides checkbox selection, text/platform/status filters, confidence sorting
 and source details. Each invocation runs only one stage.
 
-An agent's pseudo-terminal is not necessarily visible or controllable by the
+When the user wants review here in chat, use conversational batches even if a
+terminal is available; do not send them away to run commands or open a local
+inventory. An agent's pseudo-terminal is not necessarily visible or controllable by the
 human. If interaction is unavailable, do not launch a hidden wizard or feed
 answers into human confirmation prompts. Ask the same choices in conversation,
 then use the noninteractive CLI with explicit recorded decisions.

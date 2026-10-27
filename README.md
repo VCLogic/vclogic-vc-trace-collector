@@ -12,6 +12,72 @@ Nothing advances to the next stage automatically.
 [Related repositories](#dependencies-and-related-vclogic-repositories) ·
 [Manual CLI and configuration](docs/guides/cli-reference.md)
 
+## Interactive investor dashboard
+
+Start here—no stage flags or shell loops:
+
+```bash
+uv run --extra youtube --extra av --extra av-local vc-trace-collector wizard
+```
+
+For discovery and written material only, omit the extras. FFmpeg, an approved
+voice reference, and the configured model access are still needed for audiovisual
+processing; `.env` is loaded automatically.
+
+The YouTube extra includes yt-dlp's JavaScript challenge-solver scripts. Install
+a supported JavaScript runtime (Deno is yt-dlp's default) and make it available
+on `PATH`. This supports YouTube extraction but does not guarantee that YouTube
+will accept every request; repeated bot-check failures pause bulk downloading.
+
+- **Investors:** open an existing VC, see saved counts and active jobs, or choose
+  **New investor**. New investors start with platform selection and identity review.
+- **Source table:** select a VC with the arrows and press **Enter**. All discovered
+  sources appear, with separate approval, download, transcription (`Tx`),
+  diarization (`Dia`) and voice-attribution columns. Press **Enter** on a source
+  for its URL, files, decisions, voice scores and failure reasons. **Esc** returns
+  to investors. Browsing does not start work or approve anything.
+- **Find the next VC:** on the investor list, choose **Show VCs with downloaded
+  recordings ready to process**. Open one and press **p**. Choose all eligible
+  recordings or a subset, then confirm transcription and diarization. Missing
+  downloads do not block recordings already downloaded. If a voice reference is
+  missing, the wizard guides reference selection first; return and press **p**
+  after the reference job finishes.
+- **Review:** inspect URLs/evidence, filter sources, or **Accept all pending**.
+  Bulk approval keeps previous rejections, material roles and exclusions intact;
+  it is not verified speaker attribution.
+- **Download:** collect approved missing items, with live progress. Successful
+  artifacts are reused. Failed items remain visible for retry.
+- **Voice signature:** choose from up to three metadata-ranked downloaded clips
+  (or browse all), listen using the displayed URL/local path, enter `1:11` or `71`,
+  and confirm only the target speaks. The tool creates the reference embedding.
+- **Process:** explicitly start transcription, diarization and speaker matching.
+  Uncertain results remain review-required. Export/verification is a separate choice.
+- **Jobs:** reconnect to persistent background jobs. Closing the dashboard leaves
+  workers running. **Pause after item** takes effect between items. Reopen the
+  job and choose **Resume / retry** for failed or unfinished items; completed stages use caches.
+
+Use arrow keys, Space to select checkboxes, Tab to move to buttons, Enter to
+confirm, Escape to go back, or the mouse. No browser UI is required. Managed jobs
+serialize writes to each investor and use one managed GPU worker at a time.
+External CLI jobs cannot be universally controlled by the dashboard; the known
+bulk-download runner is detected and protected. Workers currently require Linux.
+
+In the source table: **/** search, **f** cycle status filters, **p** process ready
+recordings, **d** download/retry, **r** review sources, **v** voice reference,
+**j** jobs, **a** other actions, **Ctrl-R** reload saved progress, **?** help.
+Enter leaves search and returns focus to the table; keyboard shortcuts apply
+when the table is focused. Processing asks for confirmation and does not act on
+the highlighted row automatically.
+
+`done` means a saved transcript/diarization result exists; it does not mean the
+speaker is verified. `matched` means model-accepted attribution, `uncertain`
+needs review, and `operator` means recorded human speaker attribution. Source
+approval is separate. `?` means the stage is unknown; inspect the failure details.
+Changed model settings may require recomputation despite saved stage results.
+Download failures and processing failures are counted separately.
+
+The older `wizard --stage discover|download|process` commands remain available.
+
 ## Dependencies and related VCLogic repositories
 
 **This collector runs independently.** No other VCLogic repository is required
@@ -286,8 +352,12 @@ For example: “Discover sources for Michael Hyatt. Help me confirm his profile
 and choose the sources; do not download yet.”
 
 Both skills share the same instructions. They guide the three stages and ask
-for missing decisions or a voice reference. If the agent cannot expose terminal
-controls to you, it uses conversational choices and the scripted CLI instead.
+for missing decisions or a voice reference. Ask “Review the sources here” for
+small numbered batches with clickable source links, evidence and proposed roles.
+Reply “Approve batch 1” or choose individual items to approve, reject or defer.
+Decisions apply only to the displayed items; downloads do not start automatically.
+If the agent cannot expose terminal controls, it uses conversational choices and
+the scripted CLI instead.
 Restart the agent session if the new skill is not listed.
 
 The skill files live under [.agents/skills/vc-trace-collector](.agents/skills/vc-trace-collector/)

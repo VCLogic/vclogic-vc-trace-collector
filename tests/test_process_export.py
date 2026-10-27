@@ -327,6 +327,101 @@ def test_near_duplicate_is_detected() -> None:
     assert documents[1].duplicate_of == documents[0].document_version_id
 
 
+@pytest.mark.parametrize("other", ["short", "z" * 2000])
+def test_dedup_prunes_impossible_pairs_before_expensive_ratio(monkeypatch, other):
+    from difflib import SequenceMatcher
+
+    def forbidden_ratio(self):
+        pytest.fail("Impossible pair reached expensive character matching")
+
+    monkeypatch.setattr(SequenceMatcher, "ratio", forbidden_ratio)
+    rows = deduplicate([document("a", "a" * 2000), document("b", other)])
+    assert all(row.duplicate_of is None for row in rows)
+
+
+def test_dedup_caches_pairs_and_invalidates_threshold_and_text(tmp_path, monkeypatch):
+    from difflib import SequenceMatcher
+
+    calls = []
+    original = SequenceMatcher.ratio
+
+    def counted(self):
+        calls.append(1)
+        return original(self)
+
+    monkeypatch.setattr(SequenceMatcher, "ratio", counted)
+    common = " ".join(f"word{i}" for i in range(100))
+    cache = tmp_path / "pairs.json"
+
+    def run(threshold=0.97, suffix=" extra"):
+        return deduplicate(
+            [document("a", common), document("b", common + suffix)],
+            near_threshold=threshold, cache_path=cache,
+        )
+
+    first = run()
+    assert calls == [1]
+    assert [(row.inclusion_status, row.duplicate_of) for row in run()] == [
+        (row.inclusion_status, row.duplicate_of) for row in first
+    ]
+    assert calls == [1]
+    run(threshold=0.98)
+    assert len(calls) == 2
+    run(suffix=" edit")
+    assert len(calls) == 3
+
+
+def test_dedup_cache_preserves_ordered_comparisons_and_review_preference(tmp_path):
+    # SequenceMatcher is directional: tide/diet differs from diet/tide.
+    cache = tmp_path / "pairs.json"
+    first = deduplicate([document("a", "tide"), document("b", "diet")],
+                        near_threshold=0.4, cache_path=cache)
+    assert first[1].duplicate_of is None
+    second = deduplicate([document("a", "diet"), document("b", "tide")],
+                         near_threshold=0.4, cache_path=cache)
+    assert second[1].duplicate_of == "version:a"
+
+
+def test_dedup_reports_its_own_progress(monkeypatch):
+    from vc_trace_collector import progress
+
+    events = []
+    monkeypatch.setattr(progress, "report", lambda stage, **kw: events.append((stage, kw)))
+    deduplicate([document("a", "alpha"), document("b", "beta")])
+    assert events[0] == ("Deduplicating documents", {"completed": 0, "total": 2})
+    assert events[-1] == ("Deduplicating documents", {"completed": 2, "total": 2})
+
+
+def test_dedup_cache_does_not_freeze_review_decisions(tmp_path):
+    cache = tmp_path / "pairs.json"
+    common = " ".join(f"word{i}" for i in range(50))
+    deduplicate([document("a", common), document("b", common + " edit")],
+                cache_path=cache)
+    rows = deduplicate([
+        document("a", common, inclusion=InclusionStatus.EXCLUDED),
+        document("b", common + " edit"),
+    ], cache_path=cache)
+    assert rows[1].inclusion_status == InclusionStatus.INCLUDED
+    assert rows[1].duplicate_of is None
+    assert rows[0].inclusion_status == InclusionStatus.EXCLUDED
+    assert rows[0].duplicate_of == "version:b"
+
+
+def test_dedup_matches_legacy_similarity_on_generated_pairs(tmp_path):
+    from difflib import SequenceMatcher
+    from random import Random
+
+    random = Random(42)
+    for _ in range(50):
+        a = "".join(random.choices("abcde", k=random.randrange(10, 80)))
+        b = a[:len(a)//2] + "".join(random.choices("abcde", k=3)) + a[len(a)//2:]
+        threshold = random.choice([0.8, 0.95, 0.97])
+        expected = SequenceMatcher(None, a, b, autojunk=False).ratio() >= threshold
+        rows = deduplicate([document("a", a), document("b", b)],
+                           near_threshold=threshold, cache_path=tmp_path / "pairs.json")
+        assert (rows[1].duplicate_of is not None) == expected
+
+
 def test_eligible_duplicate_is_preferred_over_earlier_excluded_copy() -> None:
     excluded = document(
         "excluded", "same useful text", inclusion=InclusionStatus.EXCLUDED

@@ -523,6 +523,28 @@ def test_direct_audio_over_remaining_duration_is_rejected_before_get(tmp_path) -
     assert requested == []
 
 
+def test_youtube_failure_preserves_safe_diagnostic(tmp_path):
+    def runner(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, command, stderr=(
+                "ERROR: HTTP Error 429: Too Many Requests\n"
+                "https://user:password@example.test/watch?token=private\n"
+                "Cookie: session=private\nAuthorization: Basic private\n"
+            )
+        )
+
+    result = collect_approved_sources(
+        plan(candidate("youtube", SourceType.YOUTUBE,
+                       url="https://www.youtube.com/watch?v=abc")),
+        context=context(tmp_path),
+        registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
+    )
+    reason = result.outcomes[0].reason
+    assert "429: Too Many Requests" in reason
+    assert "private" not in reason
+    assert "user:password" not in reason
+
+
 def test_youtube_failed_attempt_accounts_partial_file_and_disables_retries(
     tmp_path,
 ) -> None:

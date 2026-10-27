@@ -7,8 +7,33 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- YouTube extra now includes yt-dlp's default dependencies, including the EJS
+  challenge-solver scripts used with the installed JavaScript runtime.
+- Deduplication now rejects impossible near-matches using safe similarity upper
+  bounds and caches ordered content-pair decisions between processing runs.
+  Matching thresholds and canonical-document preference are unchanged. Processing
+  displays separate deduplication and saving stages after speaker attribution.
+
 ### Added
 
+- Table-first investor source browser: Enter opens source details; search and
+  stage filters separate source approval, downloads, transcription, diarization
+  and voice attribution. Direct processing shortcut and an investor readiness
+  filter allow processing downloaded recordings despite other failed downloads.
+- Investor-first full-screen terminal dashboard for `wizard` without `--stage`:
+  workspace counts, new-investor platform choices, pending-source bulk approval,
+  guided voice references with mm:ss input, and persistent job progress/reconnect.
+- Detached managed workers with per-investor locking, GPU serialization, pause
+  requests, stale-process detection, and download pacing/circuit breaking.
+
+- Explicit `process-source --allow-unknown-role` mode for approved downloaded
+  media whose identity/material role is unresolved. Source roles are preserved
+  and extracted content stays review-required even when speaker matching passes.
+- In-chat skill review with numbered batches, clickable source links, evidence
+  and proposed roles, persistent batch-to-candidate mappings, and scoped decisions
+  that do not trigger downloads or processing.
 - Guided `wizard` with independent discovery, download and processing stages,
   profile choices, evidence review, searchable source checkboxes, confidence
   sorting, cancellation and existing-workspace resume.

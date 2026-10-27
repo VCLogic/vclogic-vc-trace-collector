@@ -214,7 +214,10 @@ class Wizard:
             }
         )
         if not self.ui.confirm(
-            "confirm_review", "Confirm this person and save these source decisions?"
+            "confirm_review",
+            f"Confirm this person and save {len(selected)} source decisions? "
+            f"{sum(item.candidate.identity_confidence.score < 0.8 for item in selected)} "
+            "have identity confidence below 0.8. Approval is not verified content/speech.",
         ):
             return
         self.pipeline.review(

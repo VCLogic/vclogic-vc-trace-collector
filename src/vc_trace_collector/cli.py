@@ -62,12 +62,19 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         ),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        """Guided terminal workflow; each stage runs independently."""
+        """Investor dashboard, or a standalone stage with --stage."""
         from .audit import redact
         from .terminal import Cancelled, TerminalPrompts
         from .wizard import Wizard
 
         try:
+            if stage is None:
+                from .dashboard import Dashboard
+                from .dashboard_ui import DashboardPrompts
+
+                ui = DashboardPrompts()
+                Dashboard(make_pipeline(output_dir), ui).run(investor=investor, name=name)
+                return
             ui = TerminalPrompts()
             Wizard(make_pipeline(output_dir), ui).run(
                 stage=stage, name=name, investor=investor
@@ -581,6 +588,9 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
     def process_source(
         investor: str = typer.Option(..., help="Investor workspace slug"),
         candidate_id: str = typer.Option(..., help="Approved source candidate ID"),
+        allow_unknown_role: bool = typer.Option(
+            False, help="Process unknown-role material but keep results review-required"
+        ),
         transcription_model: str | None = typer.Option(None),
         diarization_model: str | None = typer.Option(None),
         transcription_cost_usd: str | None = typer.Option(None),
@@ -591,6 +601,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         documents = make_pipeline(output_dir).process_source(
             investor,
             candidate_id=candidate_id,
+            **({"allow_unknown_role": True} if allow_unknown_role else {}),
             transcription_model=transcription_model,
             diarization_model=diarization_model,
             transcription_cost_usd=(

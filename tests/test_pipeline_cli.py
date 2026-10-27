@@ -1208,6 +1208,7 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
 
     assert diarization.calls == 1
     assert transcript.calls == 0
+
     migrated_transcript = read_jsonl(
         output / "michael-hyatt/audit/events.jsonl"
     )[-1]
@@ -1279,6 +1280,30 @@ def test_process_source_runs_and_merges_one_av_candidate_at_a_time(tmp_path) -> 
     assert transcript.calls == 0
 
 
+    collector.review("michael-hyatt", decisions=[SourceDecision(
+        candidate_id=interviews[0].candidate_id,
+        status=ApprovalStatus.APPROVED, material_role=MaterialRole.UNKNOWN,
+        reason="Processing permitted, identity unresolved", decided_by="reviewer",
+    )], reviewer="reviewer", confirm_identity=True)
+    with pytest.raises(ReviewRequired):
+        collector.process_source("michael-hyatt", candidate_id=interviews[0].candidate_id)
+    exploratory = collector.process_source(
+        "michael-hyatt", candidate_id=interviews[0].candidate_id,
+        allow_unknown_role=True,
+    )
+    unknown = next(row for row in exploratory
+                   if row.source_candidate_id == interviews[0].candidate_id)
+    assert unknown.material_role == MaterialRole.UNKNOWN
+    assert unknown.inclusion_status in {"review_required", "duplicate"}
+    assert unknown.speaker_attribution.status == "accepted_model"
+    outcome = next(row for row in read_jsonl(
+        output / "michael-hyatt/processed/av_candidate_outcomes.jsonl"
+    ) if row["candidate_id"] == interviews[0].candidate_id)
+    assert outcome["status"] == "review_required"
+    assert next(row for row in collector._load_plan("michael-hyatt").candidates
+                if row.candidate_id == interviews[0].candidate_id).material_role == MaterialRole.UNKNOWN
+
+
 def test_cli_process_source_passes_models_to_one_candidate(tmp_path) -> None:
     calls = []
 
@@ -1318,6 +1343,13 @@ def test_cli_process_source_passes_models_to_one_candidate(tmp_path) -> None:
             },
         )
     ]
+
+    result = CliRunner().invoke(app, [
+        "process-source", "--investor", "michael-hyatt",
+        "--candidate-id", "candidate:abc", "--allow-unknown-role",
+    ])
+    assert result.exit_code == 0
+    assert calls[-1][1]["allow_unknown_role"] is True
 
 
 def test_failed_approved_av_source_prevents_otherwise_nonempty_export(tmp_path) -> None:

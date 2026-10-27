@@ -23,6 +23,17 @@ from rich.text import Text
 
 _active: ContextVar = ContextVar("processing_progress", default=None)
 _downloads: ContextVar = ContextVar("download_progress", default=None)
+_observer: ContextVar = ContextVar("progress_observer", default=None)
+
+
+@contextmanager
+def observe_progress(callback):
+    """Send numeric updates to a durable job without changing terminal output."""
+    token = _observer.set(callback)
+    try:
+        yield
+    finally:
+        _observer.reset(token)
 
 
 def download_batch(completed, total, *, failed=0, skipped=0):
@@ -48,6 +59,8 @@ def download_item(title):
 
 
 def download_bytes(completed, total):
+    if _observer.get() is not None:
+        _observer.get()('Downloading', completed=completed, total=total)
     active = _downloads.get()
     if active:
         progress, _, item = active
@@ -181,6 +194,8 @@ def quiet_torchaudio_notices():
 
 
 def report(stage: str, *, completed: int = 0, total: int | None = None) -> None:
+    if _observer.get() is not None:
+        _observer.get()(stage, completed=completed, total=total)
     active = _active.get()
     if active is not None:
         progress, task = active

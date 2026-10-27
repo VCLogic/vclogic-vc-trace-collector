@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -9,6 +10,7 @@ from difflib import SequenceMatcher
 from hashlib import sha256
 from pathlib import Path
 
+from . import progress
 from .av import TargetSpeechResult
 from .extract import extract_feed, extract_page
 from .models import (
@@ -24,7 +26,7 @@ from .models import (
 )
 from .policy import InclusionStatus as PolicyInclusionStatus
 from .policy import RuleSet
-from .storage import artifact_metadata_paths, read_json
+from .storage import artifact_metadata_paths, read_json, write_json
 
 
 def normalize_text(text: str) -> str:
@@ -414,12 +416,33 @@ def process_artifacts(
                 rules=rules,
             )
         )
-    return deduplicate(documents)
+    return deduplicate(documents, cache_path=workspace / "state/dedup_pairs.json")
 
 
 def deduplicate(
-    documents: list[CanonicalDocument], *, near_threshold: float = 0.97
+    documents: list[CanonicalDocument],
+    *,
+    near_threshold: float = 0.97,
+    cache_path: Path | None = None,
 ) -> list[CanonicalDocument]:
+    # Cache content comparisons, never inclusion decisions. Review changes still
+    # participate in canonical selection on every invocation. Ordered hashes are
+    # intentional: SequenceMatcher's ratio is not necessarily symmetric.
+    pairs: dict[str, bool] = {}
+    if cache_path is not None and cache_path.exists():
+        try:
+            saved = read_json(cache_path)
+            if isinstance(saved, dict):
+                pairs = {
+                    key: value for key, value in saved.items()
+                    if isinstance(value, bool)
+                }
+        except (ValueError, OSError):
+            pass  # This is a disposable optimization, not evidence.
+    text_hashes = {
+        id(doc): sha256(doc.text.encode("utf-8")).hexdigest() for doc in documents
+    }
+    progress.report("Deduplicating documents", completed=0, total=len(documents))
     canonical: list[CanonicalDocument] = []
     exact: dict[str, CanonicalDocument] = {}
     preference = {
@@ -431,17 +454,30 @@ def deduplicate(
     }
     # Select eligible material before excluded/review copies regardless of
     # collection order. Return order stays unchanged for stable audit views.
-    for document in sorted(
+    ordered = sorted(
         documents,
         key=lambda item: (preference[item.inclusion_status], item.document_version_id),
-    ):
+    )
+    for index, document in enumerate(ordered, start=1):
         duplicate = exact.get(document.content_hash)
         if duplicate is None:
             for prior in canonical:
-                ratio = SequenceMatcher(
-                    None, prior.text, document.text, autojunk=False
-                ).ratio()
-                if ratio >= near_threshold:
+                key = json.dumps([
+                    "sequence-matcher-v1", near_threshold,
+                    text_hashes[id(prior)], text_hashes[id(document)],
+                ])
+                if key not in pairs:
+                    matcher = SequenceMatcher(
+                        None, prior.text, document.text, autojunk=False
+                    )
+                    # Both quick ratios are upper bounds, so these shortcuts
+                    # cannot reject a pair the original matcher would accept.
+                    pairs[key] = (
+                        matcher.real_quick_ratio() >= near_threshold
+                        and matcher.quick_ratio() >= near_threshold
+                        and matcher.ratio() >= near_threshold
+                    )
+                if pairs[key]:
                     duplicate = prior
                     break
         if duplicate is not None:
@@ -452,4 +488,7 @@ def deduplicate(
         else:
             exact[document.content_hash] = document
             canonical.append(document)
+        progress.report("Deduplicating documents", completed=index, total=len(documents))
+    if cache_path is not None:
+        write_json(cache_path, pairs)
     return documents

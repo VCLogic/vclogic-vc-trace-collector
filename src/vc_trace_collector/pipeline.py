@@ -1436,6 +1436,7 @@ class Pipeline:
         investor_slug: str,
         *,
         candidate_ids: set[str] | None = None,
+        allow_unknown_role: bool = False,
         transcription_model: str | None = None,
         diarization_model: str | None = None,
         transcription_cost_usd: Decimal | None = None,
@@ -1488,7 +1489,8 @@ class Pipeline:
             for item in active_candidates
             if item.approval_status
             in {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
-            and item.material_role == MaterialRole.SPOKEN_BY_TARGET
+            and (item.material_role == MaterialRole.SPOKEN_BY_TARGET
+                 or (allow_unknown_role and item.material_role == MaterialRole.UNKNOWN))
         }
 
         def mark_outcome(
@@ -1587,7 +1589,9 @@ class Pipeline:
             )
             if not candidate or not (is_audio or is_video):
                 continue
-            if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET:
+            if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET and not (
+                allow_unknown_role and candidate.material_role == MaterialRole.UNKNOWN
+            ):
                 continue
             recording(candidate.title or candidate.canonical_url)
             report("Checking audio and reference profiles")
@@ -2155,6 +2159,10 @@ class Pipeline:
                 rules=self._rules_for(config),
             )
             if document:
+                if (candidate.material_role == MaterialRole.UNKNOWN
+                        and document.inclusion_status != InclusionStatus.EXCLUDED):
+                    document.inclusion_status = InclusionStatus.REVIEW_REQUIRED
+                    document.exclusion_reason = "Source identity and material role require review"
                 documents.append(document)
                 if document.inclusion_status == InclusionStatus.EXCLUDED:
                     mark_outcome(
@@ -2241,7 +2249,8 @@ class Pipeline:
                 candidate_id = str(row.get("candidate_id", ""))
                 if candidate_id not in candidate_ids:
                     outcomes[candidate_id] = AVCandidateOutcome.model_validate(row)
-        documents = deduplicate(documents)
+        documents = deduplicate(documents, cache_path=workspace / "state/dedup_pairs.json")
+        report("Saving processed documents")
         write_jsonl(workspace / "processed/av_attribution_results.jsonl", av_rows)
         write_jsonl(
             workspace / "processed/av_candidate_outcomes.jsonl",
@@ -2287,6 +2296,7 @@ class Pipeline:
         investor_slug: str,
         *,
         candidate_id: str,
+        allow_unknown_role: bool = False,
         transcription_model: str | None = None,
         diarization_model: str | None = None,
         transcription_cost_usd: Decimal | None = None,
@@ -2305,13 +2315,16 @@ class Pipeline:
             ApprovalStatus.AUTO_APPROVED,
         }:
             raise ReviewRequired(f"Candidate is not approved: {candidate_id}")
-        if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET:
+        if candidate.material_role != MaterialRole.SPOKEN_BY_TARGET and not (
+            allow_unknown_role and candidate.material_role == MaterialRole.UNKNOWN
+        ):
             raise ReviewRequired(
                 "Per-source AV processing requires spoken_by_target material"
             )
         return self.process(
             investor_slug,
             candidate_ids={candidate_id},
+            allow_unknown_role=allow_unknown_role,
             transcription_model=transcription_model,
             diarization_model=diarization_model,
             transcription_cost_usd=transcription_cost_usd,
