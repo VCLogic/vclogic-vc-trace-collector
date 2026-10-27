@@ -1622,3 +1622,19 @@ def test_reference_budget_is_reserved_before_model_initialization(
 
     rows = read_jsonl(costs_path)
     assert [row["kind"] for row in rows[-2:]] == ["reservation", "release"]
+
+
+def test_process_cli_can_select_written_candidate_without_processing_others(tmp_path):
+    from unittest.mock import Mock
+
+    from test_guided import prepared
+
+    p, c = prepared(tmp_path)
+    p.fetch_source("michael-hyatt", candidate_ids={c.candidate_id})
+    p.process = Mock(return_value=[])
+    result = CliRunner().invoke(
+        create_app(lambda output: p),
+        ["process", "--investor", "michael-hyatt", "--candidate-id", c.candidate_id],
+    )
+    assert result.exit_code == 0, result.output
+    assert p.process.call_args.kwargs["candidate_ids"] == {c.candidate_id}

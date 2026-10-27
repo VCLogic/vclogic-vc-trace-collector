@@ -55,32 +55,25 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
 
     @app.command()
     def wizard(
-        stage: str | None = typer.Option(None, help="discover, download or process"),
-        name: str | None = typer.Option(None, help="Name for a new discovery"),
+        name: str | None = typer.Option(None, help="Investor name for a new run"),
         investor: str | None = typer.Option(
             None, help="Existing investor workspace slug"
         ),
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
-        """Investor dashboard, or a standalone stage with --stage."""
+        """Guided run: identity, sources, triage, fetch, voice reference, process, export."""
         from .audit import redact
+        from .guided import Guided
         from .terminal import Cancelled, TerminalPrompts
-        from .wizard import Wizard
 
+        guided = None
         try:
-            if stage is None:
-                from .dashboard import Dashboard
-                from .dashboard_ui import DashboardPrompts
-
-                ui = DashboardPrompts()
-                Dashboard(make_pipeline(output_dir), ui).run(investor=investor, name=name)
-                return
             ui = TerminalPrompts()
-            Wizard(make_pipeline(output_dir), ui).run(
-                stage=stage, name=name, investor=investor
-            )
+            guided = Guided(make_pipeline(output_dir), ui)
+            guided.run(name=name, investor=investor)
         except (Cancelled, KeyboardInterrupt):
-            typer.echo("Cancelled. Previously completed work is preserved.")
+            step = guided.step if guided else "the start"
+            typer.echo(f"Saved. Run wizard again to continue from {step}.")
             raise typer.Exit(130) from None
         except Exception as error:
             typer.echo(f"Wizard stopped: {redact(str(error))}", err=True)
