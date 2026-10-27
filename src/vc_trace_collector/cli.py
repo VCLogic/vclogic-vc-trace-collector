@@ -94,7 +94,7 @@ def create_app(pipeline_factory: PipelineFactory | None = None) -> typer.Typer:
         output_dir: Path = typer.Option(Path("outputs")),
     ) -> None:
         """Record an approved local reference source; do not copy or process it."""
-        from .wizard_reference import stage_local_reference
+        from .voice import stage_local_reference
 
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", investor):
             raise typer.BadParameter("Invalid investor slug")

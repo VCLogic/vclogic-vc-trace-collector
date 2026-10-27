@@ -37,3 +37,64 @@ def test_parse_range(text, expected):
 def test_parse_range_rejects_bad_input(text):
     with pytest.raises(ValueError):
         parse_range(text)
+
+
+def test_stage_reference_cli_records_plan_without_download(tmp_path):
+    from unittest.mock import Mock
+
+    from test_guided import prepared
+    from typer.testing import CliRunner
+
+    from vc_trace_collector.cli import create_app
+
+    p, _ = prepared(tmp_path)
+    local = tmp_path / "sample.wav"
+    local.write_bytes(b"sample")
+    p.fetch_source = Mock()
+    result = CliRunner().invoke(
+        create_app(lambda output: p),
+        [
+            "stage-reference",
+            "--investor",
+            "michael-hyatt",
+            "--file",
+            str(local),
+            "--reviewer",
+            "human:test",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "candidate:" in result.output
+    p.fetch_source.assert_not_called()
+
+
+def test_supplied_video_has_reference_backlink_after_download(tmp_path):
+    from test_guided import prepared
+
+    from vc_trace_collector.storage import read_jsonl
+
+    p, c = prepared(tmp_path, media=True)
+    p.fetch_source("michael-hyatt", candidate_ids={c.candidate_id})
+    voice = read_jsonl(
+        p.workspace("michael-hyatt") / "identity/reference_voice_candidates.jsonl"
+    )[0]
+    assert voice["artifact_id"]
+
+
+def test_voice_candidate_returns_id_and_local_media(tmp_path):
+    from test_guided import prepared
+
+    from vc_trace_collector.voice import voice_candidate
+    from vc_trace_collector.wizard_models import source_items
+
+    p, c = prepared(tmp_path, media=True)
+    p.fetch_source("michael-hyatt", candidate_ids={c.candidate_id})
+    item = next(
+        i
+        for i in source_items(p, "michael-hyatt")
+        if i.candidate.candidate_id == c.candidate_id
+    )
+    cid, media = voice_candidate(p, "michael-hyatt", item, reviewer="human")
+    assert cid.startswith("voice")
+    workspace = p.workspace("michael-hyatt").resolve()
+    assert media.is_file() and media.is_relative_to(workspace)
