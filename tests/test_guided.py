@@ -6,7 +6,12 @@ from typer.testing import CliRunner
 from vc_trace_collector.av import DiarizationResult, DiarizedTurn
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.guided import PLATFORMS, STEPS, Guided
-from vc_trace_collector.models import ApprovalStatus, MaterialRole, SourceDecision
+from vc_trace_collector.models import (
+    ApprovalStatus,
+    MaterialRole,
+    SourceDecision,
+    SourceType,
+)
 from vc_trace_collector.storage import read_json
 
 
@@ -238,3 +243,11 @@ def test_wizard_cli_rejects_noninteractive_terminal_without_work(tmp_path):
     assert result.exit_code == 2
     assert "interactive terminal" in result.output
     factory.assert_not_called()
+
+
+def test_wizard_offers_only_searchable_platforms():
+    from vc_trace_collector.source_search import build_source_queries
+
+    assert SourceType.X not in PLATFORMS
+    for platform in PLATFORMS:
+        assert build_source_queries("A", [], platform)

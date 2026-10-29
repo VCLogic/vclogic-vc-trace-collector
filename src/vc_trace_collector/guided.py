@@ -17,6 +17,7 @@ from .discovery import slugify
 from .models import MaterialRole, SourceType
 from .progress import with_download_progress, with_processing_progress
 from .public_search import agent_reach_public_search_provider
+from .source_search import _SUFFIXES
 from .storage import read_json, write_json
 from .triage import APPROVED, TriageState, run_triage
 from .voice import (
@@ -32,7 +33,8 @@ from .voice import (
 from .wizard_models import Option, backend_options, options, source_items
 
 STEPS = ("identity", "platforms", "triage", "fetch", "voice", "process", "finish")
-PLATFORMS = [t for t in SourceType if t != SourceType.SUPPLIED]
+# Only types with search queries; X and LinkedIn exports are added by URL or file.
+PLATFORMS = [t for t in SourceType if t in _SUFFIXES]
 
 
 class Guided:
