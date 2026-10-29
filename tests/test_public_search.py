@@ -21,9 +21,9 @@ def test_agent_reach_exa_backend_uses_mcporter_and_parses_json() -> None:
                 {
                     "results": [
                         {
-                            "url": "https://example.test/michael-hyatt",
-                            "title": "Michael Hyatt interview",
-                            "text": "Hyatt Family Office investor",
+                            "url": "https://example.test/jane-roe",
+                            "title": "Jane Roe interview",
+                            "text": "Roe Family Office investor",
                         }
                     ]
                 }
@@ -32,14 +32,14 @@ def test_agent_reach_exa_backend_uses_mcporter_and_parses_json() -> None:
         )
 
     provider = AgentReachWebSearchProvider(runner=runner, timeout=19)
-    results = provider.search('"Michael Hyatt" podcast', limit=4)
+    results = provider.search('"Jane Roe" podcast', limit=4)
 
     command, kwargs = calls[0]
     assert command == [
         "mcporter",
         "call",
         "exa.web_search_exa",
-        'query="Michael Hyatt" podcast',
+        'query="Jane Roe" podcast',
         "numResults=4",
         "--output",
         "json",
@@ -47,25 +47,25 @@ def test_agent_reach_exa_backend_uses_mcporter_and_parses_json() -> None:
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 19
     assert results[0].provider == "agent-reach:exa"
-    assert results[0].snippet == "Hyatt Family Office investor"
+    assert results[0].snippet == "Roe Family Office investor"
 
 
 def test_agent_reach_exa_backend_parses_mcporter_text_content() -> None:
-    text = """Title: Michael Hyatt on early-stage investing
+    text = """Title: Jane Roe on early-stage investing
 URL: https://example.test/first
 Published: 2025-12-22T00:00:00.000Z
-Author: Joe Chidley
+Author: Sam Writer
 Highlights:
-Michael Hyatt discusses BlueCat and venture investing.
+Jane Roe discusses Northwind and venture investing.
 
 ---
 
-Title: A second Michael Hyatt interview
+Title: A second Jane Roe interview
 URL: https://example.test/second
 Published: 2024-01-01T00:00:00.000Z
 Author: Example Author
 Highlights:
-An interview about Dyadem.
+An interview about Contoso.
 """
     provider = AgentReachWebSearchProvider(
         runner=lambda *args, **kwargs: SimpleNamespace(
@@ -75,19 +75,19 @@ An interview about Dyadem.
         )
     )
 
-    results = provider.search('"Michael Hyatt" investor', limit=2)
+    results = provider.search('"Jane Roe" investor', limit=2)
 
     assert [result.url for result in results] == [
         "https://example.test/first",
         "https://example.test/second",
     ]
-    assert results[0].title == "Michael Hyatt on early-stage investing"
-    assert "BlueCat" in results[0].snippet
+    assert results[0].title == "Jane Roe on early-stage investing"
+    assert "Northwind" in results[0].snippet
 
 
 def test_agent_reach_exa_backend_aggregates_multiple_text_content_blocks() -> None:
     def record(title: str, url: str) -> str:
-        return f"Title: {title}\nURL: {url}\nHighlights:\nMichael Hyatt investor"
+        return f"Title: {title}\nURL: {url}\nHighlights:\nJane Roe investor"
 
     provider = AgentReachWebSearchProvider(
         runner=lambda *args, **kwargs: SimpleNamespace(
@@ -97,7 +97,9 @@ def test_agent_reach_exa_backend_aggregates_multiple_text_content_blocks() -> No
                     "content": [
                         {
                             "type": "text",
-                            "text": record("First result", "https://example.test/first"),
+                            "text": record(
+                                "First result", "https://example.test/first"
+                            ),
                         },
                         {
                             "type": "text",
@@ -112,7 +114,7 @@ def test_agent_reach_exa_backend_aggregates_multiple_text_content_blocks() -> No
         )
     )
 
-    results = provider.search('"Michael Hyatt" investor', limit=2)
+    results = provider.search('"Jane Roe" investor', limit=2)
 
     assert [result.url for result in results] == [
         "https://example.test/first",
@@ -126,7 +128,7 @@ def test_agent_reach_exa_backend_isolates_missing_mcporter() -> None:
 
     provider = AgentReachWebSearchProvider(runner=runner)
 
-    assert provider.search("Michael Hyatt") == []
+    assert provider.search("Jane Roe") == []
     assert provider.diagnostics[-1]["error"] == "mcporter is not installed"
 
 
@@ -137,11 +139,11 @@ def test_agent_reach_preflight_reports_missing_mcporter_without_running() -> Non
         executable_finder=lambda _name: None,
     )
 
-    diagnostic = provider.preflight("Michael Hyatt article")
+    diagnostic = provider.preflight("Jane Roe article")
 
     assert diagnostic == {
         "provider": "agent-reach:exa",
-        "query": "Michael Hyatt article",
+        "query": "Jane Roe article",
         "error": "mcporter is not installed",
         "provider_reached": False,
     }
@@ -157,7 +159,7 @@ def test_agent_reach_marks_offline_exa_as_not_reached() -> None:
         )
     )
 
-    assert provider.search("Michael Hyatt article") == []
+    assert provider.search("Jane Roe article") == []
     assert provider.diagnostics[-1]["provider_reached"] is False
     assert "unreachable" in provider.diagnostics[-1]["error"].casefold()
 
@@ -170,23 +172,23 @@ def test_ddg_normalizes_and_bounds_public_results() -> None:
         return [
             {
                 "href": f"https://example.test/{index}",
-                "title": f"Michael Hyatt result {index}",
-                "body": "BlueCat and Hyatt Family Office",
+                "title": f"Jane Roe result {index}",
+                "body": "Northwind and Roe Family Office",
             }
             for index in range(4)
         ]
 
     provider = DdgSearchProvider(search=search)
-    results = provider.search('"Michael Hyatt" BlueCat', limit=2)
+    results = provider.search('"Jane Roe" Northwind', limit=2)
 
-    assert calls == [('"Michael Hyatt" BlueCat', 2)]
+    assert calls == [('"Jane Roe" Northwind', 2)]
     assert len(results) == 2
     assert results[0] == SearchResult(
         url="https://example.test/0",
-        title="Michael Hyatt result 0",
-        snippet="BlueCat and Hyatt Family Office",
+        title="Jane Roe result 0",
+        snippet="Northwind and Roe Family Office",
         rank=1,
-        query='"Michael Hyatt" BlueCat',
+        query='"Jane Roe" Northwind',
         provider="ddg",
     )
 
@@ -199,15 +201,15 @@ def test_ytdlp_uses_shell_safe_arguments_and_normalizes_watch_urls() -> None:
         rows = [
             {
                 "id": "abc123",
-                "title": "Michael Hyatt BlueCat interview",
-                "description": "Michael Hyatt discusses investing.",
+                "title": "Jane Roe Northwind interview",
+                "description": "Jane Roe discusses investing.",
                 "channel": "Example Channel",
             },
             {
                 "id": "def456",
                 "webpage_url": "https://www.youtube.com/watch?v=def456",
-                "title": "Another Michael Hyatt conversation",
-                "description": "Hyatt Family Office",
+                "title": "Another Jane Roe conversation",
+                "description": "Roe Family Office",
                 "uploader": "Another Channel",
             },
         ]
@@ -218,7 +220,7 @@ def test_ytdlp_uses_shell_safe_arguments_and_normalizes_watch_urls() -> None:
         )
 
     provider = YtDlpSearchProvider(runner=runner, timeout=17)
-    results = provider.search('"Michael Hyatt" BlueCat YouTube', limit=2)
+    results = provider.search('"Jane Roe" Northwind YouTube', limit=2)
 
     command, kwargs = calls[0]
     assert isinstance(command, list)
@@ -229,7 +231,7 @@ def test_ytdlp_uses_shell_safe_arguments_and_normalizes_watch_urls() -> None:
         "--no-download",
         "--playlist-end",
         "2",
-        'ytsearch2:"Michael Hyatt" BlueCat YouTube',
+        'ytsearch2:"Jane Roe" Northwind YouTube',
     ]
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 17
@@ -275,8 +277,8 @@ def test_composite_routes_queries_and_isolates_provider_failures() -> None:
             return [
                 SearchResult(
                     url="https://example.test/interview",
-                    title="Michael Hyatt interview",
-                    snippet="BlueCat",
+                    title="Jane Roe interview",
+                    snippet="Northwind",
                     rank=1,
                     query=query,
                     provider=self.provider_name,
@@ -290,19 +292,19 @@ def test_composite_routes_queries_and_isolates_provider_failures() -> None:
     youtube = YouTube()
     provider = CompositeSearchProvider(web=web, youtube=youtube)
 
-    web_results = provider.search("Michael Hyatt interview")
-    youtube_results = provider.search("Michael Hyatt YouTube")
-    failed_results = provider.search("Michael Hyatt broken interview")
+    web_results = provider.search("Jane Roe interview")
+    youtube_results = provider.search("Jane Roe YouTube")
+    failed_results = provider.search("Jane Roe broken interview")
 
     assert len(web_results) == 1
     assert len(youtube_results) == 1
     assert failed_results == []
-    assert web.queries == ["Michael Hyatt interview", "Michael Hyatt broken interview"]
-    assert youtube.queries == ["Michael Hyatt YouTube"]
+    assert web.queries == ["Jane Roe interview", "Jane Roe broken interview"]
+    assert youtube.queries == ["Jane Roe YouTube"]
     assert provider.diagnostics == [
         {
             "provider": "web",
-            "query": "Michael Hyatt broken interview",
+            "query": "Jane Roe broken interview",
             "error": "RuntimeError",
         }
     ]

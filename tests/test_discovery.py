@@ -25,14 +25,14 @@ def public_resolver(host: str, port: int):
 
 
 def profile_fetcher() -> Fetcher:
-    html = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
+    html = (FIXTURES / "jane_roe_profile.html").read_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:
         content = html
         if "spotify.com" in request.url.host:
             content = (
-                b"<html><head><title>Michael Hyatt BlueCat interview podcast</title></head>"
-                b"<body>A conversation with investor Michael Hyatt, co-founder of BlueCat.</body>"
+                b"<html><head><title>Jane Roe Northwind interview podcast</title></head>"
+                b"<body>A conversation with investor Jane Roe, co-founder of Northwind.</body>"
                 b"</html>"
             )
         return httpx.Response(
@@ -59,8 +59,8 @@ class StaticSearch:
         return [
             SearchResult(
                 url="https://www.youtube.com/watch?v=voice123",
-                title="Michael Hyatt of BlueCat interview",
-                snippet="Michael Hyatt discusses building BlueCat.",
+                title="Jane Roe of Northwind interview",
+                snippet="Jane Roe discusses building Northwind.",
                 rank=1,
                 query=query,
                 provider=self.provider_name,
@@ -68,25 +68,22 @@ class StaticSearch:
         ]
 
 
-def test_known_profile_resolves_bluecat_michael_not_author() -> None:
+def test_known_profile_resolves_northwind_jane_not_author() -> None:
     result = DiscoveryService(fetcher=profile_fetcher()).discover(
-        name="Michael Hyatt",
+        name="Jane Roe",
         firm=None,
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
 
-    assert "BlueCat" in {
+    assert "Northwind" in {
         affiliation.firm for affiliation in result.identity.affiliations
     }
-    assert any(
-        "Michael S. Hyatt" in item for item in result.identity.competing_hypotheses
-    )
     assert result.source_plan.requires_review is True
 
     profile = next(
         candidate
         for candidate in result.source_plan.candidates
-        if candidate.canonical_url.endswith("/investors/michael-hyatt")
+        if candidate.canonical_url.endswith("/investors/jane-roe")
     )
     assert profile.material_role == MaterialRole.IDENTITY_EVIDENCE
     assert profile.approval_status == ApprovalStatus.REJECTED
@@ -94,9 +91,9 @@ def test_known_profile_resolves_bluecat_michael_not_author() -> None:
 
 
 def test_discovery_proposes_voice_queries() -> None:
-    queries = generate_queries("Michael Hyatt", ["BlueCat"])
+    queries = generate_queries("Jane Roe", ["Northwind"])
 
-    assert '"Michael Hyatt" BlueCat interview' in queries
+    assert '"Jane Roe" Northwind interview' in queries
     assert any("podcast" in query for query in queries)
     assert any("YouTube" in query for query in queries)
 
@@ -105,8 +102,8 @@ def test_youtube_search_result_becomes_target_speech_and_voice_candidate() -> No
     result = DiscoveryService(
         fetcher=profile_fetcher(), search_provider=StaticSearch()
     ).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
 
     youtube = next(
@@ -125,8 +122,8 @@ def test_duplicate_search_results_are_merged_with_all_queries() -> None:
     result = DiscoveryService(
         fetcher=profile_fetcher(), search_provider=StaticSearch()
     ).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
     youtube = [
         candidate
@@ -148,16 +145,16 @@ def test_namesake_result_without_target_affiliation_stays_below_auto_approval() 
             return [
                 SearchResult(
                     url="https://www.youtube.com/watch?v=correct",
-                    title="Michael Hyatt BlueCat interview",
-                    snippet="The Hyatt Family Office investor discusses BlueCat.",
+                    title="Jane Roe Northwind interview",
+                    snippet="The Roe Family Office investor discusses Northwind.",
                     rank=1,
                     query=query,
                     provider=self.provider_name,
                 ),
                 SearchResult(
                     url="https://www.youtube.com/watch?v=namesake",
-                    title="The Double Win with Michael Hyatt",
-                    snippet="A productivity and leadership podcast from Full Focus.",
+                    title="The Double Win with Jane Roe",
+                    snippet="A productivity and leadership podcast from Steady Focus.",
                     rank=2,
                     query=query,
                     provider=self.provider_name,
@@ -167,9 +164,9 @@ def test_namesake_result_without_target_affiliation_stays_below_auto_approval() 
     result = DiscoveryService(
         fetcher=profile_fetcher(), search_provider=NamesakeSearch()
     ).discover(
-        name="Michael Hyatt",
-        firm="Hyatt Family Office",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        firm="Roe Family Office",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
     by_url = {
         candidate.canonical_url: candidate
@@ -193,8 +190,8 @@ def test_discovery_caps_total_search_operations() -> None:
         search_provider=search,
         maximum_search_operations=2,
     ).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
 
     assert len(search.queries) == 2
@@ -212,8 +209,8 @@ def test_search_provider_reserves_monetary_budget_before_each_call(tmp_path) -> 
             budget=ledger,
             search_operation_cost_usd=Decimal("0.06"),
         ).discover(
-            name="Michael Hyatt",
-            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            name="Jane Roe",
+            known_profile_url="https://www.thepitch.show/investors/jane-roe",
         )
 
     assert len(search.queries) == 1
@@ -235,8 +232,8 @@ def test_failed_discovery_provider_call_is_conservatively_settled(tmp_path) -> N
             budget=ledger,
             discovery_operation_cost_usd=Decimal("0.25"),
         ).discover(
-            name="Michael Hyatt",
-            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            name="Jane Roe",
+            known_profile_url="https://www.thepitch.show/investors/jane-roe",
         )
 
     assert ledger.provider_operations == 1
@@ -260,8 +257,8 @@ def test_search_adapter_diagnostics_are_preserved_in_provider_operations() -> No
     result = DiscoveryService(
         fetcher=profile_fetcher(), search_provider=search
     ).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
 
     failures = [
@@ -278,12 +275,10 @@ def test_search_adapter_diagnostics_are_preserved_in_provider_operations() -> No
 def test_operator_supplied_podcast_url_becomes_target_speech_and_voice_candidate() -> (
     None
 ):
-    podcast_url = (
-        "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"
-    )
+    podcast_url = "https://podcasters.spotify.com/pod/show/example/episodes/jane-roe"
     result = DiscoveryService(fetcher=profile_fetcher()).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         source_urls=[podcast_url],
     )
 
@@ -302,9 +297,9 @@ def test_operator_supplied_podcast_url_becomes_target_speech_and_voice_candidate
 
 
 def test_direct_media_url_is_planned_without_downloading_during_discovery() -> None:
-    direct_url = "https://cdn.example.test/michael-hyatt.mp3"
+    direct_url = "https://cdn.example.test/jane-roe.mp3"
     requested: list[str] = []
-    profile = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
+    profile = (FIXTURES / "jane_roe_profile.html").read_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:
         requested.append(str(request.url))
@@ -318,8 +313,8 @@ def test_direct_media_url_is_planned_without_downloading_during_discovery() -> N
         minimum_interval=0,
     )
     result = DiscoveryService(fetcher=fetcher).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         source_urls=[direct_url],
     )
 
@@ -327,18 +322,18 @@ def test_direct_media_url_is_planned_without_downloading_during_discovery() -> N
         item for item in result.source_plan.candidates if item.url == direct_url
     )
     assert media.material_role == "reference_voice"
-    assert requested == ["https://www.thepitch.show/investors/michael-hyatt"]
+    assert requested == ["https://www.thepitch.show/investors/jane-roe"]
 
 
 def test_embedded_audio_page_is_classified_as_target_podcast_source() -> None:
-    page_url = "https://tanktalks.substack.com/p/michael-hyatt"
+    page_url = "https://foundertalks.substack.com/p/jane-roe"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        content = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
-        if request.url.host == "tanktalks.substack.com":
+        content = (FIXTURES / "jane_roe_profile.html").read_bytes()
+        if request.url.host == "foundertalks.substack.com":
             content = (
-                b"<html><head><title>Interview with Michael Hyatt</title></head>"
-                b"<body><main>Michael Hyatt co-founder of BlueCat interview."
+                b"<html><head><title>Interview with Jane Roe</title></head>"
+                b"<body><main>Jane Roe co-founder of Northwind interview."
                 b"<audio src='https://cdn.example.test/voice.mp3'></audio>"
                 b"</main></body></html>"
             )
@@ -355,8 +350,8 @@ def test_embedded_audio_page_is_classified_as_target_podcast_source() -> None:
         minimum_interval=0,
     )
     result = DiscoveryService(fetcher=fetcher).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         source_urls=[page_url],
     )
 
@@ -382,7 +377,7 @@ def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> N
                         "message": {
                             "content": json.dumps(
                                 {
-                                    "canonical_name": "Michael Hyatt",
+                                    "canonical_name": "Jane Roe",
                                     "aliases": [],
                                     "affiliations": [],
                                     "competing_hypotheses": [],
@@ -402,23 +397,23 @@ def test_openai_compatible_adapter_sends_portable_json_message(monkeypatch) -> N
     provider = OpenAICompatibleDiscoveryProvider(
         "https://provider.example/v1/chat/completions", "secret", "model"
     )
-    provider.refine(name="Michael Hyatt", evidence=[], candidates=[])
+    provider.refine(name="Jane Roe", evidence=[], candidates=[])
 
     user_message = captured["json"]["messages"][1]["content"]
-    assert json.loads(user_message)["name"] == "Michael Hyatt"
+    assert json.loads(user_message)["name"] == "Jane Roe"
     assert provider.last_usage == {"input_tokens": 123, "output_tokens": 45}
 
 
 def test_source_plan_id_changes_when_candidate_set_changes() -> None:
     first = DiscoveryService(fetcher=profile_fetcher()).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
     second = DiscoveryService(fetcher=profile_fetcher()).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         source_urls=[
-            "https://podcasters.spotify.com/pod/show/example/episodes/michael-hyatt"
+            "https://podcasters.spotify.com/pod/show/example/episodes/jane-roe"
         ],
     )
 
@@ -426,12 +421,12 @@ def test_source_plan_id_changes_when_candidate_set_changes() -> None:
 
 
 def test_supplied_file_is_added_to_reviewable_plan(tmp_path) -> None:
-    supplied = tmp_path / "michael-hyatt-notes.txt"
+    supplied = tmp_path / "jane-roe-notes.txt"
     supplied.write_text("First-person public notes supplied by the operator.")
 
     result = DiscoveryService(fetcher=profile_fetcher()).discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         supplied_files=[supplied],
         supplied_role=MaterialRole.AUTHORED_BY_TARGET,
     )

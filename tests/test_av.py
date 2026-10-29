@@ -210,7 +210,7 @@ class FakeDiarization:
 
 def reference_profile() -> ReferenceVoiceProfile:
     return ReferenceVoiceProfile(
-        investor_slug="michael-hyatt",
+        investor_slug="jane-roe",
         candidate_ids=["voice:1"],
         artifact_ids=["sha256:" + "a" * 64],
         status="verified_human",
@@ -281,9 +281,7 @@ def test_independent_av_stages_assemble_without_rerunning_providers(tmp_path) ->
         attribution=attribution,
     )
 
-    assert [item.text for item in result.target_segments] == [
-        "I back durable firms."
-    ]
+    assert [item.text for item in result.target_segments] == ["I back durable firms."]
     assert len(transcript_provider.calls) == 2
 
 

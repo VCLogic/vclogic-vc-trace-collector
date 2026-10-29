@@ -35,12 +35,12 @@ Read only the matching reference:
 When the human has an interactive terminal, offer:
 
 ```bash
-uv run vc-trace-collector wizard --name "Michael Hyatt"
+uv run vc-trace-collector wizard --name "Jane Roe"
 ```
 
 It runs the whole flow (identity, platforms, triage table, download, voice
 references, processing, export) and saves after each step; resume with
-`wizard --investor michael-hyatt`.
+`wizard --investor jane-roe`.
 
 When the user wants review here in chat, use conversational batches even if a
 terminal is available; do not send them away to run commands or open a local

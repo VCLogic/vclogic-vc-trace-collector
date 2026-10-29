@@ -57,7 +57,7 @@ def candidate(
 
 def plan(*candidates: SourceCandidate) -> SourcePlan:
     return SourcePlan(
-        plan_id="plan-1", investor_slug="michael-hyatt", candidates=list(candidates)
+        plan_id="plan-1", investor_slug="jane-roe", candidates=list(candidates)
     )
 
 
@@ -118,18 +118,22 @@ def context(tmp_path: Path) -> CollectionContext:
 
 def test_progress_counts_only_selected_sources_including_resume(tmp_path, monkeypatch):
     from vc_trace_collector import collectors
+
     events = []
-    monkeypatch.setattr(collectors, 'download_batch',
-        lambda done, total, **kw: events.append((done, total, kw)))
+    monkeypatch.setattr(
+        collectors,
+        "download_batch",
+        lambda done, total, **kw: events.append((done, total, kw)),
+    )
     ctx = context(tmp_path)
-    ctx.candidate_ids = {'success', 'failure'}
-    sources = plan(candidate('outside'), candidate('success'), candidate('failure'))
+    ctx.candidate_ids = {"success", "failure"}
+    sources = plan(candidate("outside"), candidate("success"), candidate("failure"))
     registry = CollectorRegistry([StaticCollector()])
     collect_approved_sources(sources, context=ctx, registry=registry)
-    assert events[-1] == (2, 2, {'failed': 1, 'skipped': 0})
+    assert events[-1] == (2, 2, {"failed": 1, "skipped": 0})
     events.clear()
     collect_approved_sources(sources, context=ctx, registry=registry)
-    assert events[-1] == (2, 2, {'failed': 1, 'skipped': 1})
+    assert events[-1] == (2, 2, {"failed": 1, "skipped": 1})
 
 
 def test_one_failed_source_does_not_remove_success(tmp_path) -> None:
@@ -336,8 +340,8 @@ def test_downloaded_byte_limit_is_aggregate_across_web_sources(tmp_path) -> None
 
 
 def test_podcast_collector_preserves_page_and_public_audio(tmp_path) -> None:
-    page_url = "https://podcast.example.test/episodes/michael-hyatt"
-    audio_url = "https://cdn.example.test/michael-hyatt.mp3"
+    page_url = "https://podcast.example.test/episodes/jane-roe"
+    audio_url = "https://cdn.example.test/jane-roe.mp3"
 
     def resolver(host: str, port: int):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
@@ -405,24 +409,34 @@ def test_podcast_requires_audio_and_matches_feed_episode(tmp_path, feed_mode) ->
         elif request.url.path == "/feed.xml":
             mime = "application/rss+xml"
             link = episode if feed_mode == "matching" else "https://example.test/other"
-            body = (f'<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">'
-                    f'<channel><item><link>{link}</link><itunes:duration>5</itunes:duration>'
-                    '<enclosure url="https://example.test/audio.mp3" type="audio/mpeg"/>'
-                    '</item></channel></rss>').encode()
+            body = (
+                f'<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">'
+                f"<channel><item><link>{link}</link><itunes:duration>5</itunes:duration>"
+                '<enclosure url="https://example.test/audio.mp3" type="audio/mpeg"/>'
+                "</item></channel></rss>"
+            ).encode()
         elif request.url.path == "/audio.mp3":
             mime, body = "audio/mpeg", b"ID3 audio fixture"
-        return httpx.Response(200, content=body, headers={"content-type": mime}, request=request)
+        return httpx.Response(
+            200, content=body, headers={"content-type": mime}, request=request
+        )
 
     ctx = context(tmp_path)
-    ctx.fetcher = Fetcher(transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0)
+    ctx.fetcher = Fetcher(
+        transport=httpx.MockTransport(handler), resolver=resolver, minimum_interval=0
+    )
     result = collect_approved_sources(
         plan(candidate("podcast", SourceType.PODCAST, url=episode)),
-        context=ctx, registry=CollectorRegistry([PodcastCollector()]),
+        context=ctx,
+        registry=CollectorRegistry([PodcastCollector()]),
     )
     if feed_mode == "matching":
         assert result.collected == 1
         assert result.media_seconds == 5
-        assert any(record.collection_method == "podcast_enclosure_http" for record in result.artifacts)
+        assert any(
+            record.collection_method == "podcast_enclosure_http"
+            for record in result.artifacts
+        )
     else:
         assert result.failed == 1
         assert result.collected == 0
@@ -526,16 +540,21 @@ def test_direct_audio_over_remaining_duration_is_rejected_before_get(tmp_path) -
 def test_youtube_failure_preserves_safe_diagnostic(tmp_path):
     def runner(command, **kwargs):
         raise subprocess.CalledProcessError(
-            1, command, stderr=(
+            1,
+            command,
+            stderr=(
                 "ERROR: HTTP Error 429: Too Many Requests\n"
                 "https://user:password@example.test/watch?token=private\n"
                 "Cookie: session=private\nAuthorization: Basic private\n"
-            )
+            ),
         )
 
     result = collect_approved_sources(
-        plan(candidate("youtube", SourceType.YOUTUBE,
-                       url="https://www.youtube.com/watch?v=abc")),
+        plan(
+            candidate(
+                "youtube", SourceType.YOUTUBE, url="https://www.youtube.com/watch?v=abc"
+            )
+        ),
         context=context(tmp_path),
         registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
     )

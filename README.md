@@ -65,7 +65,7 @@ requirements do not apply to running this collector by itself.
 ### Handoff to Investment Memory
 
 Pass the **whole investor output folder**, for example
-`outputs/michael-hyatt/`, to the investment-memory tool. Preserve relative paths
+`outputs/jane-roe/`, to the investment-memory tool. Preserve relative paths
 and all available `identity/`, `discovery/`, `raw/`, `processed/`, `corpus/`,
 `state/`, `portfolio/`, audit and manifest files. The receiving tool requires a
 confirmed `identity/resolved_identity.json` with a slug matching the folder name.
@@ -124,19 +124,19 @@ or download their material.
 
 ## Run the workflow
 
-The examples use Michael Hyatt. Replace his name and workspace slug for another
-investor. Workspaces use the name only, such as `michael-hyatt`.
+The examples use Jane Roe. Replace his name and workspace slug for another
+investor. Workspaces use the name only, such as `jane-roe`.
 
 ```bash
 uv run --extra youtube --extra av --extra av-local vc-trace-collector wizard \
-  --name "Michael Hyatt"
+  --name "Jane Roe"
 ```
 
 ### 1. Identity and discovery
 
 Give a firm or known profile if you have one; otherwise choose from possible
-profiles. For Michael Hyatt you can supply
-`https://www.thepitch.show/investors/michael-hyatt`; that page can establish
+profiles. For Jane Roe you can supply
+`https://www.thepitch.show/investors/jane-roe`; that page can establish
 identity even though The Pitch material is excluded from the corpus by the
 default rules. Confirm the displayed person before any platform search. Then
 tick the platforms to **skip** (e.g. podcast); nothing ticked searches all.
@@ -201,8 +201,8 @@ the run continues. The run ends with export, verification and a summary of
 counts, output path and failures. To repeat them later:
 
 ```bash
-uv run vc-trace-collector export --investor michael-hyatt
-uv run vc-trace-collector verify --investor michael-hyatt
+uv run vc-trace-collector export --investor jane-roe
+uv run vc-trace-collector verify --investor jane-roe
 ```
 
 Check failures and review-required items before treating the corpus as complete.
@@ -210,7 +210,7 @@ A successful verification does not guarantee discovery found every public source
 
 ## Where is the data?
 
-Everything for this example is under `outputs/michael-hyatt/`.
+Everything for this example is under `outputs/jane-roe/`.
 
 | Location | Contents |
 |---|---|
@@ -232,7 +232,7 @@ This collector does not run that builder or copy files into its repository.
 To inspect run status:
 
 ```bash
-uv run vc-trace-collector status --investor michael-hyatt
+uv run vc-trace-collector status --investor jane-roe
 ```
 
 ## Portfolio evidence is separate
@@ -240,7 +240,7 @@ uv run vc-trace-collector status --investor michael-hyatt
 Once the investor identity exists, collect portfolio evidence with:
 
 ```bash
-uv run vc-trace-collector portfolio --investor michael-hyatt
+uv run vc-trace-collector portfolio --investor jane-roe
 ```
 
 This command uses Agent Reach by default; use `--backend default` if needed.
@@ -253,8 +253,8 @@ The Pitch and other corpus exclusion rules do **not** apply to this dataset.
 Give the downstream tool these files:
 
 ```text
-outputs/michael-hyatt/portfolio/handoff.json
-outputs/michael-hyatt/portfolio/documents.jsonl
+outputs/jane-roe/portfolio/handoff.json
+outputs/jane-roe/portfolio/documents.jsonl
 ```
 
 Check `portfolio/run_summary.json` and `portfolio/manifest.json` for status.
@@ -268,7 +268,7 @@ Open the agent in this repository and invoke:
 - **Codex:** `$vc-trace-collector`
 - **Claude Code:** `/vc-trace-collector`
 
-For example: “Discover sources for Michael Hyatt. Help me confirm his profile
+For example: “Discover sources for Jane Roe. Help me confirm his profile
 and choose the sources; do not download yet.”
 
 Both skills share the same instructions. They guide the three stages and ask

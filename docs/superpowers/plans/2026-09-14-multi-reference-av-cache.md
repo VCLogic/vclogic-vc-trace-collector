@@ -200,11 +200,11 @@ git commit -m "feat: score speakers against verified reference ensemble"
 Add an integration test that approves two collected reference candidates, reapproves one, and asserts two deterministic profiles remain:
 
 ```python
-profiles_path = output / "michael-hyatt/identity/reference_voice_profiles.jsonl"
+profiles_path = output / "jane-roe/identity/reference_voice_profiles.jsonl"
 profiles = read_jsonl(profiles_path)
 assert len(profiles) == 2
 assert len({row["profile_id"] for row in profiles}) == 2
-assert read_json(output / "michael-hyatt/identity/reference_voice_profile.json")[
+assert read_json(output / "jane-roe/identity/reference_voice_profile.json")[
     "profile_id"
 ] == profiles[-1]["profile_id"]
 ```
@@ -450,14 +450,14 @@ git commit -m "feat: separate audiovisual stage records"
 Extend the existing counting-provider integration setup:
 
 ```python
-collector.process_source("michael-hyatt", candidate_id=interview.candidate_id)
+collector.process_source("jane-roe", candidate_id=interview.candidate_id)
 first_diarizations = diarization.calls
 first_transcriptions = transcript.calls
 
 collector.approve_reference_voice(
-    "michael-hyatt", candidate_id=second_voice_id, reviewer="reviewer"
+    "jane-roe", candidate_id=second_voice_id, reviewer="reviewer"
 )
-collector.process_source("michael-hyatt", candidate_id=interview.candidate_id)
+collector.process_source("jane-roe", candidate_id=interview.candidate_id)
 
 assert diarization.calls == first_diarizations
 assert transcript.calls == first_transcriptions
@@ -522,7 +522,7 @@ git add src/vc_trace_collector/pipeline.py src/vc_trace_collector/state.py tests
 git commit -m "feat: reuse AV stages across reference changes"
 ```
 
-### Task 5: Verify provenance, update documentation, and exercise Michael Hyatt migration
+### Task 5: Verify provenance, update documentation, and exercise Jane Roe migration
 
 **Files:**
 - Modify: `src/vc_trace_collector/verify.py`
@@ -567,31 +567,31 @@ git add src/vc_trace_collector/verify.py src/vc_trace_collector/export.py README
 git commit -m "docs: document multi-reference AV provenance"
 ```
 
-- [ ] **Step 7: Reapprove the earlier Michael Hyatt reference**
+- [ ] **Step 7: Reapprove the earlier Jane Roe reference**
 
 After automated verification passes, reconstruct the earlier verified Zoom profile from its retained candidate and interval:
 
 ```bash
 uv run --extra av --extra av-local vc-trace-collector review-voice \
-  --investor michael-hyatt \
+  --investor jane-roe \
   --candidate-id 'voice:candidate:220a65f7d78e5c4adc70' \
   --reviewer 'human:dpasch01' \
   --start-seconds 108 --end-seconds 175 \
   --diarization-model pyannote/speaker-diarization-3.1
 ```
 
-Expected: two verified profiles exist: the full Seismic clip and the retained Tank Talk interval.
+Expected: two verified profiles exist: the full conference clip and the retained Founder Talk interval.
 
-- [ ] **Step 8: Run the Michael Hyatt migration and confirm cache behavior**
+- [ ] **Step 8: Run the Jane Roe migration and confirm cache behavior**
 
 Process all four approved candidate IDs sequentially. The first post-migration pass may invoke pyannote to populate missing per-speaker embeddings, but audit events must show transcript cache seeding and no Whisper invocation. Repeating the same commands must show all three stages as cache hits.
 
 - [ ] **Step 9: Export and verify**
 
 ```bash
-uv run vc-trace-collector export --investor michael-hyatt
-uv run vc-trace-collector verify --investor michael-hyatt
-uv run vc-trace-collector status --investor michael-hyatt
+uv run vc-trace-collector export --investor jane-roe
+uv run vc-trace-collector verify --investor jane-roe
+uv run vc-trace-collector status --investor jane-roe
 ```
 
 Expected: the corpus includes only model-accepted or human-verified target speech; any remaining uncertain item stays in review-required output. Report unrelated pre-existing discovery/state verification errors separately rather than weakening validation.

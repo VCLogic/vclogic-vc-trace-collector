@@ -209,13 +209,6 @@ class DiscoveryResult(BaseModel):
     provider_operations: list[dict[str, object]] = Field(default_factory=list)
 
 
-_KNOWN_NAMESAKES = {
-    "michael hyatt": [
-        "Michael S. Hyatt, author and publishing executive (competing identity; not assumed identical)"
-    ]
-}
-
-
 def _extract_affiliations(
     page: ExtractedPage, explicit_firm: str | None
 ) -> list[Affiliation]:
@@ -673,7 +666,6 @@ class DiscoveryService:
                 version="1",
             ),
             evidence_ids=[item.evidence_id for item in evidence],
-            competing_hypotheses=_KNOWN_NAMESAKES.get(name.casefold(), []),
         )
 
         candidates = sorted(

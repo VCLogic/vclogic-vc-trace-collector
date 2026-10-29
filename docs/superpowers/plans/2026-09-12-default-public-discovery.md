@@ -171,7 +171,7 @@ git add src/vc_trace_collector/cli.py src/vc_trace_collector/config.py \
 git commit -m "feat: enable public discovery by default in CLI"
 ```
 
-### Task 3: Dependencies, documentation, and live Michael Hyatt proof
+### Task 3: Dependencies, documentation, and live Jane Roe proof
 
 **Files:**
 - Modify: `pyproject.toml`
@@ -182,7 +182,7 @@ git commit -m "feat: enable public discovery by default in CLI"
 - [x] **Step 1: Add a failing live acceptance test**
 
 Create an opt-in `@pytest.mark.live` test that runs the default public provider
-for one ordinary Michael Hyatt query and one YouTube query. Assert that the
+for one ordinary Jane Roe query and one YouTube query. Assert that the
 combined normalized result set is nonempty and includes at least one YouTube
 URL when public providers are available; skip with the recorded diagnostic
 when a public service blocks the environment.
@@ -225,20 +225,20 @@ uv run pytest -q -m live tests/test_live_public_search.py
 Expected: the test passes, or explicitly skips only when the public provider
 reports environmental blocking.
 
-- [x] **Step 6: Run fresh Michael Hyatt discovery**
+- [x] **Step 6: Run fresh Jane Roe discovery**
 
-Preserve `outputs/michael-hyatt` and execute:
+Preserve `outputs/jane-roe` and execute:
 
 ```bash
 uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --firm "Hyatt Family Office" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --name "Jane Roe" \
+  --firm "Roe Family Office" \
+  --known-profile-url "https://www.thepitch.show/investors/jane-roe" \
   --max-search-operations 30 \
   --output-dir outputs-full
 ```
 
-Verify that `outputs-full/michael-hyatt-hyatt-family-office/audit/events.jsonl`
+Verify that `outputs-full/jane-roe-roe-family-office/audit/events.jsonl`
 contains nonzero provider operations and that the review plan contains public
 web and YouTube candidates when providers responded.
 

@@ -67,7 +67,7 @@ Expected: all selected tests pass.
 **Files:**
 - Modify: `README.md`
 
-- [x] **Step 1: Revise the staged Michael Hyatt workflow**
+- [x] **Step 1: Revise the staged Jane Roe workflow**
 
 Show discovery without AV model options, voice approval with its selected model, and processing with transcription and diarization models. Explain that each stage persists and audits its effective configuration.
 

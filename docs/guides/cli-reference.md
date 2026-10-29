@@ -34,8 +34,8 @@ For a **new** workspace with a known profile:
 
 ```bash
 uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --name "Jane Roe" \
+  --known-profile-url "https://www.thepitch.show/investors/jane-roe" \
   --disable-public-search
 ```
 
@@ -48,10 +48,10 @@ Search one chosen platform at a time; generated queries are the default:
 
 ```bash
 uv run --extra youtube vc-trace-collector search-source \
-  --investor michael-hyatt --source youtube --backend agent-reach
+  --investor jane-roe --source youtube --backend agent-reach
 uv run vc-trace-collector search-source \
-  --investor michael-hyatt --source web_article --backend agent-reach
-uv run vc-trace-collector list-sources --investor michael-hyatt --json
+  --investor jane-roe --source web_article --backend agent-reach
+uv run vc-trace-collector list-sources --investor jane-roe --json
 ```
 
 Other source values are `web_profile`, `podcast`, `rss_feed`, `substack`, `medium`,
@@ -64,8 +64,8 @@ is a request limit—not a guaranteed count of distinct sources:
 
 ```bash
 uv run vc-trace-collector search-source \
-  --investor michael-hyatt --source web_article --backend agent-reach \
-  --query '"Michael Hyatt" BlueCat investing philosophy' \
+  --investor jane-roe --source web_article --backend agent-reach \
+  --query '"Jane Roe" Northwind investing philosophy' \
   --limit-per-query 20 --max-search-operations 100
 ```
 
@@ -91,7 +91,7 @@ IDs from `list-sources`:
 After the human confirms identity:
 
 ```bash
-uv run vc-trace-collector review --investor michael-hyatt \
+uv run vc-trace-collector review --investor jane-roe \
   --decision-file selected-decisions.json --reviewer human:reviewer --confirm-identity
 ```
 
@@ -103,10 +103,10 @@ an item from the decision file. Do not set speaker verification without evidence
 
 ```bash
 uv run --extra youtube vc-trace-collector fetch-source \
-  --investor michael-hyatt --source youtube
-uv run vc-trace-collector fetch-source --investor michael-hyatt --source podcast
+  --investor jane-roe --source youtube
+uv run vc-trace-collector fetch-source --investor jane-roe --source podcast
 uv run vc-trace-collector fetch-source \
-  --investor michael-hyatt --candidate-id candidate:actual-id
+  --investor jane-roe --candidate-id candidate:actual-id
 ```
 
 `--source` collects approved items of that type; other pending candidates do not
@@ -128,7 +128,7 @@ The supported local AV dependency versions are recorded in
 To register a local sample without copying its bytes or running a model:
 
 ```bash
-uv run vc-trace-collector stage-reference --investor michael-hyatt \
+uv run vc-trace-collector stage-reference --investor jane-roe \
   --file /path/to/public-reference.wav --reviewer human:reviewer
 ```
 
@@ -141,7 +141,7 @@ that check interactively. These timestamps are examples only:
 
 ```bash
 uv run --extra av --extra av-local vc-trace-collector review-voice \
-  --investor michael-hyatt --candidate-id voice:actual-id \
+  --investor jane-roe --candidate-id voice:actual-id \
   --reviewer human:reviewer --start-seconds 120 --end-seconds 165 \
   --diarization-model pyannote/speaker-diarization-3.1 --embedding-model ""
 ```
@@ -155,7 +155,7 @@ Process an approved downloaded appearance:
 
 ```bash
 uv run --extra av --extra av-local vc-trace-collector process-source \
-  --investor michael-hyatt --candidate-id candidate:actual-id \
+  --investor jane-roe --candidate-id candidate:actual-id \
   --transcription-model turbo --diarization-model pyannote/speaker-diarization-3.1
 ```
 
@@ -172,7 +172,7 @@ Saved model/cost settings persist when omitted on later calls.
 For selected **written** items:
 
 ```bash
-uv run vc-trace-collector process --investor michael-hyatt \
+uv run vc-trace-collector process --investor jane-roe \
   --candidate-id candidate:actual-written-id
 ```
 
@@ -208,7 +208,7 @@ and configuration. This repository does not silently install or configure it.
 To isolate an Exa connectivity problem from collector logic:
 
 ```bash
-mcporter call exa.web_search_exa query='"Michael Hyatt" BlueCat investor' numResults=1
+mcporter call exa.web_search_exa query='"Jane Roe" Northwind investor' numResults=1
 ```
 
 A direct mcporter command does not load this repository's `.env`. Configure its

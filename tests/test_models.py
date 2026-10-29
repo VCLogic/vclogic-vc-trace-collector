@@ -17,28 +17,28 @@ from vc_trace_collector.models import (
 
 def test_identity_preserves_affiliations_and_competing_hypotheses() -> None:
     identity = ResolvedIdentity(
-        slug="michael-hyatt",
-        canonical_name="Michael Hyatt",
+        slug="jane-roe",
+        canonical_name="Jane Roe",
         resolution_status=ResolutionStatus.PROVISIONAL,
         identity_confidence=Confidence(
             score=0.8, method="evidence_policy", version="1"
         ),
-        affiliations=[Affiliation(firm="BlueCat", role="co-founder", current=True)],
-        competing_hypotheses=["Michael S. Hyatt, author"],
+        affiliations=[Affiliation(firm="Northwind", role="co-founder", current=True)],
+        competing_hypotheses=["Jane S. Roe, author"],
     )
 
-    assert identity.affiliations[0].firm == "BlueCat"
-    assert identity.competing_hypotheses == ["Michael S. Hyatt, author"]
+    assert identity.affiliations[0].firm == "Northwind"
+    assert identity.competing_hypotheses == ["Jane S. Roe, author"]
 
 
 def test_source_candidate_requires_discovery_provenance() -> None:
     candidate = SourceCandidate(
         candidate_id="candidate-1",
-        url="https://example.test/michael",
-        canonical_url="https://example.test/michael",
+        url="https://example.test/jane",
+        canonical_url="https://example.test/jane",
         source_type=SourceType.WEB_PROFILE,
         material_role=MaterialRole.IDENTITY_EVIDENCE,
-        discovery_queries=["Michael Hyatt BlueCat investor"],
+        discovery_queries=["Jane Roe Northwind investor"],
         identity_confidence=Confidence(
             score=0.9, method="name_firm_match", version="1"
         ),

@@ -56,7 +56,7 @@ def test_stage_reference_cli_records_plan_without_download(tmp_path):
         [
             "stage-reference",
             "--investor",
-            "michael-hyatt",
+            "jane-roe",
             "--file",
             str(local),
             "--reviewer",
@@ -74,9 +74,9 @@ def test_supplied_video_has_reference_backlink_after_download(tmp_path):
     from vc_trace_collector.storage import read_jsonl
 
     p, c = prepared(tmp_path, media=True)
-    p.fetch_source("michael-hyatt", candidate_ids={c.candidate_id})
+    p.fetch_source("jane-roe", candidate_ids={c.candidate_id})
     voice = read_jsonl(
-        p.workspace("michael-hyatt") / "identity/reference_voice_candidates.jsonl"
+        p.workspace("jane-roe") / "identity/reference_voice_candidates.jsonl"
     )[0]
     assert voice["artifact_id"]
 
@@ -88,13 +88,13 @@ def test_voice_candidate_returns_id_and_local_media(tmp_path):
     from vc_trace_collector.wizard_models import source_items
 
     p, c = prepared(tmp_path, media=True)
-    p.fetch_source("michael-hyatt", candidate_ids={c.candidate_id})
+    p.fetch_source("jane-roe", candidate_ids={c.candidate_id})
     item = next(
         i
-        for i in source_items(p, "michael-hyatt")
+        for i in source_items(p, "jane-roe")
         if i.candidate.candidate_id == c.candidate_id
     )
-    cid, media = voice_candidate(p, "michael-hyatt", item, reviewer="human")
+    cid, media = voice_candidate(p, "jane-roe", item, reviewer="human")
     assert cid.startswith("voice")
-    workspace = p.workspace("michael-hyatt").resolve()
+    workspace = p.workspace("jane-roe").resolve()
     assert media.is_file() and media.is_relative_to(workspace)

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and validate a standalone, auditable name-to-corpus collector with Michael Hyatt as the live pilot and with reference-voice discovery and audiovisual processing extension points.
+**Goal:** Build and validate a standalone, auditable name-to-corpus collector with Jane Roe as the live pilot and with reference-voice discovery and audiovisual processing extension points.
 
 **Architecture:** Implement a staged modular monolith under `src/vc_trace_collector`. Immutable filesystem artifacts and canonical JSON/JSONL are the portable record; SQLite stores transactional operation state and cost reservations. Discovery is provider-neutral with a deterministic fallback and an optional OpenAI-compatible structured-output adapter, while collection, policy, normalization, export, and verification remain deterministic.
 
@@ -48,23 +48,23 @@ from vc_trace_collector.models import Confidence, ResolvedIdentity, SourceCandid
 
 def test_identity_preserves_competing_hypotheses():
     identity = ResolvedIdentity(
-        slug="michael-hyatt",
-        canonical_name="Michael Hyatt",
+        slug="jane-roe",
+        canonical_name="Jane Roe",
         resolution_status="provisional",
         identity_confidence=Confidence(score=0.8, method="evidence_policy", version="1"),
-        competing_hypotheses=["Michael S. Hyatt, author"],
+        competing_hypotheses=["Jane S. Roe, author"],
     )
-    assert identity.competing_hypotheses == ["Michael S. Hyatt, author"]
+    assert identity.competing_hypotheses == ["Jane S. Roe, author"]
 
 
 def test_source_candidate_requires_discovery_provenance():
     candidate = SourceCandidate(
         candidate_id="candidate-1",
-        url="https://example.test/michael",
-        canonical_url="https://example.test/michael",
+        url="https://example.test/jane",
+        canonical_url="https://example.test/jane",
         source_type="web_profile",
         material_role="identity_evidence",
-        discovery_queries=["Michael Hyatt BlueCat investor"],
+        discovery_queries=["Jane Roe Northwind investor"],
         identity_confidence=Confidence(score=0.9, method="name_firm_match", version="1"),
         source_confidence=Confidence(score=0.8, method="source_policy", version="1"),
     )
@@ -185,8 +185,8 @@ git commit -m "feat: add auditable artifact state and budgets"
 def test_pitch_profile_is_identity_evidence_but_excluded_from_corpus():
     rules = RuleSet.pitch_default()
     decision = rules.evaluate(
-        url="https://www.thepitch.show/investors/michael-hyatt",
-        title="Michael Hyatt | The Pitch",
+        url="https://www.thepitch.show/investors/jane-roe",
+        title="Jane Roe | The Pitch",
         channel=None,
         text="investment episodes and outcomes",
     )
@@ -241,23 +241,23 @@ git commit -m "feat: enforce network and leakage policy"
 **Files:**
 - Create: `src/vc_trace_collector/fetch.py`
 - Create: `src/vc_trace_collector/extract.py`
-- Create: `tests/fixtures/michael_hyatt_profile.html`
+- Create: `tests/fixtures/jane_roe_profile.html`
 - Create: `tests/fixtures/feed.xml`
 - Test: `tests/test_fetch_extract.py`
 
 - [ ] **Step 1: Write failing extraction tests**
 
 ```python
-def test_extracts_identity_from_michael_hyatt_profile(profile_html):
-    page = extract_page(profile_html, "https://www.thepitch.show/investors/michael-hyatt")
-    assert page.title == "Michael Hyatt"
-    assert "BlueCat" in page.text
-    assert page.canonical_url.endswith("/investors/michael-hyatt")
+def test_extracts_identity_from_jane_roe_profile(profile_html):
+    page = extract_page(profile_html, "https://www.thepitch.show/investors/jane-roe")
+    assert page.title == "Jane Roe"
+    assert "Northwind" in page.text
+    assert page.canonical_url.endswith("/investors/jane-roe")
 
 
 def test_feed_entries_preserve_author_and_source(feed_bytes):
     entries = extract_feed(feed_bytes, "https://example.test/feed")
-    assert entries[0].author == "Michael Hyatt"
+    assert entries[0].author == "Jane Roe"
     assert entries[0].discovered_from == "https://example.test/feed"
 ```
 
@@ -301,20 +301,20 @@ git commit -m "feat: add safe web and feed extraction"
 - [ ] **Step 1: Write failing discovery tests**
 
 ```python
-def test_known_profile_resolves_bluecat_michael_not_author(profile_fixture):
+def test_known_profile_resolves_northwind_jane_not_author(profile_fixture):
     result = DiscoveryService(fetcher=profile_fixture).discover(
-        name="Michael Hyatt",
+        name="Jane Roe",
         firm=None,
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
     )
-    assert "BlueCat" in {a.firm for a in result.identity.affiliations}
-    assert "Michael S. Hyatt, author" in result.identity.competing_hypotheses
+    assert "Northwind" in {a.firm for a in result.identity.affiliations}
+    assert "Jane S. Roe, author" in result.identity.competing_hypotheses
     assert result.source_plan.requires_review is True
 
 
 def test_discovery_proposes_voice_queries():
-    queries = generate_queries("Michael Hyatt", ["BlueCat"])
-    assert '"Michael Hyatt" BlueCat interview' in queries
+    queries = generate_queries("Jane Roe", ["Northwind"])
+    assert '"Jane Roe" Northwind interview' in queries
     assert any("podcast" in query for query in queries)
 ```
 
@@ -548,7 +548,7 @@ git commit -m "feat: produce verified canonical and legacy corpora"
 ```python
 def test_discover_writes_reviewable_plan(cli, tmp_path, profile_server):
     result = cli.invoke(app, [
-        "discover", "--name", "Michael Hyatt", "--known-profile-url",
+        "discover", "--name", "Jane Roe", "--known-profile-url",
         profile_server.url, "--output-dir", str(tmp_path),
     ])
     assert result.exit_code == 0
@@ -557,7 +557,7 @@ def test_discover_writes_reviewable_plan(cli, tmp_path, profile_server):
 
 def test_collect_stops_at_review_checkpoint(cli, tmp_path, profile_server):
     result = cli.invoke(app, [
-        "collect", "--name", "Michael Hyatt", "--known-profile-url",
+        "collect", "--name", "Jane Roe", "--known-profile-url",
         profile_server.url, "--output-dir", str(tmp_path),
     ])
     assert result.exit_code == 3
@@ -606,7 +606,7 @@ git add src/vc_trace_collector/config.py src/vc_trace_collector/pipeline.py src/
 git commit -m "feat: expose resumable collector CLI"
 ```
 
-### Task 10: Documentation, security checks, and Michael Hyatt live pilot
+### Task 10: Documentation, security checks, and Jane Roe live pilot
 
 **Files:**
 - Create: `README.md`
@@ -614,20 +614,20 @@ git commit -m "feat: expose resumable collector CLI"
 - Create: `NOTICE.md`
 - Create: `.env.example`
 - Create: `.gitignore`
-- Test: `tests/live/test_michael_hyatt.py`
+- Test: `tests/live/test_jane_roe.py`
 
 - [ ] **Step 1: Add an opt-in live acceptance test**
 
 ```python
 @pytest.mark.live
-def test_michael_hyatt_profile_is_identity_evidence_and_excluded(tmp_path):
+def test_jane_roe_profile_is_identity_evidence_and_excluded(tmp_path):
     result = run_discovery(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         output_dir=tmp_path,
     )
-    assert result.identity.canonical_name == "Michael Hyatt"
-    assert any(a.firm == "BlueCat" for a in result.identity.affiliations)
+    assert result.identity.canonical_name == "Jane Roe"
+    assert any(a.firm == "Northwind" for a in result.identity.affiliations)
     profile = next(c for c in result.candidates if "thepitch.show" in c.canonical_url)
     assert profile.material_role == "identity_evidence"
     assert profile.approval_status == "rejected"
@@ -643,26 +643,26 @@ Expected: all offline tests pass.
 
 Document core and optional extras, human review, auto-approval, resume, exclusion configuration, reference voice, model selection, budgets, output contracts, and the separation from Investment Memory. `.env.example` contains names and empty placeholders only. `.gitignore` excludes `.env`, cookies, outputs, caches, media, model artifacts, and virtual environments.
 
-- [ ] **Step 4: Execute the live Michael Hyatt discovery and firewall test**
+- [ ] **Step 4: Execute the live Jane Roe discovery and firewall test**
 
 Run:
 
 ```bash
 uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --name "Jane Roe" \
+  --known-profile-url "https://www.thepitch.show/investors/jane-roe" \
   --output-dir outputs
-uv run pytest tests/live/test_michael_hyatt.py -m live -q
+uv run pytest tests/live/test_jane_roe.py -m live -q
 ```
 
-Expected: identity evidence mentions BlueCat; the profile is preserved as evidence but rejected from corpus collection by the Pitch rule; a reviewable independent-source and reference-voice plan is produced.
+Expected: identity evidence mentions Northwind; the profile is preserved as evidence but rejected from corpus collection by the Pitch rule; a reviewable independent-source and reference-voice plan is produced.
 
 - [ ] **Step 5: Run release verification and commit**
 
 ```bash
 uv run pytest -q
-uv run vc-trace-collector status --investor michael-hyatt --output-dir outputs
-uv run vc-trace-collector verify --investor michael-hyatt --output-dir outputs
+uv run vc-trace-collector status --investor jane-roe --output-dir outputs
+uv run vc-trace-collector verify --investor jane-roe --output-dir outputs
 git add README.md SECURITY.md NOTICE.md .env.example .gitignore tests/live
 git commit -m "docs: document and verify collector MVP"
 ```

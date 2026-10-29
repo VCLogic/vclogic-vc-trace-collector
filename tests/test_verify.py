@@ -43,11 +43,11 @@ def exported_workspace(
     include_search_observations: bool = True,
     include_collection_outcomes: bool = True,
 ):
-    config = RunConfig(name="Michael Hyatt")
+    config = RunConfig(name="Jane Roe")
     write_json(tmp_path / "config_snapshot.json", config)
     identity = ResolvedIdentity(
-        slug="michael-hyatt",
-        canonical_name="Michael Hyatt",
+        slug="jane-roe",
+        canonical_name="Jane Roe",
         resolution_status=ResolutionStatus.CONFIRMED,
         identity_confidence=Confidence(score=0.95, method="test", version="1"),
         reviewed_by="reviewer",
@@ -59,7 +59,7 @@ def exported_workspace(
     write_json(
         tmp_path / "identity/identity_review.json",
         {
-            "investor_slug": "michael-hyatt",
+            "investor_slug": "jane-roe",
             "status": "confirmed",
             "reviewed_by": "reviewer",
             "reviewed_at": identity.resolved_at,
@@ -84,7 +84,7 @@ def exported_workspace(
         tmp_path / "discovery/source_plan.json",
         SourcePlan(
             plan_id="plan:test",
-            investor_slug="michael-hyatt",
+            investor_slug="jane-roe",
             candidates=[candidate],
         ),
     )
@@ -119,20 +119,18 @@ def exported_workspace(
             "results": [
                 {
                     "url": candidate.url,
-                    "title": "Michael Hyatt article",
-                    "snippet": "Michael Hyatt",
+                    "title": "Jane Roe article",
+                    "snippet": "Jane Roe",
                     "rank": 1,
                     "query": "query",
                     "provider": "test-search",
                 }
-            ]
+            ],
         },
     )
     state = StateStore(tmp_path / "state/state.sqlite")
     state.start_operation(search_operation_id, "search-hash")
-    state.finish_operation(
-        search_operation_id, "search-hash", str(search_cache_path)
-    )
+    state.finish_operation(search_operation_id, "search-hash", str(search_cache_path))
     state.start_operation("collect:candidate:blog", "collect-hash")
     state.finish_operation(
         "collect:candidate:blog", "collect-hash", artifact.record.artifact_id
@@ -149,7 +147,7 @@ def exported_workspace(
                     result_provider="test-search",
                     status="succeeded",
                     rank=1,
-                    title="Michael Hyatt article",
+                    title="Jane Roe article",
                     url=observation_url or candidate.url,
                 )
             ],
@@ -172,7 +170,7 @@ def exported_workspace(
         item.source_candidate_id = candidate.candidate_id
         item.raw_artifact_ids = [artifact.record.artifact_id]
         item.collected_at = artifact.record.collected_at
-        item.authors = ["Michael Hyatt"]
+        item.authors = ["Jane Roe"]
         documents = [item]
     rules_payload = []
     write_json(tmp_path / "exclusion_rules_snapshot.json", rules_payload)
@@ -183,8 +181,8 @@ def exported_workspace(
     )
     manifest = export_workspace(
         tmp_path,
-        investor_slug="michael-hyatt",
-        identity_id="identity:michael",
+        investor_slug="jane-roe",
+        identity_id="identity:jane",
         documents=documents,
         config_hash=config.fingerprint,
         exclusion_rules_hash=rules_hash,
@@ -242,7 +240,9 @@ def test_verification_reconstructs_collection_status_from_raw_metadata(
     result = verify_workspace(tmp_path)
 
     assert result.passed is False
-    assert any("collection outcome status" in error.casefold() for error in result.errors)
+    assert any(
+        "collection outcome status" in error.casefold() for error in result.errors
+    )
 
 
 def test_verification_reconciles_search_observations_with_cached_results(
@@ -384,7 +384,7 @@ def test_verification_rejects_reference_profile_set_with_missing_artifact(
         [
             ReferenceVoiceProfile(
                 profile_id="voice-profile:missing",
-                investor_slug="michael-hyatt",
+                investor_slug="jane-roe",
                 candidate_ids=["voice:missing"],
                 artifact_ids=["sha256:" + "f" * 64],
                 status="verified_human",

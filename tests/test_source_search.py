@@ -40,8 +40,8 @@ class SearchFixture:
         return [
             SearchResult(
                 url="https://www.youtube.com/watch?v=voice123",
-                title="Michael Hyatt of BlueCat — investor interview",
-                snippet="Michael Hyatt discusses investing at the Hyatt Family Office.",
+                title="Jane Roe of Northwind — investor interview",
+                snippet="Jane Roe discusses investing at the Roe Family Office.",
                 rank=1,
                 query=query,
                 provider=self.provider_name,
@@ -50,7 +50,7 @@ class SearchFixture:
 
 
 def pipeline(tmp_path: Path, provider: SearchFixture) -> Pipeline:
-    html = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
+    html = (FIXTURES / "jane_roe_profile.html").read_bytes()
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -70,11 +70,11 @@ def pipeline(tmp_path: Path, provider: SearchFixture) -> Pipeline:
 
 def initialize(collector: Pipeline, tmp_path: Path) -> None:
     collector.discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         config=RunConfig(
-            name="Michael Hyatt",
-            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            name="Jane Roe",
+            known_profile_url="https://www.thepitch.show/investors/jane-roe",
             output_dir=str(tmp_path),
             public_search_enabled=False,
         ),
@@ -83,10 +83,10 @@ def initialize(collector: Pipeline, tmp_path: Path) -> None:
 
 def test_build_source_queries_are_platform_specific() -> None:
     youtube = build_source_queries(
-        "Michael Hyatt", ["Hyatt Family Office"], SourceType.YOUTUBE
+        "Jane Roe", ["Roe Family Office"], SourceType.YOUTUBE
     )
     podcasts = build_source_queries(
-        "Michael Hyatt", ["Hyatt Family Office"], SourceType.PODCAST
+        "Jane Roe", ["Roe Family Office"], SourceType.PODCAST
     )
 
     assert youtube
@@ -101,26 +101,22 @@ def test_search_source_appends_and_deduplicates_candidates(tmp_path) -> None:
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
 
-    first = collector.search_source("michael-hyatt", SourceType.YOUTUBE)
-    first_plan_id = collector._load_plan("michael-hyatt").plan_id
-    second = collector.search_source("michael-hyatt", SourceType.YOUTUBE)
+    first = collector.search_source("jane-roe", SourceType.YOUTUBE)
+    first_plan_id = collector._load_plan("jane-roe").plan_id
+    second = collector.search_source("jane-roe", SourceType.YOUTUBE)
 
     assert first.added == 1
     assert second.added == 0
     assert second.updated == 1
-    rows = read_jsonl(
-        tmp_path / "michael-hyatt/discovery/source_candidates.jsonl"
-    )
+    rows = read_jsonl(tmp_path / "jane-roe/discovery/source_candidates.jsonl")
     videos = [row for row in rows if row["source_type"] == "youtube"]
     assert len(videos) == 1
     assert videos[0]["discovered_via"] == "agent-reach:yt-dlp"
     assert len(videos[0]["discovery_queries"]) == len(set(provider.queries))
     assert videos[0]["approval_status"] == ApprovalStatus.PENDING
     assert len(provider.queries) == 3  # second invocation reuses cached observations
-    assert first_plan_id == collector._load_plan("michael-hyatt").plan_id
-    observations = read_jsonl(
-        tmp_path / "michael-hyatt/discovery/search_observations.jsonl"
-    )
+    assert first_plan_id == collector._load_plan("jane-roe").plan_id
+    observations = read_jsonl(tmp_path / "jane-roe/discovery/search_observations.jsonl")
     assert observations[0]["url"] == "https://www.youtube.com/watch?v=voice123"
     assert observations[0]["rank"] == 1
     assert observations[0]["result_provider"] == "agent-reach:yt-dlp"
@@ -130,13 +126,11 @@ def test_search_cache_isolated_by_backend_identity(tmp_path) -> None:
     first = SearchFixture(cache_identity="composite:ddg:yt-dlp")
     collector = pipeline(tmp_path, first)
     initialize(collector, tmp_path)
-    collector.search_source(
-        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
-    )
+    collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
 
     second = SearchFixture(cache_identity="composite:agent-reach:exa:yt-dlp")
     collector.search_source(
-        "michael-hyatt",
+        "jane-roe",
         SourceType.YOUTUBE,
         maximum_queries=1,
         search_provider=second,
@@ -167,14 +161,10 @@ def test_search_cache_remains_usable_when_backend_later_fails_preflight(
     provider = InitiallyAvailable()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
-    first = collector.search_source(
-        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
-    )
+    first = collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
     provider.available = False
 
-    second = collector.search_source(
-        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
-    )
+    second = collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
 
     assert first.failed == 0
     assert second.failed == 0
@@ -197,20 +187,20 @@ def test_unavailable_backend_still_replays_later_cached_query(tmp_path) -> None:
                 "provider_reached": False,
             }
 
-    cached_query = '"Michael Hyatt" cached YouTube'
-    uncached_query = '"Michael Hyatt" unavailable YouTube'
+    cached_query = '"Jane Roe" cached YouTube'
+    uncached_query = '"Jane Roe" unavailable YouTube'
     provider = ToggleSearch()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
     collector.search_source(
-        "michael-hyatt",
+        "jane-roe",
         SourceType.YOUTUBE,
         queries=[cached_query],
     )
     provider.available = False
 
     result = collector.search_source(
-        "michael-hyatt",
+        "jane-roe",
         SourceType.YOUTUBE,
         queries=[uncached_query, cached_query],
     )
@@ -218,9 +208,7 @@ def test_unavailable_backend_still_replays_later_cached_query(tmp_path) -> None:
     assert result.failed == 1
     assert result.result_count == 1
     assert len(provider.queries) == 1
-    observations = read_jsonl(
-        tmp_path / "michael-hyatt/discovery/search_observations.jsonl"
-    )
+    observations = read_jsonl(tmp_path / "jane-roe/discovery/search_observations.jsonl")
     assert observations[-1]["query"] == cached_query
     assert observations[-1]["cached"] is True
 
@@ -229,15 +217,15 @@ def test_search_source_preserves_existing_review_decision(tmp_path) -> None:
     provider = SearchFixture()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
-    collector.search_source("michael-hyatt", SourceType.YOUTUBE)
-    plan = collector._load_plan("michael-hyatt")
+    collector.search_source("jane-roe", SourceType.YOUTUBE)
+    plan = collector._load_plan("jane-roe")
     video = next(item for item in plan.candidates if item.source_type == "youtube")
     video.approval_status = ApprovalStatus.APPROVED
-    collector._save_plan("michael-hyatt", plan)
+    collector._save_plan("jane-roe", plan)
 
-    collector.search_source("michael-hyatt", SourceType.YOUTUBE)
+    collector.search_source("jane-roe", SourceType.YOUTUBE)
 
-    updated = collector._load_plan("michael-hyatt")
+    updated = collector._load_plan("jane-roe")
     video = next(item for item in updated.candidates if item.source_type == "youtube")
     assert video.approval_status == ApprovalStatus.APPROVED
 
@@ -251,8 +239,8 @@ def test_search_source_enriches_pending_candidate_with_channel_exclusion(
             return [
                 SearchResult(
                     url="https://www.youtube.com/watch?v=voice123",
-                    title="Michael Hyatt investor interview",
-                    snippet="Michael Hyatt of BlueCat",
+                    title="Jane Roe investor interview",
+                    snippet="Jane Roe of Northwind",
                     channel="The Pitch Show",
                     rank=1,
                     query=query,
@@ -263,13 +251,11 @@ def test_search_source_enriches_pending_candidate_with_channel_exclusion(
     original = SearchFixture(cache_identity="old-search")
     collector = pipeline(tmp_path, original)
     initialize(collector, tmp_path)
-    collector.search_source(
-        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
-    )
+    collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
 
     replacement = ChannelSearch(cache_identity="channel-aware-search")
     collector.search_source(
-        "michael-hyatt",
+        "jane-roe",
         SourceType.YOUTUBE,
         maximum_queries=1,
         search_provider=replacement,
@@ -277,9 +263,8 @@ def test_search_source_enriches_pending_candidate_with_channel_exclusion(
 
     video = next(
         candidate
-        for candidate in collector._load_plan("michael-hyatt").candidates
-        if candidate.canonical_url
-        == "https://www.youtube.com/watch?v=voice123"
+        for candidate in collector._load_plan("jane-roe").candidates
+        if candidate.canonical_url == "https://www.youtube.com/watch?v=voice123"
     )
     assert video.channel == "The Pitch Show"
     assert video.approval_status == ApprovalStatus.REJECTED
@@ -290,11 +275,11 @@ def test_search_source_reserves_budget_before_backend_call(tmp_path) -> None:
     provider = SearchFixture()
     collector = pipeline(tmp_path, provider)
     collector.discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         config=RunConfig(
-            name="Michael Hyatt",
-            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            name="Jane Roe",
+            known_profile_url="https://www.thepitch.show/investors/jane-roe",
             output_dir=str(tmp_path),
             public_search_enabled=False,
             search_operation_cost_usd=Decimal("0.02"),
@@ -303,9 +288,7 @@ def test_search_source_reserves_budget_before_backend_call(tmp_path) -> None:
     )
 
     with pytest.raises(BudgetExceeded):
-        collector.search_source(
-            "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
-        )
+        collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
 
     assert provider.queries == []
 
@@ -314,11 +297,11 @@ def test_search_source_updates_run_cost_summary(tmp_path) -> None:
     provider = SearchFixture()
     collector = pipeline(tmp_path, provider)
     collector.discover(
-        name="Michael Hyatt",
-        known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+        name="Jane Roe",
+        known_profile_url="https://www.thepitch.show/investors/jane-roe",
         config=RunConfig(
-            name="Michael Hyatt",
-            known_profile_url="https://www.thepitch.show/investors/michael-hyatt",
+            name="Jane Roe",
+            known_profile_url="https://www.thepitch.show/investors/jane-roe",
             output_dir=str(tmp_path),
             public_search_enabled=False,
             search_operation_cost_usd=Decimal("0.02"),
@@ -326,11 +309,9 @@ def test_search_source_updates_run_cost_summary(tmp_path) -> None:
         ),
     )
 
-    collector.search_source(
-        "michael-hyatt", SourceType.YOUTUBE, maximum_queries=1
-    )
+    collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
 
-    summary = read_json(tmp_path / "michael-hyatt/run_summary.json")
+    summary = read_json(tmp_path / "jane-roe/run_summary.json")
     assert Decimal(summary["cost_usd"]) == Decimal("0.02")
 
 
@@ -354,17 +335,17 @@ def test_search_source_records_backend_diagnostics_as_failures(tmp_path) -> None
     provider = BrokenSearch()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
-    original_plan_id = collector._load_plan("michael-hyatt").plan_id
+    original_plan_id = collector._load_plan("jane-roe").plan_id
 
     result = collector.search_source(
-        "michael-hyatt", SourceType.WEB_ARTICLE, maximum_queries=1
+        "jane-roe", SourceType.WEB_ARTICLE, maximum_queries=1
     )
 
     assert result.failed == 1
-    assert collector._load_plan("michael-hyatt").plan_id != original_plan_id
-    observation = read_jsonl(
-        tmp_path / "michael-hyatt/discovery/search_observations.jsonl"
-    )[-1]
+    assert collector._load_plan("jane-roe").plan_id != original_plan_id
+    observation = read_jsonl(tmp_path / "jane-roe/discovery/search_observations.jsonl")[
+        -1
+    ]
     assert observation["status"] == "failed"
     assert observation["error"] == "mcporter is not installed"
 
@@ -391,23 +372,21 @@ def test_search_source_preflight_failure_is_not_charged_and_stops(tmp_path) -> N
     provider = UnavailableSearch()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
-    original_queries = set(collector._load_plan("michael-hyatt").queries)
+    original_queries = set(collector._load_plan("jane-roe").queries)
 
     result = collector.search_source(
-        "michael-hyatt", SourceType.WEB_ARTICLE, maximum_queries=3
+        "jane-roe", SourceType.WEB_ARTICLE, maximum_queries=3
     )
 
     assert result.failed == 1
     assert result.errors == ["mcporter is not installed"]
     assert provider.queries == []
-    costs = read_jsonl(tmp_path / "michael-hyatt/audit/costs.jsonl")
+    costs = read_jsonl(tmp_path / "jane-roe/audit/costs.jsonl")
     assert not [row for row in costs if row["kind"] == "settlement"]
-    observations = read_jsonl(
-        tmp_path / "michael-hyatt/discovery/search_observations.jsonl"
-    )
+    observations = read_jsonl(tmp_path / "jane-roe/discovery/search_observations.jsonl")
     assert len(observations) == 1
     assert observations[0]["status"] == "failed"
-    plan = collector._load_plan("michael-hyatt")
+    plan = collector._load_plan("jane-roe")
     assert set(plan.queries) - original_queries == {observations[0]["query"]}
 
 
@@ -436,15 +415,12 @@ def test_unreachable_backend_releases_reservation_and_stops(tmp_path) -> None:
     initialize(collector, tmp_path)
 
     result = collector.search_source(
-        "michael-hyatt", SourceType.WEB_ARTICLE, maximum_queries=3
+        "jane-roe", SourceType.WEB_ARTICLE, maximum_queries=3
     )
 
     assert result.failed == 1
     assert len(provider.queries) == 1
-    kinds = [
-        row["kind"]
-        for row in read_jsonl(tmp_path / "michael-hyatt/audit/costs.jsonl")
-    ]
+    kinds = [row["kind"] for row in read_jsonl(tmp_path / "jane-roe/audit/costs.jsonl")]
     assert kinds == ["reservation", "release"]
 
 
@@ -455,12 +431,12 @@ def test_search_source_uses_explicit_queries_instead_of_generated_queries(
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
     queries = [
-        '"Michael Hyatt" "The Pitch" YouTube',
-        '"Michael Hyatt" BlueCat founder interview YouTube',
+        '"Jane Roe" "The Pitch" YouTube',
+        '"Jane Roe" Northwind founder interview YouTube',
     ]
 
     result = collector.search_source(
-        "michael-hyatt",
+        "jane-roe",
         SourceType.YOUTUBE,
         search_provider=provider,
         queries=queries,
@@ -476,15 +452,15 @@ def test_search_source_can_auditably_raise_search_operation_limit(tmp_path) -> N
     initialize(collector, tmp_path)
 
     collector.search_source(
-        "michael-hyatt",
+        "jane-roe",
         SourceType.YOUTUBE,
         maximum_queries=1,
         maximum_search_operations=40,
     )
 
-    config = read_json(tmp_path / "michael-hyatt/config_snapshot.json")
+    config = read_json(tmp_path / "jane-roe/config_snapshot.json")
     assert config["maximum_search_operations"] == 40
-    events = read_jsonl(tmp_path / "michael-hyatt/audit/events.jsonl")
+    events = read_jsonl(tmp_path / "jane-roe/audit/events.jsonl")
     update = next(
         event
         for event in events
@@ -504,7 +480,7 @@ def test_search_source_refuses_to_lower_search_operation_limit(tmp_path) -> None
 
     with pytest.raises(ValueError, match="cannot be lower"):
         collector.search_source(
-            "michael-hyatt",
+            "jane-roe",
             SourceType.YOUTUBE,
             maximum_search_operations=10,
         )
@@ -514,14 +490,14 @@ def test_youtube_channel_is_preserved_and_pitch_show_is_rejected(tmp_path) -> No
     provider = SearchFixture()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
-    identity = collector._load_identity("michael-hyatt")
+    identity = collector._load_identity("jane-roe")
     result = SearchResult(
         url="https://www.youtube.com/watch?v=pitch123",
-        title="Michael Hyatt pitches and invests",
-        snippet="Michael Hyatt of BlueCat",
+        title="Jane Roe pitches and invests",
+        snippet="Jane Roe of Northwind",
         channel="The Pitch Show",
         rank=1,
-        query='"Michael Hyatt" "The Pitch" YouTube',
+        query='"Jane Roe" "The Pitch" YouTube',
         provider="yt-dlp",
     )
 
@@ -548,7 +524,7 @@ def test_cli_search_source_runs_one_platform(tmp_path) -> None:
         [
             "search-source",
             "--investor",
-            "michael-hyatt",
+            "jane-roe",
             "--source",
             "youtube",
             "--max-queries",
@@ -582,7 +558,7 @@ def test_cli_search_source_can_select_agent_reach_backends(
         [
             "search-source",
             "--investor",
-            "michael-hyatt",
+            "jane-roe",
             "--source",
             "youtube",
             "--backend",
@@ -612,13 +588,13 @@ def test_cli_search_source_accepts_repeatable_queries_and_limit_increase(
         [
             "search-source",
             "--investor",
-            "michael-hyatt",
+            "jane-roe",
             "--source",
             "youtube",
             "--query",
-            '"Michael Hyatt" "The Pitch" YouTube',
+            '"Jane Roe" "The Pitch" YouTube',
             "--query",
-            '"Michael Hyatt" BlueCat YouTube',
+            '"Jane Roe" Northwind YouTube',
             "--max-search-operations",
             "40",
             "--output-dir",
@@ -628,8 +604,8 @@ def test_cli_search_source_accepts_repeatable_queries_and_limit_increase(
 
     assert result.exit_code == 0, result.stdout
     assert provider.queries == [
-        '"Michael Hyatt" "The Pitch" YouTube',
-        '"Michael Hyatt" BlueCat YouTube',
+        '"Jane Roe" "The Pitch" YouTube',
+        '"Jane Roe" Northwind YouTube',
     ]
 
 
@@ -653,7 +629,7 @@ def test_cli_search_source_prints_actionable_backend_failure(tmp_path) -> None:
         [
             "search-source",
             "--investor",
-            "michael-hyatt",
+            "jane-roe",
             "--source",
             "web_article",
             "--output-dir",
@@ -669,7 +645,7 @@ def test_cli_list_sources_exposes_candidate_ids_and_urls(tmp_path) -> None:
     provider = SearchFixture()
     collector = pipeline(tmp_path, provider)
     initialize(collector, tmp_path)
-    collector.search_source("michael-hyatt", SourceType.YOUTUBE, maximum_queries=1)
+    collector.search_source("jane-roe", SourceType.YOUTUBE, maximum_queries=1)
     app = create_app(lambda _output_dir: collector)
 
     result = CliRunner().invoke(
@@ -677,7 +653,7 @@ def test_cli_list_sources_exposes_candidate_ids_and_urls(tmp_path) -> None:
         [
             "list-sources",
             "--investor",
-            "michael-hyatt",
+            "jane-roe",
             "--source",
             "youtube",
             "--output-dir",

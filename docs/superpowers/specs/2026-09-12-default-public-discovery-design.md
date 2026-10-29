@@ -55,9 +55,9 @@ The normal command requires no provider environment variables:
 
 ```bash
 uv run vc-trace-collector discover \
-  --name "Michael Hyatt" \
-  --firm "Hyatt Family Office" \
-  --known-profile-url "https://www.thepitch.show/investors/michael-hyatt" \
+  --name "Jane Roe" \
+  --firm "Roe Family Office" \
+  --known-profile-url "https://www.thepitch.show/investors/jane-roe" \
   --output-dir outputs-full
 ```
 
@@ -86,7 +86,7 @@ than substituting platform captions.
 - Search results receive the existing canonicalization and deduplication.
 - The known Pitch profile remains identity evidence and is excluded from the
   corpus by the leakage firewall.
-- Ambiguous names such as author Michael S. Hyatt remain explicit competing
+- Ambiguous names such as author Jane S. Roe remain explicit competing
   hypotheses and require human review.
 - A provider failure is visible in the audit and does not discard results from
   another provider.
@@ -103,13 +103,13 @@ Pipeline tests will prove that default provider construction works without
 SearXNG, that an explicit SearXNG endpoint overrides only general web search,
 and that disabling public search preserves supplied-URL-only behavior.
 
-One opt-in live test will search for Michael Hyatt and assert that discovery
+One opt-in live test will search for Jane Roe and assert that discovery
 returns at least one identity-relevant result and at least one YouTube result.
 Paid APIs and credentials remain unnecessary for the default test suite.
 
 ## Acceptance criteria
 
-- A fresh Michael Hyatt discovery executes web and YouTube searches without
+- A fresh Jane Roe discovery executes web and YouTube searches without
   `VC_TRACE_SEARCH_ENDPOINT` or an API key.
 - The audit shows nonzero search operations and provider provenance.
 - The resulting review plan contains more than the three manually seeded

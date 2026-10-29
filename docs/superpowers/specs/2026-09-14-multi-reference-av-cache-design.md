@@ -12,7 +12,7 @@ The current AV cache stores one combined `TargetSpeechResult`. Its cache key inc
 
 The combined result retains only the winning speaker attribution. It does not retain all per-speaker embeddings, so a new reference cannot be compared with the earlier diarization output. `reference_voice_profile.json` also represents only the most recently approved reference, even though `reference_voice_candidates.jsonl` can contain multiple human-verified candidates.
 
-The Michael Hyatt run demonstrated both problems. A Zoom-style reference accepted one recording that a clean stage reference did not, while the stage reference accepted other recordings that the Zoom reference did not. A single reference is sensitive to channel and recording conditions.
+The Jane Roe run demonstrated both problems. A Zoom-style reference accepted one recording that a clean stage reference did not, while the stage reference accepted other recordings that the Zoom reference did not. A single reference is sensitive to channel and recording conditions.
 
 ## Approaches Considered
 

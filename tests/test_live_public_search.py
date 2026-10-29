@@ -6,10 +6,10 @@ from vc_trace_collector.public_search import DdgSearchProvider, YtDlpSearchProvi
 
 
 @pytest.mark.live
-def test_public_search_finds_michael_hyatt_web_and_youtube_results() -> None:
+def test_public_search_finds_jane_roe_web_and_youtube_results() -> None:
     try:
         web_results = DdgSearchProvider().search(
-            '"Michael Hyatt" "Hyatt Family Office" interview', limit=5
+            '"Jane Roe" "Roe Family Office" interview', limit=5
         )
     except ModuleNotFoundError:
         raise
@@ -19,9 +19,7 @@ def test_public_search_finds_michael_hyatt_web_and_youtube_results() -> None:
         )
 
     youtube = YtDlpSearchProvider(timeout=120)
-    youtube_results = youtube.search(
-        '"Michael Hyatt" BlueCat Hyatt Family Office', limit=5
-    )
+    youtube_results = youtube.search('"Jane Roe" Northwind Roe Family Office', limit=5)
     if (
         not youtube_results
         and youtube.diagnostics

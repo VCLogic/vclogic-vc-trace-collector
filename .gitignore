@@ -24,3 +24,10 @@ outputs/
 *.opus
 *.onnx
 *.safetensors
+
+# Investor-specific working data (decisions, notes, env copies) stays local
+*decisions*.json
+example.env
+*.env
+pilots/
+docs/pilots/

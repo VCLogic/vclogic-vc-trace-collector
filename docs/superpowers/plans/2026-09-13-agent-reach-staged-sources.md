@@ -73,7 +73,7 @@
 
 - [ ] **Step 1: Write a failing contract test** that checks the project skill contains the actual CLI commands, mandatory review boundaries, no-caption AV rule, and no credentials.
 - [ ] **Step 2: Run** `uv run pytest tests/test_agent_skill.py -q` and confirm it fails because the skill is absent.
-- [ ] **Step 3: Write** the project-local skill and a concise manual command sequence for Michael Hyatt. Document backend-specific optional dependencies and sanitized doctor snapshots.
+- [ ] **Step 3: Write** the project-local skill and a concise manual command sequence for Jane Roe. Document backend-specific optional dependencies and sanitized doctor snapshots.
 - [ ] **Step 4: Run** the skill contract test and documentation command smoke tests.
 
 ### Task 6: Full verification

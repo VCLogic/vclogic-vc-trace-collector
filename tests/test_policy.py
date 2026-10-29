@@ -46,8 +46,8 @@ def test_rules_match_extracted_authors_and_speakers() -> None:
 
 def test_pitch_profile_is_identity_evidence_but_excluded_from_corpus() -> None:
     decision = RuleSet.pitch_default().evaluate(
-        url="https://www.thepitch.show/investors/michael-hyatt",
-        title="Michael Hyatt | The Pitch",
+        url="https://www.thepitch.show/investors/jane-roe",
+        title="Jane Roe | The Pitch",
         channel=None,
         text="investment episodes and outcomes",
         stage="discovery",
@@ -99,7 +99,7 @@ def _document(role: MaterialRole, status: SpeakerStatus) -> CanonicalDocument:
         source_item_id="source-1",
         content_hash=digest,
         document_version_id="version-1",
-        investor_slug="michael-hyatt",
+        investor_slug="jane-roe",
         source_candidate_id="candidate-1",
         raw_artifact_ids=["sha256:raw"],
         canonical_url="https://example.test/article",

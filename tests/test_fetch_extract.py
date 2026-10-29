@@ -11,21 +11,32 @@ from vc_trace_collector.policy import UnsafeUrl
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-@pytest.mark.parametrize('known_size', [True, False])
+@pytest.mark.parametrize("known_size", [True, False])
 def test_http_progress_reports_streamed_bytes(monkeypatch, known_size):
     from vc_trace_collector import fetch
+
     events = []
-    monkeypatch.setattr(fetch, 'download_bytes', lambda done, total: events.append((done, total)))
+    monkeypatch.setattr(
+        fetch, "download_bytes", lambda done, total: events.append((done, total))
+    )
 
     class Stream(httpx.SyncByteStream):
         def __iter__(self):
-            yield b'abc'
-            yield b'def'
+            yield b"abc"
+            yield b"def"
 
-    with Fetcher(transport=httpx.MockTransport(lambda request: httpx.Response(
-        200, headers={'content-length': '6'} if known_size else {}, stream=Stream())),
-        resolver=public_resolver, minimum_interval=0) as fetcher:
-        assert fetcher.fetch('https://example.test/file').content == b'abcdef'
+    with Fetcher(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-length": "6"} if known_size else {},
+                stream=Stream(),
+            )
+        ),
+        resolver=public_resolver,
+        minimum_interval=0,
+    ) as fetcher:
+        assert fetcher.fetch("https://example.test/file").content == b"abcdef"
     total = 6 if known_size else None
     assert events[-2:] == [(3, total), (6, total)]
 
@@ -34,14 +45,14 @@ def public_resolver(host: str, port: int):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 
 
-def test_extracts_identity_from_michael_hyatt_profile() -> None:
-    html = (FIXTURES / "michael_hyatt_profile.html").read_bytes()
-    page = extract_page(html, "https://www.thepitch.show/investors/michael-hyatt")
+def test_extracts_identity_from_jane_roe_profile() -> None:
+    html = (FIXTURES / "jane_roe_profile.html").read_bytes()
+    page = extract_page(html, "https://www.thepitch.show/investors/jane-roe")
 
-    assert page.title == "Michael Hyatt"
-    assert "BlueCat" in page.text
+    assert page.title == "Jane Roe"
+    assert "Northwind" in page.text
     assert "Unrelated navigation" not in page.text
-    assert page.canonical_url == "https://www.thepitch.show/investors/michael-hyatt"
+    assert page.canonical_url == "https://www.thepitch.show/investors/jane-roe"
     assert "https://www.thepitch.show/episodes/example" in page.links
 
 
@@ -50,7 +61,7 @@ def test_feed_entries_preserve_author_and_source() -> None:
         (FIXTURES / "feed.xml").read_bytes(), "https://example.test/feed"
     )
 
-    assert entries[0].author == "Michael Hyatt"
+    assert entries[0].author == "Jane Roe"
     assert entries[0].canonical_url == "https://example.test/durable"
     assert entries[0].discovered_from == "https://example.test/feed"
 
@@ -146,7 +157,7 @@ def test_fetcher_supports_a_bounded_per_request_media_limit() -> None:
 def test_html_extraction_preserves_json_ld_before_removing_scripts() -> None:
     page = extract_page(
         b"""<html><head><script type='application/ld+json'>
-        {"@type":"Article","author":{"name":"Michael Hyatt"}}
+        {"@type":"Article","author":{"name":"Jane Roe"}}
         </script></head><body><main><h1>Article</h1><p>Text</p></main></body></html>""",
         "https://example.test/article",
     )
@@ -156,12 +167,12 @@ def test_html_extraction_preserves_json_ld_before_removing_scripts() -> None:
 
 def test_empty_heading_falls_back_to_open_graph_title() -> None:
     page = extract_page(
-        b"<html><head><meta property='og:title' content='Michael Hyatt interview'>"
+        b"<html><head><meta property='og:title' content='Jane Roe interview'>"
         b"</head><body><h1></h1><main>Interview</main></body></html>",
         "https://example.test/interview",
     )
 
-    assert page.title == "Michael Hyatt interview"
+    assert page.title == "Jane Roe interview"
 
 
 def test_retry_after_is_capped() -> None:

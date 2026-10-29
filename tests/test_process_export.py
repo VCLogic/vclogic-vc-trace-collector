@@ -48,7 +48,7 @@ def document(
         source_item_id=f"source:{identifier}",
         content_hash=content_hash,
         document_version_id=f"version:{identifier}",
-        investor_slug="michael-hyatt",
+        investor_slug="jane-roe",
         source_candidate_id=f"candidate:{identifier}",
         raw_artifact_ids=[f"sha256:{identifier}"],
         canonical_url=f"https://example.test/{identifier}",
@@ -110,7 +110,7 @@ def test_quality_counts_merged_target_intervals_not_whole_recording(tmp_path) ->
         speaker=SpeakerStatus.VERIFIED_HUMAN,
         source_type=SourceType.PODCAST,
     )
-    item.speakers = ["Michael Hyatt"]
+    item.speakers = ["Jane Roe"]
     item.transcript = TranscriptInfo(method="existing_transcript")
     item.original_metadata = {
         "media_seconds": 100,
@@ -122,8 +122,8 @@ def test_quality_counts_merged_target_intervals_not_whole_recording(tmp_path) ->
 
     export_workspace(
         tmp_path,
-        investor_slug="michael-hyatt",
-        identity_id="identity:michael",
+        investor_slug="jane-roe",
+        identity_id="identity:jane",
         documents=[item],
         config_hash="config",
         exclusion_rules_hash="rules",
@@ -143,8 +143,8 @@ def test_manifest_includes_reference_profiles_and_av_stage_caches(tmp_path) -> N
 
     manifest = export_workspace(
         tmp_path,
-        investor_slug="michael-hyatt",
-        identity_id="identity:michael",
+        investor_slug="jane-roe",
+        identity_id="identity:jane",
         documents=[],
         config_hash="config",
         exclusion_rules_hash="rules",
@@ -187,8 +187,8 @@ def test_human_verified_supplied_transcript_is_eligible_target_speech(tmp_path) 
         tmp_path,
         artifact,
         candidate,
-        investor_slug="michael-hyatt",
-        target_name="Michael Hyatt",
+        investor_slug="jane-roe",
+        target_name="Jane Roe",
         rules=RuleSet.pitch_default(),
     )
 
@@ -239,8 +239,8 @@ def test_uncertain_model_speech_is_routed_to_review_not_corpus(tmp_path) -> None
     )
 
     result = target_speech_document(
-        investor_slug="michael-hyatt",
-        target_name="Michael Hyatt",
+        investor_slug="jane-roe",
+        target_name="Jane Roe",
         artifact=artifact,
         candidate=candidate,
         result=TargetSpeechResult(
@@ -298,8 +298,8 @@ def test_channel_rule_is_applied_during_document_processing(tmp_path) -> None:
         tmp_path,
         artifact,
         candidate,
-        investor_slug="michael-hyatt",
-        target_name="Michael Hyatt",
+        investor_slug="jane-roe",
+        target_name="Jane Roe",
         rules=rules,
     )
 
@@ -356,7 +356,8 @@ def test_dedup_caches_pairs_and_invalidates_threshold_and_text(tmp_path, monkeyp
     def run(threshold=0.97, suffix=" extra"):
         return deduplicate(
             [document("a", common), document("b", common + suffix)],
-            near_threshold=threshold, cache_path=cache,
+            near_threshold=threshold,
+            cache_path=cache,
         )
 
     first = run()
@@ -374,11 +375,17 @@ def test_dedup_caches_pairs_and_invalidates_threshold_and_text(tmp_path, monkeyp
 def test_dedup_cache_preserves_ordered_comparisons_and_review_preference(tmp_path):
     # SequenceMatcher is directional: tide/diet differs from diet/tide.
     cache = tmp_path / "pairs.json"
-    first = deduplicate([document("a", "tide"), document("b", "diet")],
-                        near_threshold=0.4, cache_path=cache)
+    first = deduplicate(
+        [document("a", "tide"), document("b", "diet")],
+        near_threshold=0.4,
+        cache_path=cache,
+    )
     assert first[1].duplicate_of is None
-    second = deduplicate([document("a", "diet"), document("b", "tide")],
-                         near_threshold=0.4, cache_path=cache)
+    second = deduplicate(
+        [document("a", "diet"), document("b", "tide")],
+        near_threshold=0.4,
+        cache_path=cache,
+    )
     assert second[1].duplicate_of == "version:a"
 
 
@@ -386,7 +393,9 @@ def test_dedup_reports_its_own_progress(monkeypatch):
     from vc_trace_collector import progress
 
     events = []
-    monkeypatch.setattr(progress, "report", lambda stage, **kw: events.append((stage, kw)))
+    monkeypatch.setattr(
+        progress, "report", lambda stage, **kw: events.append((stage, kw))
+    )
     deduplicate([document("a", "alpha"), document("b", "beta")])
     assert events[0] == ("Deduplicating documents", {"completed": 0, "total": 2})
     assert events[-1] == ("Deduplicating documents", {"completed": 2, "total": 2})
@@ -395,12 +404,16 @@ def test_dedup_reports_its_own_progress(monkeypatch):
 def test_dedup_cache_does_not_freeze_review_decisions(tmp_path):
     cache = tmp_path / "pairs.json"
     common = " ".join(f"word{i}" for i in range(50))
-    deduplicate([document("a", common), document("b", common + " edit")],
-                cache_path=cache)
-    rows = deduplicate([
-        document("a", common, inclusion=InclusionStatus.EXCLUDED),
-        document("b", common + " edit"),
-    ], cache_path=cache)
+    deduplicate(
+        [document("a", common), document("b", common + " edit")], cache_path=cache
+    )
+    rows = deduplicate(
+        [
+            document("a", common, inclusion=InclusionStatus.EXCLUDED),
+            document("b", common + " edit"),
+        ],
+        cache_path=cache,
+    )
     assert rows[1].inclusion_status == InclusionStatus.INCLUDED
     assert rows[1].duplicate_of is None
     assert rows[0].inclusion_status == InclusionStatus.EXCLUDED
@@ -414,11 +427,14 @@ def test_dedup_matches_legacy_similarity_on_generated_pairs(tmp_path):
     random = Random(42)
     for _ in range(50):
         a = "".join(random.choices("abcde", k=random.randrange(10, 80)))
-        b = a[:len(a)//2] + "".join(random.choices("abcde", k=3)) + a[len(a)//2:]
+        b = a[: len(a) // 2] + "".join(random.choices("abcde", k=3)) + a[len(a) // 2 :]
         threshold = random.choice([0.8, 0.95, 0.97])
         expected = SequenceMatcher(None, a, b, autojunk=False).ratio() >= threshold
-        rows = deduplicate([document("a", a), document("b", b)],
-                           near_threshold=threshold, cache_path=tmp_path / "pairs.json")
+        rows = deduplicate(
+            [document("a", a), document("b", b)],
+            near_threshold=threshold,
+            cache_path=tmp_path / "pairs.json",
+        )
         assert (rows[1].duplicate_of is not None) == expected
 
 
@@ -481,8 +497,8 @@ def test_accepted_target_speech_exports_as_talk(tmp_path) -> None:
 def test_workspace_places_legacy_export_at_investor_root(tmp_path) -> None:
     export_workspace(
         tmp_path,
-        investor_slug="michael-hyatt",
-        identity_id="identity:michael",
+        investor_slug="jane-roe",
+        identity_id="identity:jane",
         documents=[document("blog", "public writing")],
         config_hash="config-hash",
         exclusion_rules_hash="rules-hash",
@@ -497,10 +513,10 @@ def test_quality_report_fails_required_source_failures_unless_partial_is_explici
     tmp_path,
 ) -> None:
     blog = document("blog", "public writing")
-    blog.authors = ["Michael Hyatt"]
+    blog.authors = ["Jane Roe"]
     kwargs = {
-        "investor_slug": "michael-hyatt",
-        "identity_id": "identity:michael",
+        "investor_slug": "jane-roe",
+        "identity_id": "identity:jane",
         "documents": [blog],
         "config_hash": "config-hash",
         "exclusion_rules_hash": "rules-hash",
@@ -547,8 +563,8 @@ def test_feed_entry_by_different_author_requires_review(tmp_path) -> None:
         tmp_path,
         stored.record,
         candidate,
-        investor_slug="michael-hyatt",
-        target_name="Michael Hyatt",
+        investor_slug="jane-roe",
+        target_name="Jane Roe",
     )
 
     assert result[0].inclusion_status == InclusionStatus.REVIEW_REQUIRED
@@ -558,7 +574,7 @@ def test_feed_entry_by_different_author_requires_review(tmp_path) -> None:
 def test_excluded_fetched_url_cannot_be_hidden_by_declared_canonical(tmp_path) -> None:
     html = b"""<html><head>
       <link rel='canonical' href='https://example.test/clean'>
-      <meta name='author' content='Michael Hyatt'></head>
+      <meta name='author' content='Jane Roe'></head>
       <body><main><h1>Pitch outcome</h1><p>Target material.</p></main></body></html>"""
     stored = ArtifactStore(tmp_path).put_bytes(
         html,
@@ -584,8 +600,8 @@ def test_excluded_fetched_url_cannot_be_hidden_by_declared_canonical(tmp_path) -
         tmp_path,
         stored.record,
         candidate,
-        investor_slug="michael-hyatt",
-        target_name="Michael Hyatt",
+        investor_slug="jane-roe",
+        target_name="Jane Roe",
         rules=RuleSet.pitch_default(),
     )
 
