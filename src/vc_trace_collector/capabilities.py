@@ -56,35 +56,35 @@ class CapabilityDoctor:
         )
 
     def _agent_reach(self, executable: str) -> tuple[Capability, dict[str, Capability]]:
-        try:
-            completed = self.runner(
-                ["agent-reach", "doctor", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                shell=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            return (
-                Capability(
-                    status="error",
-                    executable=executable,
-                    message=f"Agent Reach doctor failed: {type(error).__name__}",
-                ),
-                {},
-            )
-        if completed.returncode != 0:
-            return (
-                Capability(
-                    status="error",
-                    executable=executable,
-                    message="Agent Reach doctor returned a non-zero exit status",
-                ),
-                {},
-            )
-        try:
-            payload = redact(json.loads(completed.stdout))
-        except (json.JSONDecodeError, TypeError):
+        # Agent Reach 1.6+ always prints JSON and rejects --json; 1.5 needs --json.
+        payload = None
+        for command in (["agent-reach", "doctor"], ["agent-reach", "doctor", "--json"]):
+            try:
+                completed = self.runner(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    shell=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return (
+                    Capability(
+                        status="error",
+                        executable=executable,
+                        message=f"Agent Reach doctor failed: {type(error).__name__}",
+                    ),
+                    {},
+                )
+            if completed.returncode != 0:
+                continue
+            try:
+                payload = json.loads(completed.stdout)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(payload, dict):
+                break
+        if not isinstance(payload, dict):
             return (
                 Capability(
                     status="error",
@@ -93,8 +93,28 @@ class CapabilityDoctor:
                 ),
                 {},
             )
-
-        rows = payload.get("channels", payload) if isinstance(payload, dict) else {}
+        payload = redact(payload)
+        if payload.get("ok") is False:
+            error = payload.get("error") or {}
+            return (
+                Capability(
+                    status="error",
+                    executable=executable,
+                    message=str(
+                        error.get("message") or "Agent Reach doctor reported failure"
+                    ),
+                ),
+                {},
+            )
+        result = payload.get("result")
+        if isinstance(result, dict) and isinstance(result.get("channels"), list):
+            rows = {
+                str(row["channel"]): row
+                for row in result["channels"]
+                if isinstance(row, dict) and "channel" in row
+            }
+        else:
+            rows = payload.get("channels", payload)
         backends: dict[str, Capability] = {}
         for channel, row in rows.items():
             if not isinstance(row, dict) or "status" not in row:
@@ -103,7 +123,7 @@ class CapabilityDoctor:
             status: Literal["ready", "missing", "unavailable", "error"]
             if raw_status in {"ready", "ok", "available", "healthy"}:
                 status = "ready"
-            elif raw_status in {"missing", "not_installed"}:
+            elif raw_status in {"missing", "not_installed", "not_added", "needs_setup"}:
                 status = "missing"
             elif raw_status in {"error", "failed"}:
                 status = "error"
@@ -112,11 +132,15 @@ class CapabilityDoctor:
             backends[str(channel)] = Capability(
                 status=status,
                 active_backend=row.get("active_backend"),
-                message=row.get("message") or row.get("fix"),
+                message=row.get("message")
+                or row.get("fix")
+                or row.get("hint")
+                or "; ".join(map(str, row.get("problems") or []))
+                or None,
                 details={
                     str(key): value
                     for key, value in row.items()
-                    if key not in {"status", "active_backend", "message", "fix"}
+                    if key not in {"status", "active_backend", "message", "fix", "hint"}
                 },
             )
         return Capability(status="ready", executable=executable), backends
