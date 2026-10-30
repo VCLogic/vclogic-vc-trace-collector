@@ -212,7 +212,7 @@ def media_ready(tmp_path, ui):
 
 
 def test_voice_path_a_approves_longest_turn_of_chosen_speaker(tmp_path, monkeypatch):
-    ui = Prompts(add_reference=True, speaker="use:GUEST", confirm_voice=True)
+    ui = Prompts(add_reference=True, speaker="use:0", confirm_voice=True)
     p, c = media_ready(tmp_path, ui)
     ui.answers["reference"] = c.candidate_id
     monkeypatch.setattr(
@@ -231,6 +231,45 @@ def test_voice_path_a_approves_longest_turn_of_chosen_speaker(tmp_path, monkeypa
     Guided(p, ui, dependency_check=list).voice("jane-roe")
     kwargs = p.approve_reference_voice.call_args.kwargs
     assert (kwargs["start_seconds"], kwargs["end_seconds"]) == (5, 35)
+
+
+def test_voice_lists_three_youtube_parts_per_speaker_without_playback(
+    tmp_path, monkeypatch
+):
+    ui = Prompts(speaker="use:3")
+    offered = []
+    select = ui.select
+    ui.select = lambda key, message, options: (
+        offered.extend(o.value for o in options) or select(key, message, options)
+    )
+    p, c = media_ready(tmp_path, ui)
+    monkeypatch.setattr(
+        "vc_trace_collector.guided.extract_audio_segment", lambda *a, **k: None
+    )
+    played = Mock()
+    monkeypatch.setattr("vc_trace_collector.guided.play", played)
+    monkeypatch.setattr("vc_trace_collector.guided.can_play", lambda: True)
+    diarizer = Mock()
+    diarizer.diarize.return_value = DiarizationResult(
+        model="m",
+        speaker_embeddings={},
+        turns=[
+            DiarizedTurn(start_seconds=s, end_seconds=s + 20 + s / 10, speaker_label="HOST")
+            for s in (0, 100, 200, 300)
+        ]
+        + [DiarizedTurn(start_seconds=400, end_seconds=500, speaker_label="GUEST")],
+    )
+    p._av_providers = Mock(return_value=(None, diarizer))
+    interval = Guided(p, ui, dependency_check=list).choose_speaker(
+        "jane-roe", tmp_path / "talk.mp4", tmp_path, {}, "Jane Roe",
+        "https://www.youtube.com/watch?v=x",
+    )
+    links = [m for m in ui.messages if "youtube.com" in str(m)]
+    assert len(links) == 4  # three HOST parts, one GUEST part
+    assert "watch?v=x&t=300s" in links[0] and "05:00" in links[0]
+    assert not any(v.startswith("play:") for v in offered)
+    assert interval == (400, 430)
+    played.assert_not_called()
 
 
 def test_voice_path_b_uses_typed_range(tmp_path, monkeypatch):

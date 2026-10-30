@@ -27,6 +27,8 @@ from .storage import read_jsonl, write_jsonl
 APPROVED = {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
 SPOKEN = {MaterialRole.SPOKEN_BY_TARGET, MaterialRole.REFERENCE_VOICE}
 MAX_REFERENCE_SECONDS = 30.0
+# Parts per speaker offered for inspection in the voice step.
+MAX_SPEAKER_CLIPS = 3
 
 MEDIA_SUFFIXES = {
     ".wav",
@@ -131,18 +133,26 @@ def reference_suggestions(items, name: str, limit: int = 3):
     return sorted(eligible, key=rank)[:limit]
 
 
-def speakers(turns: list[DiarizedTurn]) -> list[tuple[str, float, DiarizedTurn]]:
-    """(label, total seconds, longest turn), most talkative first."""
+def speakers(
+    turns: list[DiarizedTurn], limit: int = MAX_SPEAKER_CLIPS
+) -> list[tuple[str, float, list[DiarizedTurn]]]:
+    """(label, total seconds, up to `limit` longest turns), most talkative first."""
     total: dict[str, float] = defaultdict(float)
-    longest: dict[str, DiarizedTurn] = {}
+    by_label: dict[str, list[DiarizedTurn]] = defaultdict(list)
     for turn in turns:
-        length = turn.end_seconds - turn.start_seconds
-        total[turn.speaker_label] += length
-        best = longest.get(turn.speaker_label)
-        if best is None or length > best.end_seconds - best.start_seconds:
-            longest[turn.speaker_label] = turn
+        total[turn.speaker_label] += turn.end_seconds - turn.start_seconds
+        by_label[turn.speaker_label].append(turn)
     return sorted(
-        ((label, total[label], longest[label]) for label in total),
+        (
+            (
+                label,
+                total[label],
+                sorted(
+                    by_label[label], key=lambda t: t.start_seconds - t.end_seconds
+                )[:limit],
+            )
+            for label in total
+        ),
         key=lambda row: -row[1],
     )
 
@@ -213,6 +223,13 @@ def voice_candidate(pipeline, slug, item, *, reviewer) -> tuple[str, Path]:
         row["artifact_id"] = artifact.artifact_id
         write_jsonl(path, rows)
     return row["candidate_id"], media
+
+
+def clock(seconds: float) -> str:
+    """03:10 or 1:03:10, the format parse_range accepts."""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
 
 
 def timestamp_url(url: str, seconds: float) -> str:

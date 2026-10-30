@@ -26,6 +26,7 @@ from .storage import read_json, write_json
 from .triage import APPROVED, TriageState, run_triage
 from .voice import (
     can_play,
+    clock,
     missing_av_dependencies,
     parse_range,
     play,
@@ -399,30 +400,48 @@ class Guided:
                 "enter a time range instead."
             )
             return None
-        turns = {label: turn for label, _, turn in rows}
-        for label, total, turn in rows:
-            start = reference_interval(turn)[0]
+        # Up to MAX_SPEAKER_CLIPS parts per speaker, linked to the moment in the video.
+        clips = []
+        for label, total, turns in rows:
+            self.ui.show(f"{label} · {total / 60:.0f} min")
+            for turn in turns:
+                start, end = reference_interval(turn)
+                clips.append((label, start, end))
+                self.ui.show(
+                    f"  {len(clips)}. {clock(start)}–{clock(end)}  "
+                    f"{timestamp_url(url, start)}"
+                )
+        youtube = timestamp_url(url, 0) != url
+        if youtube:
             self.ui.show(
-                f"{label} · {total / 60:.0f} min · listen: {timestamp_url(url, start)}"
+                f"Open the links in your browser, then choose a part where only "
+                f"{name} speaks."
             )
         choices = [
-            Option(value=f"play:{label}", label=f"▶ {label} · {total / 60:.0f} min")
-            for label, total, _ in rows
-            if can_play()
+            Option(
+                value=f"play:{index}",
+                label=f"▶ {index + 1}. {label} {clock(start)}–{clock(end)}",
+            )
+            for index, (label, start, end) in enumerate(clips)
+            if not youtube and can_play()
         ]
         choices += [
-            Option(value=f"use:{label}", label=f"{label} is {name}")
-            for label, _, _ in rows
+            Option(
+                value=f"use:{index}",
+                label=f"{index + 1}. {label} {clock(start)}–{clock(end)}: "
+                f"only {name} speaks",
+            )
+            for index, (label, start, end) in enumerate(clips)
         ]
         choices.append(
             Option(value="range", label="None of these / wrong split — type a range")
         )
         while True:
-            choice = self.ui.select("speaker", f"Which speaker is {name}?", choices)
+            choice = self.ui.select("speaker", f"Which part is only {name}?", choices)
             if choice == "range":
                 return None
-            action, label = choice.split(":", 1)
-            start, end = reference_interval(turns[label])
+            action, index = choice.split(":", 1)
+            _, start, end = clips[int(index)]
             if action == "use":
                 return start, end
             play(media, start, min(end, start + 8), tmp)
@@ -443,7 +462,8 @@ class Guided:
             except ValueError as error:
                 self.ui.show(str(error))
                 continue
-            if can_play():
+            # A YouTube source is checked in the browser, not replayed here.
+            if can_play() and timestamp_url(url, 0) == url:
                 play(media, start, end, tmp)
             return start, end
 

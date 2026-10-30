@@ -1,7 +1,7 @@
 import pytest
 
 from vc_trace_collector.av import DiarizedTurn
-from vc_trace_collector.voice import parse_range, reference_interval, speakers
+from vc_trace_collector.voice import clock, parse_range, reference_interval, speakers
 
 
 def turn(start, end, label):
@@ -13,7 +13,18 @@ def test_speakers_sorted_by_talk_time_with_longest_turn():
         [turn(0, 10, "A"), turn(10, 70, "B"), turn(70, 75, "A"), turn(75, 80, "B")]
     )
     assert [(label, total) for label, total, _ in rows] == [("B", 65), ("A", 15)]
-    assert rows[0][2].start_seconds == 10
+    assert [t.start_seconds for t in rows[0][2]] == [10, 75]
+
+
+def test_speakers_offer_at_most_three_longest_turns():
+    rows = speakers([turn(s, s + 1 + s / 10, "A") for s in range(0, 50, 10)])
+    assert [t.start_seconds for t in rows[0][2]] == [40, 30, 20]
+
+
+def test_clock_matches_parse_range():
+    assert clock(190) == "03:10"
+    assert clock(3610.7) == "1:00:10"
+    assert parse_range(f"{clock(190)}-{clock(3610)}") == (190, 3610)
 
 
 def test_reference_interval_caps_at_thirty_seconds():
