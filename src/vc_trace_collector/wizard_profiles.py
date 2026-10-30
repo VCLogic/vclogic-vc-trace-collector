@@ -24,13 +24,11 @@ def resolve_profile(pipeline, ui, name, *, provider=None):
     url = ui.text(
         "profile_url", "Known public profile URL (blank = find possible profiles)"
     )
-    maximum = money(ui, "max_cost", "Maximum cumulative provider cost in USD", "10")
-    cost = money(
-        ui,
-        "search_cost",
-        "Conservative cost per search in USD (0 for free backend)",
-        "0",
-    )
+    # The default and Agent Reach/Exa backends are free; limits matter only for paid ones.
+    maximum, cost = Decimal(10), Decimal(0)
+    if ui.confirm("paid_search", "Does your search backend charge per search?"):
+        maximum = money(ui, "max_cost", "Spending limit for searches in USD", "10")
+        cost = money(ui, "search_cost", "Cost per search in USD", "0")
     config = RunConfig(
         name=name,
         firm=firm or None,

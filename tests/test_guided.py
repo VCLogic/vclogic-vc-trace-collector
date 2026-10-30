@@ -278,3 +278,29 @@ def test_timestamp_url_links_youtube_only():
     assert (
         timestamp_url("https://pod.example/ep.mp3", 5) == "https://pod.example/ep.mp3"
     )
+
+
+def test_profile_asks_search_costs_only_for_paid_backend(tmp_path):
+    from decimal import Decimal
+
+    from vc_trace_collector.wizard_profiles import resolve_profile
+
+    url = "https://example.test/jane"
+    free = Prompts(profile_url=url, confirm_profile=True, max_cost="999")
+    _, config = resolve_profile(pipeline(tmp_path / "a"), free, "Jane Roe")
+    assert (config.maximum_cost_usd, config.search_operation_cost_usd) == (
+        Decimal(10),
+        0,
+    )
+    paid = Prompts(
+        profile_url=url,
+        confirm_profile=True,
+        paid_search=True,
+        max_cost="2",
+        search_cost="0.01",
+    )
+    _, config = resolve_profile(pipeline(tmp_path / "b"), paid, "Jane Roe")
+    assert (config.maximum_cost_usd, config.search_operation_cost_usd) == (
+        Decimal(2),
+        Decimal("0.01"),
+    )
