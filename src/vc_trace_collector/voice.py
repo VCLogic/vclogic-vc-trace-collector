@@ -2,11 +2,13 @@
 
 import importlib.util
 import math
+import os
 import re
 import shutil
 import subprocess
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .av import DiarizedTurn, extract_audio_segment
 from .collectors import is_acquired_media
@@ -211,6 +213,19 @@ def voice_candidate(pipeline, slug, item, *, reviewer) -> tuple[str, Path]:
         row["artifact_id"] = artifact.artifact_id
         write_jsonl(path, rows)
     return row["candidate_id"], media
+
+
+def timestamp_url(url: str, seconds: float) -> str:
+    """Link opening a YouTube video at `seconds`; other URLs are returned unchanged."""
+    host = urlsplit(url).hostname or ""
+    if host != "youtu.be" and not host.endswith("youtube.com"):
+        return url
+    return f"{url}{'&' if '?' in url else '?'}t={int(seconds)}s"
+
+
+def can_play() -> bool:
+    # Over SSH, ffplay would play on the remote machine's speakers.
+    return bool(shutil.which("ffplay")) and not os.environ.get("SSH_CONNECTION")
 
 
 def play(media: Path, start: float, end: float, workdir: Path) -> str | None:

@@ -251,3 +251,30 @@ def test_wizard_offers_only_searchable_platforms():
     assert SourceType.X not in PLATFORMS
     for platform in PLATFORMS:
         assert build_source_queries("A", [], platform)
+
+
+def test_voice_shows_video_link_and_skips_playback_over_ssh(tmp_path, monkeypatch):
+    ui = Prompts(add_reference=True, range="0:00-0:45", confirm_voice=True)
+    p, c = media_ready(tmp_path, ui)
+    ui.answers["reference"] = c.candidate_id
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")
+    played = Mock()
+    monkeypatch.setattr("vc_trace_collector.guided.play", played)
+    p._av_providers = Mock(side_effect=RuntimeError("no model"))
+    Guided(p, ui, dependency_check=list).voice("jane-roe")
+    kwargs = p.approve_reference_voice.call_args.kwargs
+    assert (kwargs["start_seconds"], kwargs["end_seconds"]) == (0, 45)
+    assert any(c.url in str(m) for m in ui.messages)
+    played.assert_not_called()
+
+
+def test_timestamp_url_links_youtube_only():
+    from vc_trace_collector.voice import timestamp_url
+
+    assert timestamp_url("https://www.youtube.com/watch?v=x", 65.4) == (
+        "https://www.youtube.com/watch?v=x&t=65s"
+    )
+    assert timestamp_url("https://youtu.be/x", 5) == "https://youtu.be/x?t=5s"
+    assert (
+        timestamp_url("https://pod.example/ep.mp3", 5) == "https://pod.example/ep.mp3"
+    )

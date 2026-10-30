@@ -21,6 +21,7 @@ from .source_search import _SUFFIXES
 from .storage import read_json, write_json
 from .triage import APPROVED, TriageState, run_triage
 from .voice import (
+    can_play,
     missing_av_dependencies,
     parse_range,
     play,
@@ -28,6 +29,7 @@ from .voice import (
     reference_suggestions,
     speakers,
     stage_local_reference,
+    timestamp_url,
     voice_candidate,
 )
 from .wizard_models import Option, backend_options, options, source_items
@@ -346,9 +348,10 @@ class Guided:
         )
         models = self.models(slug)
         with tempfile.TemporaryDirectory() as tmp:
-            interval = self.choose_speaker(slug, media, Path(tmp), models, name)
+            url = item.candidate.url
+            interval = self.choose_speaker(slug, media, Path(tmp), models, name, url)
             if interval is None:
-                interval = self.typed_range(media, Path(tmp))
+                interval = self.typed_range(media, Path(tmp), name, url)
             if interval is None:
                 return
         start, end = interval
@@ -372,7 +375,7 @@ class Guided:
         )
         self.ui.show("Reference saved.")
 
-    def choose_speaker(self, slug, media, tmp, models, name):
+    def choose_speaker(self, slug, media, tmp, models, name, url):
         """Path A: diarize, let the user listen, return the chosen speaker's interval."""
         try:
             config = self.config(slug).model_copy(update=models)
@@ -387,9 +390,15 @@ class Guided:
             )
             return None
         turns = {label: turn for label, _, turn in rows}
+        for label, total, turn in rows:
+            start = reference_interval(turn)[0]
+            self.ui.show(
+                f"{label} · {total / 60:.0f} min · listen: {timestamp_url(url, start)}"
+            )
         choices = [
             Option(value=f"play:{label}", label=f"▶ {label} · {total / 60:.0f} min")
             for label, total, _ in rows
+            if can_play()
         ]
         choices += [
             Option(value=f"use:{label}", label=f"{label} is {name}")
@@ -406,12 +415,11 @@ class Guided:
             start, end = reference_interval(turns[label])
             if action == "use":
                 return start, end
-            clip = play(media, start, min(end, start + 8), tmp)
-            if clip:
-                self.ui.show(f"ffplay not found; listen to {clip}")
+            play(media, start, min(end, start + 8), tmp)
 
-    def typed_range(self, media, tmp):
+    def typed_range(self, media, tmp, name, url):
         """Path B: the user types the interval."""
+        self.ui.show(f"Open {url} and find where only {name} speaks.")
         while True:
             text = self.ui.text(
                 "range",
@@ -425,9 +433,8 @@ class Guided:
             except ValueError as error:
                 self.ui.show(str(error))
                 continue
-            clip = play(media, start, end, tmp)
-            if clip:
-                self.ui.show(f"ffplay not found; listen to {clip}")
+            if can_play():
+                play(media, start, end, tmp)
             return start, end
 
     @with_processing_progress
