@@ -101,6 +101,15 @@ uv sync --extra youtube
 **You do not need Whisper, pyannote, a GPU or a Hugging Face token to discover sources.**
 Those are relevant only when processing audio/video.
 
+### Host tools
+
+Two tools are installed outside Python. `doctor` (below) reports whether they are found.
+
+| Tool | Needed for | Install |
+|---|---|---|
+| ffmpeg (with ffprobe) | Audio/video download, voice references and transcription | Windows `winget install Gyan.FFmpeg` · macOS `brew install ffmpeg` · Linux `sudo apt install ffmpeg`, then open a new terminal |
+| mcporter with Exa | The `agent-reach` search backend (optional; `default` works without it) | `npm install -g mcporter`, then `mcporter config add exa https://mcp.exa.ai/mcp --scope home`. Test with `mcporter call exa.web_search_exa query=test numResults=1` |
+
 ### Choose a search backend
 
 The wizard offers two choices:
