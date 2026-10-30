@@ -304,3 +304,34 @@ def test_profile_asks_search_costs_only_for_paid_backend(tmp_path):
         Decimal(2),
         Decimal("0.01"),
     )
+
+
+def test_profile_rejection_returns_to_the_list(tmp_path):
+    from vc_trace_collector.discovery import SearchResult
+    from vc_trace_collector.wizard_profiles import resolve_profile
+
+    class Provider:
+        provider_name = "fixture"
+
+        def search(self, query, limit):
+            return [
+                SearchResult(
+                    url=f"https://example.test/{n}", title=n, query=query, rank=i
+                )
+                for i, n in enumerate(["namesake", "jane"], 1)
+            ]
+
+    class Answers(Prompts):
+        picks = iter(["https://example.test/namesake", "https://example.test/jane"])
+        verdicts = iter([False, True])
+
+        def select(self, key, message, options):
+            return next(self.picks) if key == "profile" else options[0].value
+
+        def confirm(self, key, message):
+            return next(self.verdicts) if key == "confirm_profile" else True
+
+    url, config = resolve_profile(
+        pipeline(tmp_path), Answers(), "Jane Roe", provider=Provider()
+    )
+    assert url == config.known_profile_url == "https://example.test/jane"

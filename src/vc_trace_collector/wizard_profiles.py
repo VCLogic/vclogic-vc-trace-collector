@@ -107,28 +107,36 @@ def resolve_profile(pipeline, ui, name, *, provider=None):
                 ]
             }
         )
-        url = ui.select(
-            "profile",
-            "Choose a possible profile, enter another URL, or stop",
-            [
-                *[Option(value=r.url, label=f"{r.title} — {r.url}") for r in results],
-                Option(value="manual", label="Supply another profile URL"),
-                Option(value="stop", label="Stop; identity still unresolved"),
-            ],
+    else:
+        results = []
+    while True:
+        if not url:
+            url = ui.select(
+                "profile",
+                "Choose a possible profile, enter another URL, or stop",
+                [
+                    *[
+                        Option(value=r.url, label=f"{r.title} — {r.url}")
+                        for r in results
+                    ],
+                    Option(value="manual", label="Supply another profile URL"),
+                    Option(value="stop", label="Stop; identity still unresolved"),
+                ],
+            )
+            if url == "stop":
+                return None
+            if url == "manual":
+                url = ui.text("manual_url", "Public profile URL")
+        canonical = canonicalize_url(url)
+        if not canonical.startswith(("https://", "http://")):
+            raise ValueError("A public HTTP(S) profile URL is required")
+        ui.show(
+            f"Selected identity evidence for {name}: {canonical}. "
+            "Namesakes have not been merged. The page will now be retrieved for validation."
         )
-        if url == "stop":
-            return None
-        if url == "manual":
-            url = ui.text("manual_url", "Public profile URL")
-    canonical = canonicalize_url(url)
-    if not canonical.startswith(("https://", "http://")):
-        raise ValueError("A public HTTP(S) profile URL is required")
-    ui.show(
-        f"Selected identity evidence for {name}: {canonical}. "
-        "Namesakes have not been merged. The page will now be retrieved for validation."
-    )
-    if not ui.confirm("confirm_profile", "Is this the intended person's profile?"):
-        return None
+        if ui.confirm("confirm_profile", "Is this the intended person's profile?"):
+            break
+        url = None  # back to the list instead of leaving the wizard
     config.known_profile_url = canonical
     return canonical, config
 
