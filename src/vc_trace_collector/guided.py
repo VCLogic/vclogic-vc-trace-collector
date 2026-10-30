@@ -88,13 +88,15 @@ class Guided:
             return slug
         from .wizard_profiles import preserve_firm_hint, resolve_profile
 
-        profile = resolve_profile(self.pipeline, self.ui, name)
+        def discover(url, config):
+            return self.pipeline.discover(
+                name=name, known_profile_url=url, config=config
+            ).identity.slug
+
+        profile = resolve_profile(self.pipeline, self.ui, name, validate=discover)
         if profile is None:
             return None
-        url, config = profile
-        slug = self.pipeline.discover(
-            name=name, known_profile_url=url, config=config
-        ).identity.slug
+        url, config, slug = profile
         preserve_firm_hint(self.pipeline, slug, config.firm, url)
         return slug
 

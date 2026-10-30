@@ -3,6 +3,8 @@
 from decimal import Decimal
 from uuid import uuid4
 
+import httpx
+
 from .audit import BudgetLedger, redact
 from .config import RunConfig
 from .discovery import SearchResult, slugify
@@ -19,7 +21,12 @@ def money(ui, key, message, default):
     return value
 
 
-def resolve_profile(pipeline, ui, name, *, provider=None):
+def resolve_profile(pipeline, ui, name, *, provider=None, validate=None):
+    """Return (url, config, validated) for a confirmed profile, or None if stopped.
+
+    `validate(url, config)` retrieves the page; a refused or unreachable page
+    (e.g. 403 from Crunchbase/LinkedIn) returns to the list instead of exiting.
+    """
     firm = ui.text("firm", "Known firm (optional)")
     url = ui.text(
         "profile_url", "Known public profile URL (blank = find possible profiles)"
@@ -135,10 +142,17 @@ def resolve_profile(pipeline, ui, name, *, provider=None):
             "Namesakes have not been merged. The page will now be retrieved for validation."
         )
         if ui.confirm("confirm_profile", "Is this the intended person's profile?"):
-            break
+            config.known_profile_url = canonical
+            if validate is None:
+                return canonical, config, None
+            try:
+                return canonical, config, validate(canonical, config)
+            except httpx.HTTPError as error:
+                ui.show(
+                    f"Could not retrieve {canonical}: {redact(str(error)).splitlines()[0]}. "
+                    "Choose another profile or supply a different URL."
+                )
         url = None  # back to the list instead of leaving the wizard
-    config.known_profile_url = canonical
-    return canonical, config
 
 
 def preserve_firm_hint(pipeline, slug, firm, url):

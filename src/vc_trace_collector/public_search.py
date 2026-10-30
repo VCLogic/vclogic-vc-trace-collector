@@ -153,6 +153,8 @@ class AgentReachWebSearchProvider:
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout,
                 shell=False,
             )
@@ -245,6 +247,8 @@ class YtDlpSearchProvider:
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout,
                 shell=False,
             )

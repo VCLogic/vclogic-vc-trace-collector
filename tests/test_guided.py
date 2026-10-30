@@ -305,7 +305,7 @@ def test_profile_asks_search_costs_only_for_paid_backend(tmp_path):
 
     url = "https://example.test/jane"
     free = Prompts(profile_url=url, confirm_profile=True, max_cost="999")
-    _, config = resolve_profile(pipeline(tmp_path / "a"), free, "Jane Roe")
+    _, config, _ = resolve_profile(pipeline(tmp_path / "a"), free, "Jane Roe")
     assert (config.maximum_cost_usd, config.search_operation_cost_usd) == (
         Decimal(10),
         0,
@@ -317,7 +317,7 @@ def test_profile_asks_search_costs_only_for_paid_backend(tmp_path):
         max_cost="2",
         search_cost="0.01",
     )
-    _, config = resolve_profile(pipeline(tmp_path / "b"), paid, "Jane Roe")
+    _, config, _ = resolve_profile(pipeline(tmp_path / "b"), paid, "Jane Roe")
     assert (config.maximum_cost_usd, config.search_operation_cost_usd) == (
         Decimal(2),
         Decimal("0.01"),
@@ -349,7 +349,54 @@ def test_profile_rejection_returns_to_the_list(tmp_path):
         def confirm(self, key, message):
             return next(self.verdicts) if key == "confirm_profile" else True
 
-    url, config = resolve_profile(
+    url, config, _ = resolve_profile(
         pipeline(tmp_path), Answers(), "Jane Roe", provider=Provider()
     )
     assert url == config.known_profile_url == "https://example.test/jane"
+
+
+def test_unretrievable_profile_returns_to_the_list(tmp_path):
+    import httpx
+
+    from vc_trace_collector.discovery import SearchResult
+    from vc_trace_collector.wizard_profiles import resolve_profile
+
+    class Provider:
+        provider_name = "fixture"
+
+        def search(self, query, limit):
+            return [
+                SearchResult(
+                    url=f"https://example.test/{n}", title=n, query=query, rank=i
+                )
+                for i, n in enumerate(["blocked", "jane"], 1)
+            ]
+
+    class Answers(Prompts):
+        picks = iter(["https://example.test/blocked", "https://example.test/jane"])
+
+        def select(self, key, message, options):
+            return next(self.picks) if key == "profile" else options[0].value
+
+        def confirm(self, key, message):
+            return True
+
+    def validate(url, config):
+        if url.endswith("/blocked"):
+            request = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError(
+                "Client error '403 Forbidden'",
+                request=request,
+                response=httpx.Response(403, request=request),
+            )
+        return "jane-roe"
+
+    answers = Answers()
+    url, _, slug = resolve_profile(
+        pipeline(tmp_path), answers, "Jane Roe", provider=Provider(), validate=validate
+    )
+    assert (url, slug) == ("https://example.test/jane", "jane-roe")
+    assert any(
+        "Could not retrieve https://example.test/blocked" in str(m)
+        for m in answers.messages
+    )
