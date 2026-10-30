@@ -204,7 +204,9 @@ class Fetcher:
         maximum_bytes: int | None = None,
     ) -> FetchResult:
         requested_url = validate_public_url(url, resolver=self.resolver)
-        current_url = requested_url
+        # Request the URL as written: its canonical form drops a trailing slash
+        # that a server may redirect back to forever.
+        current_url = url.strip()
         redirects: list[str] = []
         conditional: dict[str, str] = {}
         if etag:
@@ -271,9 +273,10 @@ class Fetcher:
                     raise httpx.TooManyRedirects(
                         "Maximum redirect count exceeded", request=response.request
                     )
-                redirected = urljoin(current_url, location)
-                current_url = validate_public_url(redirected, resolver=self.resolver)
-                redirects.append(current_url)
+                current_url = urljoin(current_url, location)
+                redirects.append(
+                    validate_public_url(current_url, resolver=self.resolver)
+                )
                 conditional = {}
                 continue
 
@@ -285,7 +288,7 @@ class Fetcher:
             }
             return FetchResult(
                 requested_url=requested_url,
-                final_url=current_url,
+                final_url=canonicalize_url(current_url),
                 canonical_url=canonicalize_url(current_url),
                 status_code=response.status_code,
                 content=content,
@@ -298,7 +301,7 @@ class Fetcher:
 
     def head(self, url: str) -> FetchResult:
         requested_url = validate_public_url(url, resolver=self.resolver)
-        current_url = requested_url
+        current_url = url.strip()
         redirects: list[str] = []
         attempts = 0
         while True:
@@ -312,10 +315,10 @@ class Fetcher:
                     raise httpx.TooManyRedirects(
                         "Maximum redirect count exceeded", request=response.request
                     )
-                current_url = validate_public_url(
-                    urljoin(current_url, location), resolver=self.resolver
+                current_url = urljoin(current_url, location)
+                redirects.append(
+                    validate_public_url(current_url, resolver=self.resolver)
                 )
-                redirects.append(current_url)
                 continue
             response.raise_for_status()
             public_headers = {
@@ -325,7 +328,7 @@ class Fetcher:
             }
             return FetchResult(
                 requested_url=requested_url,
-                final_url=current_url,
+                final_url=canonicalize_url(current_url),
                 canonical_url=canonicalize_url(current_url),
                 status_code=response.status_code,
                 content=b"",

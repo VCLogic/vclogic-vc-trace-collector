@@ -102,6 +102,25 @@ def test_fetcher_rejects_redirect_to_private_network() -> None:
         fetcher.fetch("https://example.test/redirect")
 
 
+def test_fetcher_follows_redirect_to_trailing_slash_without_looping() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/about":
+            return httpx.Response(
+                301, headers={"location": "https://example.test/about/"}, request=request
+            )
+        return httpx.Response(200, content=b"about", request=request)
+
+    fetcher = Fetcher(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        minimum_interval=0,
+    )
+    result = fetcher.fetch("https://example.test/about")
+    assert result.content == b"about"
+    assert result.final_url == "https://example.test/about"
+    assert fetcher.head("https://example.test/about").status_code == 200
+
+
 def test_fetcher_rejects_dns_answer_change_during_request() -> None:
     calls = 0
 
