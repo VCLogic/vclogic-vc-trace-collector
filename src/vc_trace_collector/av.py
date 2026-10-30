@@ -302,7 +302,9 @@ def transcribe_diarized_turns(
         provider=transcript_provider.provider_name,
         model=transcript_provider.model_name,
     )
-    with tempfile.TemporaryDirectory(prefix="vc-trace-segments-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="vc-trace-segments-", ignore_cleanup_errors=True
+    ) as directory:
         segment_dir = Path(directory)
         for index, turn in enumerate(diarization.turns):
             report(

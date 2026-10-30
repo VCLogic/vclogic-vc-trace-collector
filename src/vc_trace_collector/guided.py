@@ -347,7 +347,7 @@ class Guided:
             self.pipeline, slug, item, reviewer=self.reviewer
         )
         models = self.models(slug)
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             url = item.candidate.url
             interval = self.choose_speaker(slug, media, Path(tmp), models, name, url)
             if interval is None:

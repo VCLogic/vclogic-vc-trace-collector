@@ -1352,7 +1352,7 @@ class Pipeline:
             if start_seconds is not None or end_seconds is not None:
                 assert start_seconds is not None and end_seconds is not None
                 with tempfile.TemporaryDirectory(
-                    prefix="vc-trace-reference-"
+                    prefix="vc-trace-reference-", ignore_cleanup_errors=True
                 ) as directory:
                     extracted = self.audio_extractor(
                         source_path,
@@ -1667,7 +1667,7 @@ class Pipeline:
                 report("Extracting audio with FFmpeg")
                 try:
                     with tempfile.TemporaryDirectory(
-                        prefix="vc-trace-video-audio-"
+                        prefix="vc-trace-video-audio-", ignore_cleanup_errors=True
                     ) as directory:
                         extracted = self.audio_extractor(
                             path, Path(directory) / "audio.wav"

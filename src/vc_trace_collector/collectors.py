@@ -673,8 +673,10 @@ class YouTubeCollector:
         ]
         page_bytes = 0
         try:
+            # Windows cannot always delete yt-dlp's page dumps (long names, open handles);
+            # leftover temp files must not fail an otherwise successful collection.
             with tempfile.TemporaryDirectory(
-                prefix="vc-trace-youtube-metadata-"
+                prefix="vc-trace-youtube-metadata-", ignore_cleanup_errors=True
             ) as metadata_directory:
                 try:
                     completed = self.runner(
@@ -798,7 +800,9 @@ class YouTubeCollector:
                 f"Media duration {duration:.1f}s exceeds remaining limit "
                 f"{context.remaining_media_seconds:.1f}s"
             )
-        with tempfile.TemporaryDirectory(prefix="vc-trace-youtube-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix="vc-trace-youtube-", ignore_cleanup_errors=True
+        ) as directory:
             output_template = str(Path(directory) / "audio.%(ext)s")
             remaining_bytes = _remaining_bytes(context)
             download = [

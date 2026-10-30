@@ -983,3 +983,38 @@ def test_youtube_collector_rejects_lookalike_domains_without_running_tool(
 
     assert result.failed == 1
     assert calls == []
+
+
+def test_youtube_temp_cleanup_failure_does_not_fail_collection(tmp_path, monkeypatch):
+    # Windows: WinError 145 when yt-dlp's page dumps cannot be removed.
+    import os
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    rmdir = os.rmdir
+
+    def stuck(path, *args, **kwargs):
+        if "vc-trace-youtube" in str(path):
+            raise OSError(145, "The directory is not empty")
+        return rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rmdir", stuck)
+
+    def runner(command, **kwargs):
+        if "--dump-single-json" in command:
+            return subprocess.CompletedProcess(
+                command, 0, stdout=json.dumps({"id": "abc", "duration": 40}), stderr=""
+            )
+        raise subprocess.CalledProcessError(1, command)
+
+    result = collect_approved_sources(
+        plan(
+            candidate(
+                "youtube", SourceType.YOUTUBE, url="https://www.youtube.com/watch?v=abc"
+            )
+        ),
+        context=context(tmp_path),
+        registry=CollectorRegistry([YouTubeCollector(runner=runner)]),
+    )
+    assert "not empty" not in result.outcomes[0].reason
