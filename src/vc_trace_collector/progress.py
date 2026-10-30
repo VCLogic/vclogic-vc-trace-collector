@@ -2,10 +2,11 @@
 
 import subprocess
 import tempfile
+import threading
 import time
 import warnings
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from functools import wraps
 
 from rich.console import Console
@@ -116,58 +117,50 @@ def with_download_progress(function):
 def run_download(command, *, check, capture_output, text, timeout):
     """Capture yt-dlp output while consuming only our numeric progress protocol."""
     started = time.monotonic()
+    errors: list[bytes] = []
+
+    def pump(stream):
+        # A reader thread on a pipe works on every OS (os.pread is POSIX-only).
+        for line in stream:
+            errors.append(line)
+            if line.startswith(b"VC_TRACE_PROGRESS:"):
+                parts = line.strip().split(b":")
+                try:
+                    done = int(float(parts[1]))
+                    total = (
+                        int(float(parts[2]))
+                        if parts[2] not in (b"NA", b"None")
+                        else None
+                    )
+                    download_bytes(done, total)
+                except (ValueError, IndexError):
+                    pass
+
     with (
         tempfile.TemporaryFile(mode="w+b") as stdout,
-        tempfile.TemporaryFile(mode="w+b") as stderr,
-        subprocess.Popen(command, stdout=stdout, stderr=stderr) as process,
+        subprocess.Popen(command, stdout=stdout, stderr=subprocess.PIPE) as process,
     ):
-        offset = 0
-        pending = b""
-
-        def read_progress():
-            nonlocal offset, pending
-            # pread avoids changing the file offset shared with the child.
-            import os
-
-            chunk = os.pread(stderr.fileno(), 65536, offset)
-            while chunk:
-                offset += len(chunk)
-                pending += chunk
-                lines = pending.split(b"\n")
-                pending = lines.pop()
-                for line in lines:
-                    if line.startswith(b"VC_TRACE_PROGRESS:"):
-                        parts = line.split(b":")
-                        try:
-                            done = int(float(parts[1]))
-                            total = (
-                                int(float(parts[2]))
-                                if parts[2] not in (b"NA", b"None")
-                                else None
-                            )
-                            download_bytes(done, total)
-                        except (ValueError, IndexError):
-                            pass
-                chunk = os.pread(stderr.fileno(), 65536, offset)
-
+        # The thread needs this context to reach the active progress display.
+        reader = threading.Thread(
+            target=copy_context().run, args=(pump, process.stderr), daemon=True
+        )
+        reader.start()
         try:
             while process.poll() is None:
-                read_progress()
                 if time.monotonic() - started > timeout:
                     raise subprocess.TimeoutExpired(command, timeout)
                 time.sleep(0.1)
-            read_progress()
+            reader.join()
         except BaseException:
             process.kill()
             process.wait()
             raise
         stdout.seek(0)
-        stderr.seek(0)
         result = subprocess.CompletedProcess(
             command,
             process.returncode,
             stdout.read().decode("utf-8", errors="replace"),
-            stderr.read().decode("utf-8", errors="replace"),
+            b"".join(errors).decode("utf-8", errors="replace"),
         )
         if check:
             result.check_returncode()
