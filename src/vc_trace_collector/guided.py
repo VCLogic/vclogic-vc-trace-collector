@@ -15,7 +15,11 @@ from .av import extract_audio_segment
 from .config import RunConfig
 from .discovery import slugify
 from .models import MaterialRole, SourceType
-from .progress import with_download_progress, with_processing_progress
+from .progress import (
+    quiet_torchaudio_notices,
+    with_download_progress,
+    with_processing_progress,
+)
 from .public_search import agent_reach_public_search_provider
 from .source_search import _SUFFIXES
 from .storage import read_json, write_json
@@ -283,6 +287,7 @@ class Guided:
         )
         return True
 
+    @quiet_torchaudio_notices()
     def voice(self, slug):
         if not self.items(slug, downloaded=True, media=True):
             return True
