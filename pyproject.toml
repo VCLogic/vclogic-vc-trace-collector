@@ -63,3 +63,14 @@ exclude = [
     "/.worktrees",
     "/outputs",
 ]
+
+# PyPI's Windows torch wheels are CPU-only; take the CUDA 12.8 build there so
+# VC_TRACE_AV_DEVICE=cuda can use an NVIDIA GPU. Linux/macOS keep PyPI wheels.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+torchaudio = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
