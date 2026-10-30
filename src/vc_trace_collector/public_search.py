@@ -139,7 +139,8 @@ class AgentReachWebSearchProvider:
 
     def search(self, query: str, limit: int = 10) -> list[SearchResult]:
         command = [
-            "mcporter",
+            # Full path: npm installs mcporter as mcporter.cmd on Windows.
+            self._executable_finder("mcporter") or "mcporter",
             "call",
             "exa.web_search_exa",
             f"query={query}",

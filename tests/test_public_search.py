@@ -31,7 +31,9 @@ def test_agent_reach_exa_backend_uses_mcporter_and_parses_json() -> None:
             stderr="",
         )
 
-    provider = AgentReachWebSearchProvider(runner=runner, timeout=19)
+    provider = AgentReachWebSearchProvider(
+        runner=runner, timeout=19, executable_finder=lambda name: name
+    )
     results = provider.search('"Jane Roe" podcast', limit=4)
 
     command, kwargs = calls[0]
@@ -308,3 +310,17 @@ def test_composite_routes_queries_and_isolates_provider_failures() -> None:
             "error": "RuntimeError",
         }
     ]
+
+
+def test_agent_reach_runs_mcporter_by_resolved_path() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout='{"results": []}', stderr="")
+
+    shim = r"C:\Users\a\AppData\Roaming\npm\mcporter.CMD"
+    AgentReachWebSearchProvider(
+        runner=runner, executable_finder=lambda name: shim
+    ).search("q")
+    assert calls[0][0] == shim
