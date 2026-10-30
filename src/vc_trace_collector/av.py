@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import warnings
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -619,6 +620,17 @@ def _safe_pyannote_checkpoint_load() -> Iterator[None]:
         yield
 
 
+def torch_device(requested: str):
+    """Fall back to CPU when CUDA is requested but this torch build cannot use it."""
+    import torch
+
+    if requested.startswith("cuda") and not torch.cuda.is_available():
+        # PyPI's Windows torch wheels are CPU-only; failing here stopped the wizard.
+        warnings.warn(f"{requested} unavailable in this torch build; using CPU")
+        return torch.device("cpu")
+    return torch.device(requested)
+
+
 class PyannoteDiarizationProvider:
     provider_name = "pyannote"
 
@@ -636,9 +648,7 @@ class PyannoteDiarizationProvider:
             except TypeError:
                 self._pipeline = Pipeline.from_pretrained(model, use_auth_token=token)
         if device:
-            import torch
-
-            self._pipeline.to(torch.device(device))
+            self._pipeline.to(torch_device(device))
 
     def diarize(self, audio_path: Path) -> DiarizationResult:
         annotation, embeddings = self._pipeline(
@@ -694,9 +704,7 @@ class PyannoteEmbeddingProvider:
             except TypeError:
                 self._inference = Inference(model, use_auth_token=token, window="whole")
         if device:
-            import torch
-
-            self._inference.to(torch.device(device))
+            self._inference.to(torch_device(device))
 
     def embed(self, audio_path: Path) -> list[float]:
         values = self._inference(str(audio_path))

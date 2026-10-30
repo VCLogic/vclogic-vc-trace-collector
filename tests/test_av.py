@@ -301,3 +301,23 @@ def test_target_speech_pipeline_flags_weak_match_for_review(tmp_path) -> None:
     )
 
     assert result.attribution.status == SpeakerStatus.UNCERTAIN
+
+
+def test_cuda_request_falls_back_to_cpu_without_cuda(monkeypatch):
+    import sys
+    import types
+
+    import pytest
+
+    from vc_trace_collector.av import torch_device
+
+    fake = types.SimpleNamespace(
+        device=lambda name: f"device:{name}",
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake)
+    with pytest.warns(UserWarning, match="CPU"):
+        assert torch_device("cuda") == "device:cpu"
+    assert torch_device("cpu") == "device:cpu"
+    fake.cuda.is_available = lambda: True
+    assert torch_device("cuda:0") == "device:cuda:0"
