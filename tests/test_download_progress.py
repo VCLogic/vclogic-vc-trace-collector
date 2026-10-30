@@ -57,3 +57,12 @@ def test_download_runner_parses_progress_and_preserves_output(monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         ui.run_download([sys.executable, '-c', 'import time; time.sleep(10)'],
                         check=True, capture_output=True, text=True, timeout=0.05)
+
+
+def test_download_runner_accepts_subprocess_run_decoding_arguments():
+    # The YouTube collector calls run_download with the same keywords as subprocess.run.
+    result = ui.run_download([sys.executable, '-c',
+        'import sys; sys.stdout.buffer.write(b"caf\\xc3\\xa9\\xff\\n")'],
+        check=True, capture_output=True, text=True, encoding='utf-8',
+        errors='replace', timeout=5)
+    assert result.stdout == 'café�\n'

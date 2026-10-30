@@ -114,15 +114,17 @@ def with_download_progress(function):
     return wrapped
 
 
-def run_download(command, *, check, capture_output, text, timeout):
+def run_download(
+    command, *, check, capture_output, text, timeout, encoding="utf-8", errors="replace"
+):
     """Capture yt-dlp output while consuming only our numeric progress protocol."""
     started = time.monotonic()
-    errors: list[bytes] = []
+    stderr_lines: list[bytes] = []
 
     def pump(stream):
         # A reader thread on a pipe works on every OS (os.pread is POSIX-only).
         for line in stream:
-            errors.append(line)
+            stderr_lines.append(line)
             if line.startswith(b"VC_TRACE_PROGRESS:"):
                 parts = line.strip().split(b":")
                 try:
@@ -159,8 +161,8 @@ def run_download(command, *, check, capture_output, text, timeout):
         result = subprocess.CompletedProcess(
             command,
             process.returncode,
-            stdout.read().decode("utf-8", errors="replace"),
-            b"".join(errors).decode("utf-8", errors="replace"),
+            stdout.read().decode(encoding, errors=errors),
+            b"".join(stderr_lines).decode(encoding, errors=errors),
         )
         if check:
             result.check_returncode()
