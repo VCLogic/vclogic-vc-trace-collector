@@ -125,6 +125,24 @@ def test_resume_skips_completed_steps(tmp_path):
     assert completed(p) == list(STEPS)
 
 
+def test_finished_collection_can_redo_from_a_step(tmp_path):
+    from vc_trace_collector.storage import write_json
+
+    p, _ = prepared(tmp_path)
+    write_json(
+        p.workspace("jane-roe") / "guided_state.json", {"completed": list(STEPS)}
+    )
+    g = Guided(p, Prompts())
+    g.fetch = Mock(return_value=True)
+    g.run(investor="jane-roe")
+    g.fetch.assert_not_called()
+    g = Guided(p, Prompts(redo=True, jump="fetch"))
+    g.fetch, g.voice, g.process, g.finish = (Mock(return_value=True) for _ in range(4))
+    g.run(investor="jane-roe")
+    g.fetch.assert_called_once_with("jane-roe")
+    g.finish.assert_called_once_with("jane-roe")
+
+
 def test_unconfirmed_identity_stops_before_search(tmp_path):
     p, _ = prepared(tmp_path, approve=False)
     p.search_source = Mock()

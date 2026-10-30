@@ -59,11 +59,14 @@ class Guided:
             return
         done = self.completed(slug)
         remaining = [s for s in STEPS if s not in done]
-        if (
-            done
-            and remaining
-            and not self.ui.confirm("resume", f"Continue from {remaining[0]}?")
-        ):
+        if remaining:
+            jump = done and not self.ui.confirm(
+                "resume", f"Continue from {remaining[0]}?"
+            )
+        else:
+            # A finished collection can redo a step, e.g. retry failed downloads.
+            jump = self.ui.confirm("redo", "Collection is finished. Redo from a step?")
+        if jump:
             first = self.ui.select("jump", "Start from", options(STEPS))
             remaining = list(STEPS[STEPS.index(first) :])
         for step in remaining:
