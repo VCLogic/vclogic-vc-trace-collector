@@ -399,7 +399,9 @@ def test_unretrievable_profile_returns_to_the_list(tmp_path):
 
 def test_fetch_can_raise_the_media_limit_with_an_audit_event(tmp_path):
     p, c = prepared(tmp_path, media=True)
-    p.fetch_source("jane-roe", candidate_ids={c.candidate_id}, maximum_media_minutes=240)
+    p.fetch_source(
+        "jane-roe", candidate_ids={c.candidate_id}, maximum_media_minutes=240
+    )
     workspace = p.workspace("jane-roe")
     assert read_json(workspace / "config_snapshot.json")["maximum_media_minutes"] == 240
     events = read_jsonl(workspace / "audit/events.jsonl")
@@ -410,7 +412,9 @@ def test_fetch_can_raise_the_media_limit_with_an_audit_event(tmp_path):
         if e["stage"] == "configuration"
     )
     with pytest.raises(ValueError, match="cannot be lower"):
-        p.fetch_source("jane-roe", candidate_ids={c.candidate_id}, maximum_media_minutes=60)
+        p.fetch_source(
+            "jane-roe", candidate_ids={c.candidate_id}, maximum_media_minutes=60
+        )
 
 
 def test_wizard_fetch_offers_to_raise_the_media_limit_for_recordings(tmp_path):
@@ -419,9 +423,59 @@ def test_wizard_fetch_offers_to_raise_the_media_limit_for_recordings(tmp_path):
     g = Guided(p, ui)
     video = c.model_copy(update={"source_type": SourceType.YOUTUBE})
     g.items = lambda slug, **kw: [Mock(candidate=video)]
-    p.fetch_source = Mock(return_value=Mock(failures=[], collected=1, failed=0, skipped=0))
+    p.fetch_source = Mock(
+        return_value=Mock(failures=[], collected=1, failed=0, skipped=0)
+    )
     g.fetch("jane-roe")
     assert p.fetch_source.call_args.kwargs["maximum_media_minutes"] == 600
     assert any("0 of 120 minutes used" in str(m) for m in ui.messages)
     audit = p.workspace("jane-roe").resolve() / "audit"
     assert any(str(audit / "failures.jsonl") in str(m) for m in ui.messages)
+
+
+def test_finish_can_accept_a_partial_collection(tmp_path):
+    kept, missing = tmp_path / "kept.txt", tmp_path / "missing.txt"
+    for path in (kept, missing):
+        path.write_bytes(b"I invest in customer-led businesses.")
+    p = pipeline(tmp_path / "outputs")
+    result = p.discover(name="Jane Roe", supplied_files=[kept, missing])
+    supplied = [c for c in result.source_plan.candidates if c.source_type == "supplied"]
+    p.review(
+        "jane-roe",
+        decisions=[
+            SourceDecision(
+                candidate_id=c.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="fixture",
+                decided_by="human",
+                material_role=MaterialRole.AUTHORED_BY_TARGET,
+            )
+            for c in supplied
+        ],
+        reviewer="human",
+        confirm_identity=True,
+    )
+    missing.unlink()
+    assert (
+        p.fetch_source(
+            "jane-roe", candidate_ids={c.candidate_id for c in supplied}
+        ).failed
+        == 1
+    )
+    p.process("jane-roe")
+
+    declined = Prompts(partial_run=False)
+    Guided(p, declined).finish("jane-roe")
+    assert any("NOT verified" in str(m) for m in declined.messages)
+
+    ui = Prompts(partial_run=True)
+    Guided(p, ui).finish("jane-roe")
+    assert any(str(m).startswith("Verified") for m in ui.messages)
+    workspace = p.workspace("jane-roe")
+    assert read_json(workspace / "config_snapshot.json")["allow_partial_run"] is True
+    assert any(
+        e["details"].get("changes", {}).get("allow_partial_run")
+        == {"from": False, "to": True}
+        for e in read_jsonl(workspace / "audit/events.jsonl")
+        if e["stage"] == "configuration"
+    )

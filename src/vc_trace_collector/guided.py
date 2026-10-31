@@ -463,6 +463,19 @@ class Guided:
     def finish(self, slug):
         self.pipeline.export(slug)
         result = self.pipeline.verify(slug)
+        workspace = self.pipeline.workspace(slug)
+        failed = read_json(workspace / "run_summary.json")["failures"]
+        if not result.passed and failed and not self.config(slug).allow_partial_run:
+            self.ui.show(
+                f"{failed} sources failed "
+                f"(see {workspace.resolve() / 'audit' / 'failures.jsonl'}). "
+                "A partial collection leaves them out; the decision is recorded "
+                "in the audit log."
+            )
+            if self.ui.confirm("partial_run", "Accept a partial collection?"):
+                self.pipeline.accept_partial_run(slug)
+                self.pipeline.export(slug)
+                result = self.pipeline.verify(slug)
         items = source_items(self.pipeline, slug)
         self.ui.show(
             f"{'Verified' if result.passed else 'NOT verified'} · "
@@ -473,6 +486,11 @@ class Guided:
         )
         if not result.passed:
             self.ui.show(result.model_dump(mode="json"))
+        if any("Audiovisual outcomes" in error for error in result.errors):
+            self.ui.show(
+                "Some approved talks have no audio/video result. Redo from triage "
+                "and reject them, or raise the audio/video limit in fetch."
+            )
         for failure in self.failures:
             self.ui.show(f"  ✗ {failure}")
         return True

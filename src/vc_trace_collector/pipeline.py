@@ -1211,6 +1211,12 @@ class Pipeline:
             candidate_ids=candidate_ids,
         )
 
+    def accept_partial_run(self, investor_slug: str) -> None:
+        """Record a human decision to export a collection that has failed sources."""
+        self._configure_stage(
+            self.workspace(investor_slug), "finish", allow_partial_run=True
+        )
+
     def media_minutes_collected(self, investor_slug: str) -> float:
         """Downloaded audio/video minutes, counted against maximum_media_minutes."""
         workspace = self.workspace(investor_slug)
