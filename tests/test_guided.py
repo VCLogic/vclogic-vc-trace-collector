@@ -479,3 +479,37 @@ def test_finish_can_accept_a_partial_collection(tmp_path):
         for e in read_jsonl(workspace / "audit/events.jsonl")
         if e["stage"] == "configuration"
     )
+
+
+def test_finish_can_leave_out_approved_talks_without_a_result(tmp_path):
+    p, c = prepared(tmp_path)
+    p.fetch_source("jane-roe", candidate_ids={c.candidate_id})
+    p.process("jane-roe")
+    (talk,) = p.add_sources(
+        "jane-roe", ["https://www.youtube.com/watch?v=abc"], reviewer="human"
+    )
+    p.review(
+        "jane-roe",
+        decisions=[
+            SourceDecision(
+                candidate_id=talk.candidate_id,
+                status=ApprovalStatus.APPROVED,
+                reason="fixture",
+                decided_by="human",
+                material_role=MaterialRole.SPOKEN_BY_TARGET,
+            )
+        ],
+        reviewer="human",
+        confirm_identity=True,
+    )
+
+    declined = Prompts(partial_run=True, leave_out_talks=False)
+    Guided(p, declined).finish("jane-roe")
+    assert any("NOT verified" in str(m) for m in declined.messages)
+    assert any("Warning: 1 approved talks" in str(m) for m in declined.messages)
+
+    ui = Prompts(partial_run=True, leave_out_talks=True)
+    Guided(p, ui).finish("jane-roe")
+    assert any(str(m).startswith("Verified") for m in ui.messages)
+    plan = {x.candidate_id: x for x in p._load_plan("jane-roe").candidates}
+    assert plan[talk.candidate_id].approval_status == ApprovalStatus.REJECTED

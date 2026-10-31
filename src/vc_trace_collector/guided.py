@@ -14,7 +14,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from .audit import redact
 from .config import RunConfig
 from .discovery import slugify
-from .models import MaterialRole, SourceType
+from .models import ApprovalStatus, MaterialRole, SourceDecision, SourceType
 from .progress import (
     quiet_torchaudio_notices,
     with_download_progress,
@@ -22,7 +22,7 @@ from .progress import (
 )
 from .public_search import agent_reach_public_search_provider
 from .source_search import _SUFFIXES
-from .storage import read_json, write_json
+from .storage import read_json, read_jsonl, write_json
 from .triage import APPROVED, TriageState, run_triage
 from .voice import (
     can_play,
@@ -460,6 +460,21 @@ class Guided:
                 self.ui.show(f"Failed {url}: {redact(str(error))}")
         return True
 
+    def talks_without_result(self, slug):
+        """Approved spoken sources with no audio/video outcome, which block verify."""
+        workspace = self.pipeline.workspace(slug)
+        done = {
+            row["candidate_id"]
+            for row in read_jsonl(workspace / "processed/av_candidate_outcomes.jsonl")
+        }
+        return [
+            c
+            for c in self.pipeline._load_plan(slug).candidates
+            if c.approval_status in APPROVED
+            and c.material_role == MaterialRole.SPOKEN_BY_TARGET
+            and c.candidate_id not in done
+        ]
+
     def finish(self, slug):
         self.pipeline.export(slug)
         result = self.pipeline.verify(slug)
@@ -476,6 +491,38 @@ class Guided:
                 self.pipeline.accept_partial_run(slug)
                 self.pipeline.export(slug)
                 result = self.pipeline.verify(slug)
+        missing = [] if result.passed else self.talks_without_result(slug)
+        if missing:
+            self.ui.show(
+                f"⚠ Warning: {len(missing)} approved talks have no audio/video result "
+                "(media limit reached or download failed):"
+            )
+            for candidate in missing:
+                self.ui.show(f"  - {candidate.title or candidate.url}  {candidate.url}")
+            self.ui.show(
+                "Leaving them out rejects them in the source plan and records the "
+                "decision in the audit log. They will not be in the corpus or the "
+                "investment memory."
+            )
+            if self.ui.confirm(
+                "leave_out_talks", f"Leave these {len(missing)} talks out?"
+            ):
+                self.pipeline.review(
+                    slug,
+                    decisions=[
+                        SourceDecision(
+                            candidate_id=candidate.candidate_id,
+                            status=ApprovalStatus.REJECTED,
+                            reason="No audio/video result; left out at finish",
+                            decided_by=self.reviewer,
+                        )
+                        for candidate in missing
+                    ],
+                    reviewer=self.reviewer,
+                    confirm_identity=True,
+                )
+                self.pipeline.export(slug)
+                result = self.pipeline.verify(slug)
         items = source_items(self.pipeline, slug)
         self.ui.show(
             f"{'Verified' if result.passed else 'NOT verified'} · "
@@ -488,8 +535,8 @@ class Guided:
             self.ui.show(result.model_dump(mode="json"))
         if any("Audiovisual outcomes" in error for error in result.errors):
             self.ui.show(
-                "Some approved talks have no audio/video result. Redo from triage "
-                "and reject them, or raise the audio/video limit in fetch."
+                "Some approved talks have no audio/video result. Leave them out at "
+                "finish, reject them in triage, or raise the audio/video limit in fetch."
             )
         for failure in self.failures:
             self.ui.show(f"  ✗ {failure}")
