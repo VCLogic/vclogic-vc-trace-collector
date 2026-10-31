@@ -1,5 +1,6 @@
 """Linear guided collection: one run from name to verified export."""
 
+import math
 import os
 import re
 import shutil
@@ -271,15 +272,39 @@ class Guided:
                 return action == "save"
 
     @with_download_progress
-    def _fetch(self, slug, ids):
-        return self.pipeline.fetch_source(slug, candidate_ids=ids)
+    def _fetch(self, slug, ids, maximum_media_minutes=None):
+        return self.pipeline.fetch_source(
+            slug, candidate_ids=ids, maximum_media_minutes=maximum_media_minutes
+        )
 
     def fetch(self, slug):
         pending = self.items(slug, downloaded=False)
         if not pending:
             self.ui.show("Nothing new to download.")
             return True
-        result = self._fetch(slug, {i.candidate.candidate_id for i in pending})
+        maximum = None
+        recordings = [
+            i for i in pending if i.candidate.source_type in {"youtube", "podcast"}
+        ]
+        if recordings:
+            limit = self.config(slug).maximum_media_minutes
+            estimate = sum(i.candidate.estimated_media_seconds for i in recordings)
+            self.ui.show(
+                f"Audio/video limit: {self.pipeline.media_minutes_collected(slug):.0f}"
+                f" of {limit:.0f} minutes used; {len(recordings)} recordings to "
+                "download"
+                + (f" (about {estimate / 60:.0f} min)" if estimate else "")
+                + ". Recordings past the limit are not downloaded."
+            )
+            if self.ui.confirm("edit_media_limit", "Raise the audio/video limit?"):
+                maximum = self.integer(
+                    "media_minutes",
+                    "Audio/video limit in minutes",
+                    math.ceil(limit),
+                    math.ceil(limit),
+                    100_000,
+                )
+        result = self._fetch(slug, {i.candidate.candidate_id for i in pending}, maximum)
         self.failures += [f"fetch {f}" for f in result.failures]
         self.ui.show(
             f"Downloaded {result.collected} · failed {result.failed} · "

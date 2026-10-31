@@ -1071,11 +1071,7 @@ class Pipeline:
         config = RunConfig.model_validate(read_json(workspace / "config_snapshot.json"))
         summary = RunSummary.model_validate(read_json(workspace / "run_summary.json"))
         existing_artifacts = load_artifact_records(workspace)
-        already_collected_media = sum(
-            float(artifact.original_metadata.get("duration_seconds") or 0)
-            for artifact in existing_artifacts
-            if is_acquired_media(artifact)
-        )
+        already_collected_media = _collected_media_seconds(existing_artifacts)
         already_downloaded_bytes = max(
             summary.downloaded_bytes,
             sum(
@@ -1174,10 +1170,21 @@ class Pipeline:
         *,
         source_type: SourceType | None = None,
         candidate_ids: set[str] | None = None,
+        maximum_media_minutes: float | None = None,
     ) -> CollectionResult:
         """Collect an approved platform subset or explicit candidate subset."""
         if source_type is None and not candidate_ids:
             raise ValueError("Provide a source type or at least one candidate ID")
+        if maximum_media_minutes is not None:
+            workspace = self.workspace(investor_slug)
+            config = RunConfig.model_validate(
+                read_json(workspace / "config_snapshot.json")
+            )
+            if maximum_media_minutes < config.maximum_media_minutes:
+                raise ValueError("The media limit cannot be lower than the saved limit")
+            self._configure_stage(
+                workspace, "fetch_source", maximum_media_minutes=maximum_media_minutes
+            )
         plan = self._load_plan(investor_slug)
         by_id = {candidate.candidate_id: candidate for candidate in plan.candidates}
         requested_ids = candidate_ids or set()
@@ -1203,6 +1210,11 @@ class Pipeline:
             source_types={source_type} if source_type is not None else None,
             candidate_ids=candidate_ids,
         )
+
+    def media_minutes_collected(self, investor_slug: str) -> float:
+        """Downloaded audio/video minutes, counted against maximum_media_minutes."""
+        workspace = self.workspace(investor_slug)
+        return _collected_media_seconds(load_artifact_records(workspace)) / 60
 
     def approve_reference_voice(
         self,
@@ -2601,3 +2613,11 @@ def re_slug(name: str, firm: str | None = None) -> str:
 
     value = f"{name}-{firm}" if firm else name
     return re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-") or "investor"
+
+
+def _collected_media_seconds(artifacts) -> float:
+    return sum(
+        float(artifact.original_metadata.get("duration_seconds") or 0)
+        for artifact in artifacts
+        if is_acquired_media(artifact)
+    )

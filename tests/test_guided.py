@@ -1,5 +1,6 @@
 from unittest.mock import Mock
 
+import pytest
 from test_pipeline_cli import pipeline
 from typer.testing import CliRunner
 
@@ -11,7 +12,7 @@ from vc_trace_collector.models import (
     SourceDecision,
     SourceType,
 )
-from vc_trace_collector.storage import read_json
+from vc_trace_collector.storage import read_json, read_jsonl
 
 
 class Prompts:
@@ -394,3 +395,31 @@ def test_unretrievable_profile_returns_to_the_list(tmp_path):
         "Could not retrieve https://example.test/blocked" in str(m)
         for m in answers.messages
     )
+
+
+def test_fetch_can_raise_the_media_limit_with_an_audit_event(tmp_path):
+    p, c = prepared(tmp_path, media=True)
+    p.fetch_source("jane-roe", candidate_ids={c.candidate_id}, maximum_media_minutes=240)
+    workspace = p.workspace("jane-roe")
+    assert read_json(workspace / "config_snapshot.json")["maximum_media_minutes"] == 240
+    events = read_jsonl(workspace / "audit/events.jsonl")
+    assert any(
+        e["details"].get("changes", {}).get("maximum_media_minutes")
+        == {"from": 120, "to": 240}
+        for e in events
+        if e["stage"] == "configuration"
+    )
+    with pytest.raises(ValueError, match="cannot be lower"):
+        p.fetch_source("jane-roe", candidate_ids={c.candidate_id}, maximum_media_minutes=60)
+
+
+def test_wizard_fetch_offers_to_raise_the_media_limit_for_recordings(tmp_path):
+    p, c = prepared(tmp_path)
+    ui = Prompts(edit_media_limit=True, media_minutes="600")
+    g = Guided(p, ui)
+    video = c.model_copy(update={"source_type": SourceType.YOUTUBE})
+    g.items = lambda slug, **kw: [Mock(candidate=video)]
+    p.fetch_source = Mock(return_value=Mock(failures=[], collected=1, failed=0, skipped=0))
+    g.fetch("jane-roe")
+    assert p.fetch_source.call_args.kwargs["maximum_media_minutes"] == 600
+    assert any("0 of 120 minutes used" in str(m) for m in ui.messages)
