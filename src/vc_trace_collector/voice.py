@@ -6,11 +6,10 @@ import os
 import re
 import shutil
 import subprocess
-from collections import defaultdict
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .av import DiarizedTurn, extract_audio_segment
+from .av import extract_audio_segment
 from .collectors import is_acquired_media
 from .discovery import stable_id
 from .models import (
@@ -26,9 +25,6 @@ from .storage import read_jsonl, write_jsonl
 
 APPROVED = {ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED}
 SPOKEN = {MaterialRole.SPOKEN_BY_TARGET, MaterialRole.REFERENCE_VOICE}
-MAX_REFERENCE_SECONDS = 30.0
-# Parts per speaker offered for inspection in the voice step.
-MAX_SPEAKER_CLIPS = 3
 
 MEDIA_SUFFIXES = {
     ".wav",
@@ -131,36 +127,6 @@ def reference_suggestions(items, name: str, limit: int = 3):
         )
 
     return sorted(eligible, key=rank)[:limit]
-
-
-def speakers(
-    turns: list[DiarizedTurn], limit: int = MAX_SPEAKER_CLIPS
-) -> list[tuple[str, float, list[DiarizedTurn]]]:
-    """(label, total seconds, up to `limit` longest turns), most talkative first."""
-    total: dict[str, float] = defaultdict(float)
-    by_label: dict[str, list[DiarizedTurn]] = defaultdict(list)
-    for turn in turns:
-        total[turn.speaker_label] += turn.end_seconds - turn.start_seconds
-        by_label[turn.speaker_label].append(turn)
-    return sorted(
-        (
-            (
-                label,
-                total[label],
-                sorted(
-                    by_label[label], key=lambda t: t.start_seconds - t.end_seconds
-                )[:limit],
-            )
-            for label in total
-        ),
-        key=lambda row: -row[1],
-    )
-
-
-def reference_interval(turn: DiarizedTurn) -> tuple[float, float]:
-    return turn.start_seconds, min(
-        turn.end_seconds, turn.start_seconds + MAX_REFERENCE_SECONDS
-    )
 
 
 def _seconds(value: str) -> float:

@@ -11,7 +11,6 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from .audit import redact
-from .av import extract_audio_segment
 from .config import RunConfig
 from .discovery import slugify
 from .models import MaterialRole, SourceType
@@ -30,9 +29,7 @@ from .voice import (
     missing_av_dependencies,
     parse_range,
     play,
-    reference_interval,
     reference_suggestions,
-    speakers,
     stage_local_reference,
     timestamp_url,
     voice_candidate,
@@ -357,103 +354,40 @@ class Guided:
         voice_id, media = voice_candidate(
             self.pipeline, slug, item, reviewer=self.reviewer
         )
-        models = self.models(slug)
+        url = item.candidate.url
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            url = item.candidate.url
-            interval = self.choose_speaker(slug, media, Path(tmp), models, name, url)
-            if interval is None:
-                interval = self.typed_range(media, Path(tmp), name, url)
-            if interval is None:
-                return
+            interval = self.typed_range(media, Path(tmp), name, url)
+        if interval is None:
+            return
         start, end = interval
         duration = self.pipeline.media_probe(media)
         if not duration or end > duration:
             self.ui.show("That range is past the end of the recording.")
             return
-        if not self.ui.confirm(
-            "confirm_voice",
-            f"Only {name} speaks in {start:.0f}s–{end:.0f}s. Save as reference?",
-        ):
-            return
-        self.pipeline.approve_reference_voice(
-            slug,
-            candidate_id=voice_id,
-            reviewer=self.reviewer,
-            start_seconds=start,
-            end_seconds=end,
-            diarization_model=models["diarization_model"],
-            embedding_model="",
-        )
-        self.ui.show("Reference saved.")
-
-    def choose_speaker(self, slug, media, tmp, models, name, url):
-        """Path A: diarize, let the user listen, return the chosen speaker's interval."""
         try:
-            config = self.config(slug).model_copy(update=models)
-            diarizer = self.pipeline._av_providers(config, needs_transcript=False)[1]
-            audio = tmp / "audio.wav"
-            extract_audio_segment(media, audio)
-            rows = speakers(diarizer.diarize(audio).turns)
+            # Cuts the clip from the downloaded media and stores its voice embedding.
+            self.pipeline.approve_reference_voice(
+                slug,
+                candidate_id=voice_id,
+                reviewer=self.reviewer,
+                start_seconds=start,
+                end_seconds=end,
+                diarization_model=self.models(slug)["diarization_model"],
+                embedding_model="",
+            )
         except Exception as error:
-            self.ui.show(
-                f"Speaker detection failed ({redact(str(error))}); "
-                "enter a time range instead."
-            )
-            return None
-        # Up to MAX_SPEAKER_CLIPS parts per speaker, linked to the moment in the video.
-        clips = []
-        for label, total, turns in rows:
-            self.ui.show(f"{label} · {total / 60:.0f} min")
-            for turn in turns:
-                start, end = reference_interval(turn)
-                clips.append((label, start, end))
-                self.ui.show(
-                    f"  {len(clips)}. {clock(start)}–{clock(end)}  "
-                    f"{timestamp_url(url, start)}"
-                )
-        youtube = timestamp_url(url, 0) != url
-        if youtube:
-            self.ui.show(
-                f"Open the links in your browser, then choose a part where only "
-                f"{name} speaks."
-            )
-        choices = [
-            Option(
-                value=f"play:{index}",
-                label=f"▶ {index + 1}. {label} {clock(start)}–{clock(end)}",
-            )
-            for index, (label, start, end) in enumerate(clips)
-            if not youtube and can_play()
-        ]
-        choices += [
-            Option(
-                value=f"use:{index}",
-                label=f"{index + 1}. {label} {clock(start)}–{clock(end)}: "
-                f"only {name} speaks",
-            )
-            for index, (label, start, end) in enumerate(clips)
-        ]
-        choices.append(
-            Option(value="range", label="None of these / wrong split — type a range")
-        )
-        while True:
-            choice = self.ui.select("speaker", f"Which part is only {name}?", choices)
-            if choice == "range":
-                return None
-            action, index = choice.split(":", 1)
-            _, start, end = clips[int(index)]
-            if action == "use":
-                return start, end
-            play(media, start, min(end, start + 8), tmp)
+            self.ui.show(f"Reference not saved: {redact(str(error))}")
+            return
+        self.ui.show(f"Reference saved: {clock(start)}–{clock(end)} of {url}")
 
     def typed_range(self, media, tmp, name, url):
-        """Path B: the user types the interval."""
-        self.ui.show(f"Open {url} and find where only {name} speaks.")
+        """Show the recording's link; the user types where only the investor speaks."""
+        self.ui.show(f"Open {url} and find a stretch where only {name} speaks.")
         while True:
             text = self.ui.text(
                 "range",
-                "Time range where only the investor speaks "
-                "(e.g. 03:10-03:40, blank = cancel)",
+                f"Time range where only {name} speaks "
+                "(e.g. 0:00-0:50, blank = skip this recording)",
             )
             if not text:
                 return None

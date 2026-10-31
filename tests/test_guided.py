@@ -3,7 +3,6 @@ from unittest.mock import Mock
 from test_pipeline_cli import pipeline
 from typer.testing import CliRunner
 
-from vc_trace_collector.av import DiarizationResult, DiarizedTurn
 from vc_trace_collector.cli import create_app
 from vc_trace_collector.guided import PLATFORMS, STEPS, Guided
 from vc_trace_collector.models import (
@@ -211,76 +210,32 @@ def media_ready(tmp_path, ui):
     return p, c
 
 
-def test_voice_path_a_approves_longest_turn_of_chosen_speaker(tmp_path, monkeypatch):
-    ui = Prompts(add_reference=True, speaker="use:0", confirm_voice=True)
-    p, c = media_ready(tmp_path, ui)
-    ui.answers["reference"] = c.candidate_id
-    monkeypatch.setattr(
-        "vc_trace_collector.guided.extract_audio_segment", lambda *a, **k: None
-    )
-    diarizer = Mock()
-    diarizer.diarize.return_value = DiarizationResult(
-        model="m",
-        speaker_embeddings={},
-        turns=[
-            DiarizedTurn(start_seconds=0, end_seconds=5, speaker_label="HOST"),
-            DiarizedTurn(start_seconds=5, end_seconds=65, speaker_label="GUEST"),
-        ],
-    )
-    p._av_providers = Mock(return_value=(None, diarizer))
-    Guided(p, ui, dependency_check=list).voice("jane-roe")
-    kwargs = p.approve_reference_voice.call_args.kwargs
-    assert (kwargs["start_seconds"], kwargs["end_seconds"]) == (5, 35)
-
-
-def test_voice_lists_three_youtube_parts_per_speaker_without_playback(
-    tmp_path, monkeypatch
-):
-    ui = Prompts(speaker="use:3")
-    offered = []
-    select = ui.select
-    ui.select = lambda key, message, options: (
-        offered.extend(o.value for o in options) or select(key, message, options)
-    )
-    p, c = media_ready(tmp_path, ui)
-    monkeypatch.setattr(
-        "vc_trace_collector.guided.extract_audio_segment", lambda *a, **k: None
-    )
-    played = Mock()
-    monkeypatch.setattr("vc_trace_collector.guided.play", played)
-    monkeypatch.setattr("vc_trace_collector.guided.can_play", lambda: True)
-    diarizer = Mock()
-    diarizer.diarize.return_value = DiarizationResult(
-        model="m",
-        speaker_embeddings={},
-        turns=[
-            DiarizedTurn(start_seconds=s, end_seconds=s + 20 + s / 10, speaker_label="HOST")
-            for s in (0, 100, 200, 300)
-        ]
-        + [DiarizedTurn(start_seconds=400, end_seconds=500, speaker_label="GUEST")],
-    )
-    p._av_providers = Mock(return_value=(None, diarizer))
-    interval = Guided(p, ui, dependency_check=list).choose_speaker(
-        "jane-roe", tmp_path / "talk.mp4", tmp_path, {}, "Jane Roe",
-        "https://www.youtube.com/watch?v=x",
-    )
-    links = [m for m in ui.messages if "youtube.com" in str(m)]
-    assert len(links) == 4  # three HOST parts, one GUEST part
-    assert "watch?v=x&t=300s" in links[0] and "05:00" in links[0]
-    assert not any(v.startswith("play:") for v in offered)
-    assert interval == (400, 430)
-    played.assert_not_called()
-
-
-def test_voice_path_b_uses_typed_range(tmp_path, monkeypatch):
-    ui = Prompts(add_reference=True, range="01:00-01:20", confirm_voice=True)
+def test_voice_saves_typed_range_without_speaker_detection(tmp_path, monkeypatch):
+    ui = Prompts(add_reference=True, range="0:00-0:50")
     p, c = media_ready(tmp_path, ui)
     ui.answers["reference"] = c.candidate_id
     monkeypatch.setattr("vc_trace_collector.guided.play", lambda *a: None)
-    p._av_providers = Mock(side_effect=RuntimeError("no model"))
+    p._av_providers = Mock()
     Guided(p, ui, dependency_check=list).voice("jane-roe")
     kwargs = p.approve_reference_voice.call_args.kwargs
-    assert (kwargs["start_seconds"], kwargs["end_seconds"]) == (60, 80)
+    assert (kwargs["start_seconds"], kwargs["end_seconds"]) == (0, 50)
+    p._av_providers.assert_not_called()
+    assert any(c.url in str(m) for m in ui.messages)
+    assert any("Reference saved: 00:00–00:50" in str(m) for m in ui.messages)
+
+
+def test_voice_reports_rejected_reference_and_asks_again(tmp_path):
+    ui = Prompts(add_reference=True, range="0:00-0:50")
+    p, c = media_ready(tmp_path, ui)
+    ui.answers["reference"] = c.candidate_id
+
+    def rejected(*args, **kwargs):
+        ui.answers["add_reference"] = False
+        raise RuntimeError("Reference voice exceeds the media processing budget")
+
+    p.approve_reference_voice = Mock(side_effect=rejected)
+    Guided(p, ui, dependency_check=list).voice("jane-roe")
+    assert any("Reference not saved" in str(m) for m in ui.messages)
 
 
 def test_voice_missing_dependencies_skips_without_models(tmp_path):
@@ -311,7 +266,7 @@ def test_wizard_offers_only_searchable_platforms():
 
 
 def test_voice_shows_video_link_and_skips_playback_over_ssh(tmp_path, monkeypatch):
-    ui = Prompts(add_reference=True, range="0:00-0:45", confirm_voice=True)
+    ui = Prompts(add_reference=True, range="0:00-0:45")
     p, c = media_ready(tmp_path, ui)
     ui.answers["reference"] = c.candidate_id
     monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 1 5.6.7.8 22")

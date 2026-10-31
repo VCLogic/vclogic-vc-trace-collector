@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import ClassVar, Protocol
-from urllib.parse import unquote, urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit
+from urllib.request import url2pathname
 from uuid import uuid4
 
 import feedparser
@@ -625,8 +626,11 @@ class SuppliedFileCollector:
         self, source: SourceCandidate, context: CollectionContext
     ) -> list[RawArtifact]:
         parsed = urlsplit(source.url)
+        # url2pathname maps file:///C:/x to C:\x on Windows and decodes %-escapes.
         path = (
-            Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(source.url)
+            Path(url2pathname(parsed.path))
+            if parsed.scheme == "file"
+            else Path(source.url)
         )
         path = path.expanduser().resolve(strict=True)
         mime, _encoding = mimetypes.guess_type(path.name)
