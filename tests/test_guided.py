@@ -423,3 +423,5 @@ def test_wizard_fetch_offers_to_raise_the_media_limit_for_recordings(tmp_path):
     g.fetch("jane-roe")
     assert p.fetch_source.call_args.kwargs["maximum_media_minutes"] == 600
     assert any("0 of 120 minutes used" in str(m) for m in ui.messages)
+    audit = p.workspace("jane-roe").resolve() / "audit"
+    assert any(str(audit / "failures.jsonl") in str(m) for m in ui.messages)

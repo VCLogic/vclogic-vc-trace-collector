@@ -310,6 +310,11 @@ class Guided:
             f"Downloaded {result.collected} · failed {result.failed} · "
             f"skipped {result.skipped}"
         )
+        audit = self.pipeline.workspace(slug).resolve() / "audit"
+        self.ui.show(
+            f"Logs: {audit / 'failures.jsonl'} (why each download failed)\n"
+            f"      {audit / 'events.jsonl'} (every collection event)"
+        )
         return True
 
     @quiet_torchaudio_notices()
